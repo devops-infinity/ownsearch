@@ -6,7 +6,6 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
-- Two-crate Rust workspace: `ownsearch` for the CLI and `ownsearch-core` for the engine.
 - MCP server over stdio and Streamable HTTP, serving the 2026-07-28 and 2025-11-25 protocol versions.
 - The MCP service answers on `/` and `/mcp`.
 - REST endpoints `POST /v1/search` and `POST /v1/fetch`, behind the same bearer, origin, host, and body checks as the MCP stream.
@@ -18,7 +17,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - `ownsearch_fetch` renders a JavaScript page in headless Chrome when the page is an empty shell or the call sets `render: always`.
 - `ownsearch_fetch` reports `finalUrl` and the redirect chain.
 - `ownsearch_fetch` extracts text from a PDF answer into Markdown paragraphs.
-- `instance_slug`: a lowercase kebab-case host name, unique per instance, shown in instance info, health, scan status changes, and every search source.
+- A lowercase kebab-case host name, unique per instance, returned as `slug` in instance info, health, and scan status changes, and as `instanceSlug` in every search source.
 - Discovery from searx.space, with an embedded 67-instance bootstrap snapshot.
 - Instance lifecycle in SQLite: candidate, active, probation, missing, quarantined, and retired.
 - A TLS probe that resolves the host, validates the chain and certificate dates, and records the protocol and grade.
@@ -31,9 +30,11 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - Typed AI database changes with a preview and a one-use confirmation token.
 - CLI commands: serve, doctor, scan, instances, db, config, audit, sbom, completions, and man.
 - A Dockerfile, an MCP bundle (MCPB) manifest, an MCP Registry manifest, and `docker-compose.yml`.
-- A verified pre-migration backup, checksummed schema versions, and an ownership check on the database file.
-- Round-robin start selection.
-- Per-instance retries with backoff.
+- A verified pre-migration backup.
+- Checksummed schema versions.
+- An ownership check on the database file.
+- Two consecutive searches may start from different instances.
+- A failed instance request is retried before the instance is skipped.
 - Failover across the whole scored fleet.
 - A cleanup pass with a 3 day keep window by default, adjustable from 1 hour to 90 days, which also covers the backups folder.
 - A public-address guard on discovery records and page fetches, with a bounded DNS lookup.
@@ -55,7 +56,12 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Changed
 
-- These defaults are on: cache 300 seconds, typed database writes in read-write mode, exhaustive mode over 16 instances, the 30 second search deadline, a result cap of 25, and an unscored fallback of 32 instances.
+- A cache entry stays fresh for 300 seconds by default.
+- Typed database writes are enabled by default.
+- Exhaustive mode covers 16 instances by default.
+- A search deadline is 30 seconds by default.
+- A search answer holds at most 25 results by default.
+- The unscored fallback tries 32 instances by default.
 - A search gives discovery five seconds inside its own deadline.
 - The outer search ceiling is the deadline plus 20 seconds, so discovery and engine time fit.
 - A request `timeout_secs` reaches the engine.
@@ -71,6 +77,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - Two processes on one state database take turns at maintenance through a lock file.
 - An unknown path answers 404 instead of a plain-text 405.
 - A wrong method answers 405 with a problem body instead of an empty one.
+- **Breaking:** `statusChanges` entries report `previousStatus` and `nextStatus`; the `from` and `to` keys are removed.
+- `GET /startupz` and `GET /readyz` answer a fixed reason when unhealthy and keep the database error in the debug log.
+- The container image sets `OWNSEARCH_BROWSER=false`.
+- A search skips an instance that is cooling down.
 
 ### Fixed
 
@@ -79,10 +89,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - The TLS prober honors `OWNSEARCH_ALLOW_PRIVATE_INSTANCES`.
 - The HTTP client refuses a connection that lands on a private address.
 - The IPv6 guard rejects IPv4-compatible, site-local, local-use NAT64, benchmarking, ORCHID, RFC 9637 documentation, and SRv6 prefixes.
-- Instance writes and their events share one transaction.
+- An instance change and its event are stored together or not at all.
 - The event, snapshot, and run queries honor `offset`.
 - A stored status that does not parse is reported as corruption when an instance is read for display.
-- A failed metric write inside a probe fails the probe transaction.
+- A probe is stored completely or not at all.
 - A scan rewrites the state snapshot after selecting the fleet.
 - A writing scan runs one at a time within a process per state database.
 - A writing scan waits `OWNSEARCH_SCAN_MIN_INTERVAL_SECS` between runs.
@@ -103,7 +113,14 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - A hung browser no longer blocks the next render.
 - An abandoned browser profile is removed at startup, so cookies and cache from an earlier run are not reused.
 - A cleanup or expiry sweep that exceeds 120 seconds is skipped and logged.
+- Two discovery refreshes never run at the same time.
+- A missing instance returns to probation only after a clean probe.
+- A PDF answer reports truncation.
+- A followed PDF page is parsed as a PDF instead of read as text.
+- `ownsearch sbom` dependency references resolve to the declared component.
+- A ledger append holds the file lock across catch-up and the write.
 
 ### Security
 
 - PDF text is read with `lopdf`, so the tree no longer pulls the unmaintained `pdf-extract` dependency.
+- Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.

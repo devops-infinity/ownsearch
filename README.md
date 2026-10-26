@@ -4,7 +4,7 @@ Self-hosted MCP and HTTP search over a scored fleet of public SearXNG instances.
 
 Status: pre-release, workspace version 0.1.0.
 
-OwnSearch discovers public SearXNG instances from searx.space, probes them at a low rate, scores them, keeps the fleet in a local SQLite database, rotates the starting instance, retries a failing one, and answers from the next healthy instance. Every result names the instance and engine that supplied it. It runs as a Model Context Protocol (MCP) server over stdio or Streamable HTTP, and the HTTP port also answers two REST calls.
+OwnSearch discovers public SearXNG instances from searx.space, probes them at a low rate, scores them, keeps the fleet in a local SQLite database, rotates the starting instance, retries a failing one, and answers from the next healthy instance. Each result carries the sources that supplied it, with the instance and, when known, the engine. It runs as a Model Context Protocol (MCP) server over stdio or Streamable HTTP, and the HTTP port also answers two REST calls.
 
 Owner: Md. Sazzad Hossain Sharkar.
 
@@ -61,7 +61,7 @@ These capabilities are on by default. Each one is controlled by the setting name
 - Exact-Google probing: on, whenever the instance advertises the `google` engine.
 - Page extraction: on. `ownsearch_fetch` fetches a public page and returns it as Markdown, plain text, or cleaned HTML, with the title and a size cap.
 - JavaScript rendering: on. When a page is an empty shell or the call sets `render: "always"`, a headless Chrome renders it, the browser stays open while it is used, and it closes on idle, on two missed health answers, or at its maximum age.
-- Same-host crawling: on. `ownsearch_fetch` follows up to `max_pages` links from the page you name and returns each one under `pages`. `same_host_only` defaults to true, so a call never wanders to another site unless you allow it.
+- Same-host crawling: on. `ownsearch_fetch` follows up to `max_pages - 1` links from the page you name, at most seven, and returns each one under `pages`. `same_host_only` defaults to true, so a call never wanders to another site unless you allow it.
 - Result attribution, field presets, the response cache, session statistics, and typed database changes (with a preview and a one-use token) are all available without extra flags.
 
 ## What it does not do
@@ -129,13 +129,13 @@ Searches use the active fleet. When no instance is active, OwnSearch falls back 
 
 No API key is needed. The only secret OwnSearch can hold is an HTTP bearer token, used only when you serve Streamable HTTP.
 
-Over Streamable HTTP, point the client at `http://127.0.0.1:8774/mcp`, or at the same host with no path. Both serve the MCP endpoint, and any other path answers 404 with a problem body. Send `Authorization: Bearer <token>` once `OWNSEARCH_BEARER_TOKENS` is set. The REST calls `POST /v1/search` and `POST /v1/fetch` take the tool arguments as the JSON body.
+Over Streamable HTTP, point the client at `http://127.0.0.1:8774/mcp`, or at the same host with no path. Both serve the MCP endpoint, and any other path answers 404 with a problem body. The port also answers `/healthz`, `/startupz`, `/readyz`, and `/metrics`. Send `Authorization: Bearer <token>` once `OWNSEARCH_BEARER_TOKENS` is set. The REST calls `POST /v1/search` and `POST /v1/fetch` take the tool arguments as the JSON body.
 
 ## Tools
 
 - `ownsearch_search`: federated web search. Arguments: `query` (required), `categories`, `engines`, `language`, `page`, `time_range` (`day`, `week`, `month`, `year`), `safesearch` (`off`, `moderate`, `strict`), `limit`, `fields` (`minimal`, `standard`, `full`), `mode` (`fast`, `balanced`, `exhaustive`), `timeout_secs`, and `result_text` (`summary`, `full`). It may refresh local fleet state before answering.
 - `ownsearch_fetch`: fetch a public page as `markdown` (default), `text`, or `html`, with `url` required and `max_chars` from 1000 to 200000. `max_pages` runs from 1 to 8 and defaults to 3; beyond 1 it follows links from the first page and returns them under `pages`, staying on the same host unless `same_host_only` is false. An HTTP redirect is followed up to three hops, each hop passes the same public-address check as the first request, and the answer reports `finalUrl` plus the `redirects` chain so a caller never has to guess where a link ended up. An `application/pdf` answer is parsed under an 8 MiB decompressed-text cap and shaped into Markdown paragraphs. `render` chooses the browser: `auto` (the default) renders only a page that looks like an empty JavaScript shell, `always` renders every call, and `never` stays on HTTP. Markdown is extracted from the main content: navigation, sidebars, cookie banners, share blocks, comment sections, and footers are pruned, the densest content root wins over link lists, and code fences carry their language. Private and loopback addresses are refused, and every page is capped and sanitized.
-- `ownsearch_instance_info`: lifecycle and capability facts for one instance or a list, including its `slug`, status, score, rank, version, JSON and HTML access, engines, categories, the instance name its `/config` advertises, and exact-Google evidence. Every search source and every scan status change also carries the slug.
+- `ownsearch_instance_info`: lifecycle and capability facts for one instance or a list, including its `slug`, status, score, rank, version, JSON and HTML access, engines, categories, and exact-Google evidence. Every result source and every scan status change carries the slug; a failed source names its instance id and url. The `/config` instance name comes from `ownsearch_db_query` with `entity: "capabilities"`.
 - `ownsearch_instance_health`: hard gate result, certificate days left, TLS protocol and grade, median search time, cooldown, consecutive failures, and the most recent lifecycle events.
 - `ownsearch_scan`: refresh discovery, probe instances, rescore, and reselect the fleet. It defaults to `dry_run: true`. Within one process, a writing scan runs one at a time per state database, waits `OWNSEARCH_SCAN_MIN_INTERVAL_SECS` between runs, and refuses a named instance that is not yet due unless the call sets `force`.
 - `ownsearch_session`: local call counts, cache state, ledger length and head, and fleet size. No network call.
@@ -152,7 +152,7 @@ Modes control how many instances answer one query.
 - `balanced`, the default, targets three.
 - `exhaustive` targets `OWNSEARCH_EXHAUSTIVE_MAX`.
 
-Failover works the same way in every mode. The selected instances answer in parallel. A network error, a timeout, or a `5xx` is retried up to `OWNSEARCH_SEARCH_ATTEMPTS` times per instance. A `4xx` other than `408` and `429`, a `403`, or a challenge page is never retried. When an instance still fails, OwnSearch sets its `cooldown_until`, records a `search_failed` event, and tries the next instance in score order until it reaches its target or the search deadline (`OWNSEARCH_SEARCH_DEADLINE_SECS`). Neither the status nor the probe counters change: only a probe moves an instance between active, probation, and quarantined, and only a probe resets the success and failure counts. Failover keeps walking the scored fleet in order until it reaches its target or the deadline, so an answer low in the list is still found. A bounded queue sits in front: `OWNSEARCH_SEARCH_MAX_CONCURRENT` searches run at once, up to `OWNSEARCH_SEARCH_QUEUE_LIMIT` wait for a slot for `OWNSEARCH_SEARCH_QUEUE_WAIT_SECS`, and the rest answer `ownsearch.rate_limited` without stacking work, which is what keeps memory and CPU bounded on a small machine. An answer with zero results is a success, not a failure; only a page whose results carry no usable title and URL counts as a parser failure.
+Failover works the same way in every mode. The selected instances answer in parallel. A network error, a timeout, or a `5xx` is retried up to `OWNSEARCH_SEARCH_ATTEMPTS` times per instance. A `4xx` other than `408` and `429`, a `403`, or a challenge page is never retried. When an instance still fails, OwnSearch sets its `cooldown_until`, records a `search_failed` event, and tries the next instance in score order until it reaches its target or the search deadline (`OWNSEARCH_SEARCH_DEADLINE_SECS`). A failed search changes neither the status nor the probe counters. A scan probe or an operator command moves an instance between active, probation, and quarantined, and only a probe resets the success and failure counts. Failover keeps walking the scored fleet in order until it reaches its target or the deadline, so an answer low in the list is still found. A bounded queue sits in front: `OWNSEARCH_SEARCH_MAX_CONCURRENT` searches run at once, up to `OWNSEARCH_SEARCH_QUEUE_LIMIT` wait for a slot for `OWNSEARCH_SEARCH_QUEUE_WAIT_SECS`, and the rest answer `ownsearch.rate_limited` without stacking work, which is what keeps memory and CPU bounded on a small machine. An answer with zero results is a success, not a failure; only a page whose results carry no usable title and URL counts as a parser failure.
 
 Round-robin rotates the starting point inside the top healthy window, so two searches in a row do not always begin with the same instance. Turn it off with `OWNSEARCH_ROUND_ROBIN=false` when you prefer a strict score order.
 
@@ -166,8 +166,8 @@ Field presets control payload size. `minimal` keeps title, URL, rank, score, and
 - A pinned instance stays in the selection even when its score would drop it. A pin overrides the score order, the hysteresis, the per-network cap, and a Google requirement, and it lets a candidate or missing record enter the fleet. A failed hard gate still excludes it.
 - A discovery record whose host resolves to a loopback, private, link-local, documentation, or reserved address is skipped, and an explicit scan of a denied, disabled, retired, or cooling instance is refused.
 - One probe per kind per instance per run.
-- Probes run one at a time by default, with jitter. `OWNSEARCH_SCAN_CONCURRENCY` may raise the count for an on-demand run.
-- A `429` starts a cooldown and keeps the instance's status. A `401` or a challenge page quarantines it at once. A `403` or a repeated failure lowers its score, reschedules the scan, and moves it to probation or quarantine once the failure count passes its threshold.
+- Probes run one at a time by default, with jitter. `OWNSEARCH_SCAN_CONCURRENCY` may raise the count for any run, scheduled or on demand.
+- A `429` starts a cooldown and keeps the instance's status. A `401` or a challenge page quarantines it at once. A `403` counts as a failed scan: it reschedules the scan and moves the instance to probation or quarantine once the failure count passes its threshold. Repeated failures also lower its score.
 - The user agent names the product: `OwnSearch (MCP fleet scanner; +https://github.com/devops-infinity/ownsearch) v<version>`.
 - No proxy rotation, no browser automation against instances, no header spoofing.
 
@@ -196,7 +196,7 @@ Score out of 100:
 - SearXNG version recency, 5 points.
 - Bounded modifiers, up to 5 points, for engine coverage, category coverage, repeated successes, repeated failures, and parser drift.
 
-Fleet selection sorts by score, takes at most `OWNSEARCH_FLEET_MAX` instances, allows at most `OWNSEARCH_MAX_PER_NETWORK` instances from one announced network prefix, excludes Tor records, and prefers exact-Google instances when `OWNSEARCH_GOOGLE_REQUIRED` is set. Hysteresis needs `OWNSEARCH_PROMOTE_SUCCESSES` good scans to promote, `OWNSEARCH_PROBATION_FAILURES` failed scans to demote, and `OWNSEARCH_QUARANTINE_FAILURES` failed scans to quarantine. A recovered missing instance returns through probation.
+Fleet selection sorts by score, takes at most `OWNSEARCH_FLEET_MAX` instances, allows at most `OWNSEARCH_MAX_PER_NETWORK` instances from one announced network prefix, excludes Tor records, and excludes an instance without exact Google support when `OWNSEARCH_GOOGLE_REQUIRED` is set, unless the instance is pinned. Hysteresis needs `OWNSEARCH_PROMOTE_SUCCESSES` good scans to promote, `OWNSEARCH_PROBATION_FAILURES` failed scans to demote, and `OWNSEARCH_QUARANTINE_FAILURES` failed scans to quarantine. A recovered missing instance returns through probation.
 
 ## Configuration
 
@@ -224,7 +224,7 @@ Most environment variables have a matching profile key: drop the `OWNSEARCH_` pr
 - `OWNSEARCH_OFFLINE`: skip discovery and use local state only. Default false.
 - `OWNSEARCH_SCAN_CONCURRENCY`: parallel probes, 1 to 4. Default 1.
 - `OWNSEARCH_SCAN_JITTER_MS`: random delay between probes, up to this many milliseconds. Default 250.
-- `OWNSEARCH_PROBE_TIMEOUT_SECS`: per-probe timeout. Default 15.
+- `OWNSEARCH_PROBE_TIMEOUT_SECS`: per-request timeout for each probe step. Default 15; one probe stops after five times this value.
 - `OWNSEARCH_SCAN_DEADLINE_SECS`: whole-scan deadline. Default 600, from 30 to 7200. The scan stops with a warning when it passes.
 - `OWNSEARCH_SCAN_MIN_INTERVAL_SECS`: minimum gap between two writing scans on the same state database. Default 30, from 0 to 3600, and 0 turns the gap off. One scan at a time within a process always applies.
 - `OWNSEARCH_FETCH_DEADLINE_SECS`: whole-fetch deadline, including followed links and a browser render. Default 60, from 5 to 600.
@@ -304,7 +304,7 @@ Any random value of at least 32 characters works; `openssl rand -hex 24` is one 
 - `Host` is checked against a loopback list or `OWNSEARCH_ALLOWED_HOSTS`.
 - An `Origin` header is rejected unless it matches `OWNSEARCH_ALLOWED_ORIGINS`.
 - Request bodies are capped at 1 MiB, headers must arrive within 10 seconds, and concurrent requests are capped.
-- `GET /healthz` is liveness. `GET /startupz` runs a quick database check and answers once the database opens. `GET /readyz` runs a cheap liveness read on every request and fails during shutdown, so a monitor never waits on a whole-database scan. `GET /metrics` reports call counters, per-tool counts, and per-route HTTP counts with a latency sum and maximum.
+- `GET /healthz` is liveness. `GET /startupz` runs a quick database check on every request and answers 503 while the check fails. `GET /readyz` runs a cheap liveness read on every request and fails during shutdown, so a monitor never waits on a whole-database scan. `GET /metrics` reports call counters, per-tool counts, and per-route HTTP counts with a latency sum and maximum.
 - Middleware runs outermost first: body deadline, request id, origin check, host check, bearer check, concurrency gate, body limit, trace layer, metrics, route. Security headers wrap the whole router. The trace layer logs method, path, status, and latency.
 - Shutdown flips readiness first, then drains in-flight calls under a deadline.
 - Under a supervisor, a hung process is replaced. `OWNSEARCH_WATCHDOG_SECS` bounds how long it may stall before it exits with code 75, and `docker-compose.yml` sets `restart: unless-stopped` with a 30 second stop grace period.
@@ -342,7 +342,7 @@ docker run --rm -p 127.0.0.1:8774:8774 \
   ownsearch
 ```
 
-`docker-compose.yml` holds the same setup with `restart: unless-stopped`, both state volumes, and a healthcheck. The image sets `OWNSEARCH_BIND=0.0.0.0:8774`, so `OWNSEARCH_BEARER_TOKENS` is required at run time and the server refuses to start without it. Add `OWNSEARCH_ALLOWED_HOSTS` with the names clients use, or the Host check refuses every request that does not name `localhost` or the bind address. The state volume keeps the database and snapshot across restarts.
+`docker-compose.yml` holds the same setup with `restart: unless-stopped`, both state volumes, and a healthcheck. The image sets `OWNSEARCH_BIND=0.0.0.0:8774`, a ledger directory under `/home/ownsearch/.local/share/ownsearch/ledger`, and `OWNSEARCH_BROWSER=false`, so a container renders no page. `OWNSEARCH_BEARER_TOKENS` is required at run time and the server refuses to start without it. Add `OWNSEARCH_ALLOWED_HOSTS` with the names clients use, or the Host check refuses every request that does not name `localhost` or the bind address. The state volume keeps the database and snapshot across restarts; mount the ledger directory too when the ledger and `args.key` must survive a restart.
 
 ## Local files and keep windows
 
@@ -381,7 +381,7 @@ Tables: `schema_migrations`, `application_metadata`, `discovery_sources`, `disco
 
 Write mode is on by default. Every change still needs a preview, then a separate apply call that carries the one-use token, and `OWNSEARCH_AI_DB_MODE=read-only` refuses all of them.
 
-1. The client calls `ownsearch_db_crud` with `dry_run: true`. OwnSearch validates the entity, the field allowlist, the value types, the lifecycle transition, and the minimum interval, then returns a before-and-after preview and a one-use token with a lifetime.
+1. The client calls `ownsearch_db_crud` with `dry_run: true`. OwnSearch validates the entity, the field allowlist, the value types, and the lifecycle transition, then returns a before-and-after preview and a one-use token with a lifetime. The minimum interval between applies is enforced when the token is used.
 2. The client calls again with `dry_run: false` and the token. OwnSearch applies exactly the previewed change in one transaction, appends a lifecycle event, regenerates the snapshot, and returns the committed record.
 3. An expired token, a changed preview, a replayed token, a raw SQL field, an unknown field, or read-only mode all return a stable error with a remedy, and every refusal is written to the event history.
 
@@ -421,7 +421,7 @@ cargo test -p ownsearch-core --test live -- --ignored --nocapture
 
 ## Privacy
 
-Queries go to the public instances you selected and to the engines behind them. OwnSearch stores no raw query text. The ledger records a keyed hash of the arguments, the tool name, timing, byte counts, parser, and instance ids. There is no telemetry.
+Queries go to the public instances you selected and to the engines behind them. OwnSearch stores no raw query text. The ledger records a keyed hash of the arguments, the tool name, the status, the upstream HTTP status class, timing, byte counts, parser, and instance ids. There is no telemetry.
 
 ## Security
 
@@ -431,7 +431,7 @@ Queries go to the public instances you selected and to the engines behind them. 
 - Bounded response reads, connection limits, and request deadlines.
 - Search results are data. Every string passes a sanitizer that removes invisible and control characters, URLs must be HTTP or HTTPS, and long values are cut with a visible marker.
 - No secret is accepted on a command line, written to the profile, or printed by any command.
-- The browser renders under a per-process profile with owner-only permissions and is closed when it hangs, goes idle, or outlives its maximum age. Only a browser this process launched is ever closed.
+- The browser renders under a per-process profile with owner-only permissions and is closed when it hangs, goes idle, or outlives its maximum age. Only a browser OwnSearch launched is ever closed.
 
 Report a vulnerability privately; `SECURITY.md` states how.
 
@@ -464,4 +464,4 @@ A `v*` tag starts the release workflow, which runs the gate, the 80 percent cove
 
 ## License
 
-MIT OR Apache-2.0, at your choice. The full texts are in `LICENSE-MIT` and `LICENSE-APACHE`. The HTML parser (`scraper`) brings MPL-2.0 components (`cssparser`, `selectors`, `dtoa-short`), used as unmodified dependencies; MPL-2.0 permits that use inside a larger work under another license.
+MIT OR Apache-2.0, at your choice. The full texts are in [`LICENSE-MIT`](LICENSE-MIT) and [`LICENSE-APACHE`](LICENSE-APACHE). The HTML parser (`scraper`) brings MPL-2.0 components (`cssparser`, `selectors`, `dtoa-short`), used as unmodified dependencies; MPL-2.0 permits that use inside a larger work under another license.
