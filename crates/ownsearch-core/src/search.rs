@@ -717,6 +717,28 @@ async fn search_instance(
             }
         }
     }
+    if report.outcome == ProbeOutcome::ParserError
+        && ctx.browser.enabled()
+        && let Ok(url) = crate::client::search_url(&base, &[("q", query.query.clone())])
+        && let Ok((html, _)) = ctx
+            .browser
+            .page(&url, std::time::Duration::from_secs(30))
+            .await
+    {
+        let page = crate::searxng::search_html::HtmlSearch::parse(&html, &url);
+        if !page.blocked && !page.results.is_empty() {
+            let observations = observations_from_page(row, &page);
+            if !observations.is_empty() {
+                return SourceOutcome {
+                    instance_id: row.instance_id,
+                    parser: Some("browser".to_owned()),
+                    observations,
+                    failure: None,
+                    http_class: Some(http_class(200)),
+                };
+            }
+        }
+    }
     let html_allowed = row.html_fallback_allowed || ctx.settings.html_fallback();
     let denied = matches!(
         report.outcome,
@@ -805,6 +827,38 @@ fn observations_from_json(
         });
     }
     out
+}
+
+fn observations_from_page(
+    row: &InstanceRow,
+    page: &crate::searxng::search_html::HtmlSearch,
+) -> Vec<Observation> {
+    page.results
+        .iter()
+        .filter_map(|item| {
+            let url = clean_url(&item.url)?;
+            let (title, _) = cap(&sanitize(&item.title), TITLE_CHARS);
+            if title.is_empty() {
+                return None;
+            }
+            let snippet = item.snippet.as_deref().map(|raw| {
+                let (text, _) = cap(&sanitize(raw), 300);
+                text
+            });
+            Some(Observation {
+                instance_id: row.instance_id,
+                instance_url: row.url.clone(),
+                instance_score: row.score.unwrap_or(0.0),
+                parser: "browser".to_owned(),
+                engine: item.engine.clone(),
+                rank: Some(item.position),
+                title,
+                url,
+                snippet,
+                published_date: None,
+            })
+        })
+        .collect()
 }
 
 fn observations_from_formats(

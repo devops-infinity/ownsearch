@@ -872,6 +872,21 @@ async fn probe_one_inner(
             }
         }
     }
+    let mut browser_ok = false;
+    if options.probe_search
+        && json_denied
+        && !rate_limited
+        && !blocked
+        && ctx.browser.enabled()
+        && let Ok(url) = crate::client::search_url(&base, &[("q", PROBE_QUERY.to_owned())])
+        && let Ok((html, _)) = ctx
+            .browser
+            .page(&url, std::time::Duration::from_secs(30))
+            .await
+    {
+        let page = search_html::HtmlSearch::parse(&html, &base);
+        browser_ok = !page.blocked && !page.results.is_empty();
+    }
     let mut google_report = None;
     let mut google_outcome = None;
     let exact_google_capability = config
@@ -923,7 +938,10 @@ async fn probe_one_inner(
         },
     );
     let succeeded = assessment.hard_gate_passed
-        && (json_outcome.is_success() || html_outcome == Some(ProbeOutcome::Success) || formats_ok);
+        && (json_outcome.is_success()
+            || html_outcome == Some(ProbeOutcome::Success)
+            || formats_ok
+            || browser_ok);
     let inconclusive = evidence.json_ok.is_none() && evidence.html_ok.is_none();
     let successes = if succeeded {
         target.consecutive_successes.saturating_add(1)
