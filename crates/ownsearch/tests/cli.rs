@@ -259,3 +259,50 @@ fn a_bearer_token_with_a_comma_is_refused() {
     assert!(text.contains("comma"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_dry_run_scan_reports_without_persisting_a_run() {
+    let dir = temp_dir("scan-dry");
+    let output = Command::new(binary())
+        .args(["scan", "--dry-run", "--limit", "1"])
+        .envs(env_dir(&dir))
+        .env(
+            "OWNSEARCH_DISCOVERY_URL",
+            "http://127.0.0.1:1/instances.json",
+        )
+        .output()
+        .expect("run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("dry run"), "{text}");
+    assert!(text.contains("discovered"), "{text}");
+    assert!(text.contains("fleet:"), "{text}");
+    assert!(text.contains("elapsed:"), "{text}");
+}
+
+#[test]
+fn a_json_scan_prints_a_report() {
+    let dir = temp_dir("scan-json");
+    let output = Command::new(binary())
+        .args(["scan", "--dry-run", "--limit", "1", "--json"])
+        .envs(env_dir(&dir))
+        .env(
+            "OWNSEARCH_DISCOVERY_URL",
+            "http://127.0.0.1:1/instances.json",
+        )
+        .output()
+        .expect("run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the report is json");
+    assert!(parsed.get("discovered").is_some(), "{parsed}");
+    assert!(parsed.get("probed").is_some(), "{parsed}");
+}
