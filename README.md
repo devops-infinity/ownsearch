@@ -415,7 +415,7 @@ cargo test -p ownsearch-core --test live -- --ignored --nocapture
 - `ownsearch.state_corrupted`: run `ownsearch db verify` and restore the newest backup.
 - `ownsearch.write_disabled`: set `ai_db_mode = "read-write"`.
 - `ownsearch.confirmation_expired`: call the tool again with `dry_run: true`.
-- Disk filling up: lower `OWNSEARCH_KEEP_WINDOW`, run `ownsearch db maintenance`, and read the warnings it prints.
+- Disk filling up: lower `OWNSEARCH_KEEP_WINDOW` for the ledger archives, event lines, and pre-migration backups, then run `ownsearch db maintenance` and read the warnings it prints. SQLite rows follow the fixed per-table windows listed under Local files and keep windows.
 - A startup error names the setting and its bounds. Fix the value, or remove it to take the default.
 - The process exits with code 75: it stopped making progress for `OWNSEARCH_WATCHDOG_SECS`. Check the logs for the last request, and let the supervisor start it again.
 

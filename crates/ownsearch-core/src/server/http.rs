@@ -609,21 +609,26 @@ async fn healthz() -> impl IntoResponse {
 async fn startupz(State(state): State<HttpState>) -> impl IntoResponse {
     let store = std::sync::Arc::clone(&state.context.store);
     let checked = tokio::task::spawn_blocking(move || store.quick_check()).await;
-    let (healthy, message) = checked.map_or_else(
-        |error| (false, error.to_string()),
-        |result| {
-            result.map_or_else(
-                |error| (false, error.to_string()),
-                |()| (true, "started".to_owned()),
-            )
-        },
-    );
+    let healthy = match checked {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "the startup quick check failed");
+            false
+        }
+        Err(error) => {
+            tracing::debug!(%error, "the startup quick check task failed");
+            false
+        }
+    };
     if healthy {
         (StatusCode::OK, Json(json!({"status": "started"})))
     } else {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"status": "starting", "reason": message})),
+            Json(json!({
+                "status": "starting",
+                "reason": "the state database did not answer its quick check",
+            })),
         )
     }
 }
@@ -638,15 +643,25 @@ async fn readyz(State(state): State<HttpState>) -> impl IntoResponse {
     let store = std::sync::Arc::clone(&state.context.store);
     match tokio::task::spawn_blocking(move || store.ping()).await {
         Ok(Ok(())) => (StatusCode::OK, Json(json!({"status": "ready"}))),
-        Ok(Err(error)) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"status": "not-ready", "reason": error.to_string()})),
-        ),
-        Err(error) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"status": "not-ready", "reason": error.to_string()})),
-        ),
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "the readiness read failed");
+            not_ready()
+        }
+        Err(error) => {
+            tracing::debug!(%error, "the readiness task failed");
+            not_ready()
+        }
     }
+}
+
+fn not_ready() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "status": "not-ready",
+            "reason": "the state database did not answer a read",
+        })),
+    )
 }
 
 async fn metrics_handler(State(state): State<HttpState>) -> impl IntoResponse {

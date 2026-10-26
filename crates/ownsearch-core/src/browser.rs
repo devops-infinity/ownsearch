@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use chromiumoxide::cdp::browser_protocol::fetch::{
     ContinueRequestParams, EventRequestPaused, FailRequestParams,
 };
-use chromiumoxide::cdp::browser_protocol::network::ErrorReason;
+use chromiumoxide::cdp::browser_protocol::network::{ErrorReason, EventResponseReceived};
 use chromiumoxide::{Browser, BrowserConfig};
 use futures_util::StreamExt;
 use tokio::sync::{Mutex, Semaphore};
@@ -139,12 +139,17 @@ impl Renderer {
                     .await
                     .ok()
                     .flatten();
+                if let Some(guard) = guard.as_ref()
+                    && guard.blocked_peer.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    return Err(Error::PolicyRefused(
+                        "a page resource connected to a non-public address".into(),
+                    ));
+                }
                 Ok::<_, Error>((html, markdown))
             }
             .await;
-            if let Some(guard) = guard {
-                guard.abort();
-            }
+            drop(guard);
             let _ = page.close().await;
             rendered
         })
@@ -180,17 +185,32 @@ impl Renderer {
     }
 }
 
-async fn install_guard(page: &chromiumoxide::Page) -> Result<tokio::task::JoinHandle<()>> {
+struct Guard {
+    requests: tokio::task::JoinHandle<()>,
+    peers: tokio::task::JoinHandle<()>,
+    blocked_peer: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        self.requests.abort();
+        self.peers.abort();
+    }
+}
+
+async fn install_guard(page: &chromiumoxide::Page) -> Result<Guard> {
     let mut paused = page
         .event_listener::<EventRequestPaused>()
         .await
         .map_err(browser_error)?;
+    let mut responses = page
+        .event_listener::<EventResponseReceived>()
+        .await
+        .map_err(browser_error)?;
     let target = page.clone();
-    Ok(tokio::spawn(async move {
-        let mut resolved: std::collections::HashMap<String, bool> =
-            std::collections::HashMap::new();
+    let requests = tokio::spawn(async move {
         while let Some(event) = paused.next().await {
-            let settled = if request_permitted(&event.request.url, &mut resolved).await {
+            let settled = if request_permitted(&event.request.url).await {
                 target
                     .execute(ContinueRequestParams::new(event.request_id.clone()))
                     .await
@@ -208,26 +228,40 @@ async fn install_guard(page: &chromiumoxide::Page) -> Result<tokio::task::JoinHa
                 tracing::debug!(%error, "a paused browser request was not resolved");
             }
         }
-    }))
+    });
+    let blocked_peer = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flagged = Arc::clone(&blocked_peer);
+    let peers = tokio::spawn(async move {
+        while let Some(event) = responses.next().await {
+            let Some(raw) = event.response.remote_ip_address.as_deref() else {
+                continue;
+            };
+            let Ok(address) = raw.parse::<std::net::IpAddr>() else {
+                continue;
+            };
+            if !crate::network_guard::is_public(address) {
+                tracing::warn!(
+                    %address,
+                    url = %event.response.url,
+                    "a rendered page resource connected to a non-public address"
+                );
+                flagged.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    });
+    Ok(Guard {
+        requests,
+        peers,
+        blocked_peer,
+    })
 }
 
-async fn request_permitted(
-    raw: &str,
-    resolved: &mut std::collections::HashMap<String, bool>,
-) -> bool {
+async fn request_permitted(raw: &str) -> bool {
     let Ok(url) = Url::parse(raw) else {
         return false;
     };
     match url.scheme() {
-        "http" | "https" => {
-            let key = url.origin().ascii_serialization();
-            if let Some(known) = resolved.get(&key) {
-                return *known;
-            }
-            let allowed = crate::network_guard::url_is_public(&url).await;
-            resolved.insert(key, allowed);
-            allowed
-        }
+        "http" | "https" => crate::network_guard::url_is_public(&url).await,
         "about" | "data" | "blob" => true,
         _ => false,
     }
@@ -238,8 +272,7 @@ async fn ensure_public_final(page: &chromiumoxide::Page) -> Result<()> {
     let Some(landed) = landed else {
         return Ok(());
     };
-    let mut resolved = std::collections::HashMap::new();
-    if request_permitted(&landed, &mut resolved).await {
+    if request_permitted(&landed).await {
         return Ok(());
     }
     Err(Error::PolicyRefused(format!(
@@ -299,7 +332,9 @@ fn start_watchdog(inner: &Arc<RenderInner>) {
 
 async fn launch(inner: &Arc<RenderInner>) -> Result<Session> {
     create_private_dir(&inner.profile)?;
-    let mut builder = BrowserConfig::builder().user_data_dir(&inner.profile);
+    let mut builder = BrowserConfig::builder()
+        .user_data_dir(&inner.profile)
+        .arg("--no-proxy-server");
     if !inner.allow_private {
         builder = builder.enable_request_intercept();
     }
@@ -518,18 +553,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_page_request_is_permitted_only_for_a_public_address() {
-        let mut resolved = std::collections::HashMap::new();
-        assert!(request_permitted("https://1.1.1.1/", &mut resolved).await);
-        let mut resolved = std::collections::HashMap::new();
+        assert!(request_permitted("https://1.1.1.1/").await);
+        assert!(!request_permitted("https://169.254.169.254/latest/meta-data/").await);
+        assert!(!request_permitted("http://127.0.0.1:8774/").await);
+        assert!(request_permitted("about:blank").await);
         assert!(
-            !request_permitted("https://169.254.169.254/latest/meta-data/", &mut resolved).await
-        );
-        let mut resolved = std::collections::HashMap::new();
-        assert!(!request_permitted("http://127.0.0.1:8774/", &mut resolved).await);
-        let mut resolved = std::collections::HashMap::new();
-        assert!(request_permitted("about:blank", &mut resolved).await);
-        assert!(
-            !request_permitted("file:///etc/passwd", &mut resolved).await,
+            !request_permitted("file:///etc/passwd").await,
             "a file url must never be permitted"
         );
     }

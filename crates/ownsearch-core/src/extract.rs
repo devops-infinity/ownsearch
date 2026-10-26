@@ -2,6 +2,10 @@ use ego_tree::NodeRef;
 use scraper::Html;
 use scraper::node::Node;
 
+const MAX_TREE_DEPTH: usize = 512;
+const MAX_CANDIDATE_ROOTS: usize = 256;
+const CONTENT_SCAN_STEPS: usize = 2_000_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Extracted {
     pub title: Option<String>,
@@ -75,7 +79,7 @@ pub(crate) fn to_markdown(html: &str, base: &url::Url) -> Extracted {
     prune_boilerplate(&mut document);
     let root = content_root(&document);
     let mut out = String::new();
-    walk(root, &mut out, true, base);
+    walk(root, &mut out, true, base, 0);
     Extracted {
         title: title_of(&document),
         body: tidy(&out),
@@ -87,7 +91,7 @@ pub(crate) fn to_text(html: &str, base: &url::Url) -> Extracted {
     prune_boilerplate(&mut document);
     let root = content_root(&document);
     let mut out = String::new();
-    walk(root, &mut out, false, base);
+    walk(root, &mut out, false, base, 0);
     Extracted {
         title: title_of(&document),
         body: tidy(&out),
@@ -172,18 +176,28 @@ fn content_root(document: &Html) -> NodeRef<'_, Node> {
         return document.tree.root();
     };
     let mut best: Option<(i64, NodeRef<'_, Node>)> = None;
-    for element in document.select(&selector) {
+    let mut steps = CONTENT_SCAN_STEPS;
+    'candidates: for element in document.select(&selector).take(MAX_CANDIDATE_ROOTS) {
         let mut text_chars = 0i64;
         let mut link_chars = 0i64;
         let mut paragraphs = 0i64;
         for descendant in element.descendants() {
+            if steps == 0 {
+                break 'candidates;
+            }
+            steps -= 1;
             if let Node::Text(text) = descendant.value() {
                 let length = i64::try_from(text.trim().chars().count()).unwrap_or(0);
-                let link = descendant.ancestors().any(
-                    |ancestor| matches!(ancestor.value(), Node::Element(node) if node.name() == "a"),
-                );
+                let mut linked = false;
+                for ancestor in descendant.ancestors().take(MAX_TREE_DEPTH) {
+                    steps = steps.saturating_sub(1);
+                    if matches!(ancestor.value(), Node::Element(node) if node.name() == "a") {
+                        linked = true;
+                        break;
+                    }
+                }
                 text_chars = text_chars.saturating_add(length);
-                if link {
+                if linked {
                     link_chars = link_chars.saturating_add(length);
                 }
             } else if let Node::Element(node) = descendant.value()
@@ -240,11 +254,14 @@ pub(crate) fn clean_html(html: &str, base: &url::Url) -> String {
     prune_boilerplate(&mut document);
     let root = content_root(&document);
     let mut out = String::new();
-    clean_node(root, &mut out, base);
+    clean_node(root, &mut out, base, 0);
     tidy(&out)
 }
 
-fn clean_node(node: NodeRef<'_, Node>, out: &mut String, base: &url::Url) {
+fn clean_node(node: NodeRef<'_, Node>, out: &mut String, base: &url::Url, depth: usize) {
+    if depth > MAX_TREE_DEPTH {
+        return;
+    }
     match node.value() {
         Node::Text(text) => {
             let raw = text.to_string();
@@ -266,7 +283,7 @@ fn clean_node(node: NodeRef<'_, Node>, out: &mut String, base: &url::Url) {
             }
             if !ALLOWED_ELEMENTS.contains(&name) {
                 for child in node.children() {
-                    clean_node(child, out, base);
+                    clean_node(child, out, base, depth + 1);
                 }
                 return;
             }
@@ -287,7 +304,7 @@ fn clean_node(node: NodeRef<'_, Node>, out: &mut String, base: &url::Url) {
                 return;
             }
             for child in node.children() {
-                clean_node(child, out, base);
+                clean_node(child, out, base, depth + 1);
             }
             out.push_str("</");
             out.push_str(name);
@@ -298,7 +315,7 @@ fn clean_node(node: NodeRef<'_, Node>, out: &mut String, base: &url::Url) {
         }
         _ => {
             for child in node.children() {
-                clean_node(child, out, base);
+                clean_node(child, out, base, depth + 1);
             }
         }
     }
@@ -328,7 +345,10 @@ pub(crate) fn escape(text: &str) -> String {
     out
 }
 
-fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::Url) {
+fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::Url, depth: usize) {
+    if depth > MAX_TREE_DEPTH {
+        return;
+    }
     match node.value() {
         Node::Text(text) => {
             let text = collapse(text);
@@ -355,7 +375,7 @@ fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::U
                     let href = safe_link(element.attr("href"), base);
                     let start = out.len();
                     for child in node.children() {
-                        walk(child, out, false, base);
+                        walk(child, out, false, base, depth + 1);
                     }
                     if let Some(url) = href
                         && out.len() > start
@@ -365,7 +385,7 @@ fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::U
                     return;
                 }
                 for child in node.children() {
-                    walk(child, out, false, base);
+                    walk(child, out, false, base, depth + 1);
                 }
                 if is_block(name) {
                     block(out);
@@ -379,21 +399,21 @@ fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::U
                     out.push_str(&"#".repeat(usize::try_from(level.unwrap_or(1)).unwrap_or(1)));
                     out.push(' ');
                     for child in node.children() {
-                        walk(child, out, true, base);
+                        walk(child, out, true, base, depth + 1);
                     }
                     block(out);
                 }
                 "p" | "div" | "section" | "article" | "header" | "footer" | "blockquote" => {
                     block(out);
                     for child in node.children() {
-                        walk(child, out, true, base);
+                        walk(child, out, true, base, depth + 1);
                     }
                     block(out);
                 }
                 "ul" | "ol" | "table" | "tr" => {
                     block(out);
                     for child in node.children() {
-                        walk(child, out, true, base);
+                        walk(child, out, true, base, depth + 1);
                     }
                     block(out);
                 }
@@ -401,7 +421,7 @@ fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::U
                     block(out);
                     out.push_str("- ");
                     for child in node.children() {
-                        walk(child, out, true, base);
+                        walk(child, out, true, base, depth + 1);
                     }
                     block(out);
                 }
@@ -410,7 +430,7 @@ fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::U
                     let href = safe_link(element.attr("href"), base);
                     let mut label = String::new();
                     for child in node.children() {
-                        walk(child, &mut label, true, base);
+                        walk(child, &mut label, true, base, depth + 1);
                     }
                     let label = collapse(&label).replace(['[', ']'], "");
                     if label.is_empty() {
@@ -424,21 +444,21 @@ fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::U
                 "strong" | "b" => {
                     out.push_str("**");
                     for child in node.children() {
-                        walk(child, out, true, base);
+                        walk(child, out, true, base, depth + 1);
                     }
                     out.push_str("**");
                 }
                 "em" | "i" => {
                     out.push('*');
                     for child in node.children() {
-                        walk(child, out, true, base);
+                        walk(child, out, true, base, depth + 1);
                     }
                     out.push('*');
                 }
                 "code" => {
                     out.push('`');
                     for child in node.children() {
-                        walk(child, out, true, base);
+                        walk(child, out, true, base, depth + 1);
                     }
                     out.push('`');
                 }
@@ -468,7 +488,7 @@ fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::U
                     out.push('\n');
                     let mut text = String::new();
                     for child in node.children() {
-                        walk(child, &mut text, false, base);
+                        walk(child, &mut text, false, base, depth + 1);
                     }
                     out.push_str(text.trim_end());
                     out.push_str("\n```");
@@ -476,14 +496,14 @@ fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::U
                 }
                 _ => {
                     for child in node.children() {
-                        walk(child, out, true, base);
+                        walk(child, out, true, base, depth + 1);
                     }
                 }
             }
         }
         _ => {
             for child in node.children() {
-                walk(child, out, markdown, base);
+                walk(child, out, markdown, base, depth + 1);
             }
         }
     }
@@ -559,6 +579,38 @@ mod tests {
 
     fn base() -> url::Url {
         url::Url::parse("https://searx.example/").expect("base")
+    }
+
+    #[test]
+    fn deeply_nested_markup_is_cut_at_the_depth_cap() {
+        let mut html = String::from("<html><body><div>shallow</div>");
+        for _ in 0..MAX_TREE_DEPTH + 200 {
+            html.push_str("<div>");
+        }
+        html.push_str("beyond");
+        for _ in 0..MAX_TREE_DEPTH + 200 {
+            html.push_str("</div>");
+        }
+        html.push_str("</body></html>");
+        let text = to_text(&html, &base());
+        assert!(text.body.contains("shallow"));
+        assert!(!text.body.contains("beyond"));
+        let markdown = to_markdown(&html, &base());
+        assert!(markdown.body.contains("shallow"));
+        assert!(!markdown.body.contains("beyond"));
+        let cleaned = clean_html(&html, &base());
+        assert!(cleaned.contains("shallow"));
+    }
+
+    #[test]
+    fn a_page_with_thousands_of_blocks_is_extracted_in_one_pass() {
+        let mut html = String::from("<html><body>");
+        for _ in 0..5_000 {
+            html.push_str("<div><p>paragraph</p></div>");
+        }
+        html.push_str("<div><p>last block</p></div></body></html>");
+        let extracted = to_markdown(&html, &base());
+        assert!(extracted.body.contains("paragraph"));
     }
 
     #[test]
