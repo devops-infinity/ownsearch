@@ -96,7 +96,7 @@ impl Ledger {
     pub fn open(path: impl Into<PathBuf>, key: &[u8]) -> Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent() {
-            create_private_dir(parent)?;
+            crate::fsutil::create_private_dir(parent).map_err(ledger_error)?;
         }
         let mut file = open_file(&path)?;
         lock_file(&file, &path)?;
@@ -457,7 +457,7 @@ pub fn load_or_create_key(path: &Path) -> Result<[u8; 32]> {
             getrandom::fill(&mut key)
                 .map_err(|error| Error::Ledger(format!("os random: {error}")))?;
             if let Some(parent) = path.parent() {
-                create_private_dir(parent)?;
+                crate::fsutil::create_private_dir(parent).map_err(ledger_error)?;
             }
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
@@ -504,6 +504,10 @@ fn open_append(path: &Path) -> Result<File> {
     Ok(file)
 }
 
+fn ledger_error(error: Error) -> Error {
+    Error::Ledger(error.to_string())
+}
+
 fn open_file(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
@@ -538,25 +542,6 @@ fn lock_file(file: &File, path: &Path) -> Result<()> {
 fn open_read(path: &Path) -> Result<File> {
     File::open(path)
         .map_err(|error| Error::Ledger(format!("cannot read {}: {error}", path.display())))
-}
-
-fn create_private_dir(path: &Path) -> Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder
-        .create(path)
-        .map_err(|error| Error::Ledger(format!("cannot create {}: {error}", path.display())))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -261,7 +261,7 @@ fn checksum(sql: &str) -> String {
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            create_private_dir(parent)?;
+            crate::fsutil::create_private_dir(parent)?;
         }
         let writer = Connection::open(path)?;
         configure(&writer)?;
@@ -594,7 +594,7 @@ impl Store {
             )
             .optional()?;
         if let Some((instance_id, previous_type, previous_metrics)) = existing {
-            let metrics = serde_json::to_string(record).unwrap_or_default();
+            let metrics = serde_json::to_string(record)?;
             let changed = previous_type != record.kind.as_str()
                 || previous_metrics.as_deref() != Some(metrics.as_str());
             connection.execute(
@@ -638,7 +638,7 @@ impl Store {
                 changed,
             })
         } else {
-            let metrics = serde_json::to_string(record).unwrap_or_default();
+            let metrics = serde_json::to_string(record)?;
             let slug = unique_slug(connection, &record.url)?;
             connection.execute(
                 "INSERT INTO instances (instance_slug, normalized_url, url_digest_sha256, host, instance_kind, lifecycle_status,
@@ -1008,8 +1008,13 @@ impl Store {
         })?;
         for row in rows {
             let (instance_id, raw) = row?;
-            if let Ok(metrics) = serde_json::from_str(&raw) {
-                out.insert(instance_id, metrics);
+            match serde_json::from_str(&raw) {
+                Ok(metrics) => {
+                    out.insert(instance_id, metrics);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, instance_id, "the stored discovery metrics do not parse")
+                }
             }
         }
         Ok(out)
@@ -1035,10 +1040,7 @@ impl Store {
         let reader = self.reader_conn()?;
         let mut statement = reader.prepare("SELECT normalized_url FROM instances")?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -1161,10 +1163,7 @@ impl Store {
         params_vec.push(limit_box.as_ref());
         params_vec.push(offset_box.as_ref());
         let rows = statement.query_map(params_vec.as_slice(), map_instance_row)?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -1224,10 +1223,7 @@ impl Store {
                     consecutive_failures: row.get(6)?,
                 })
             })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -1263,10 +1259,7 @@ impl Store {
                     network_group: row.get(8)?,
                 })
             })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -1279,10 +1272,7 @@ impl Store {
               WHERE i.instance_id = ?1 ORDER BY e.engine_name",
         )?;
         let rows = statement.query_map(params![instance_id], |row| row.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -1295,10 +1285,7 @@ impl Store {
               WHERE i.instance_id = ?1 ORDER BY c.category_name",
         )?;
         let rows = statement.query_map(params![instance_id], |row| row.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -1484,10 +1471,7 @@ impl Store {
                 .query_map(params![offset, limit], mapper)?
                 .collect::<Vec<_>>(),
         };
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows.into_iter())?;
         Ok(out)
     }
 
@@ -1548,7 +1532,7 @@ impl Store {
         let snapshot = self.export_snapshot()?;
         let payload = serde_json::to_vec_pretty(&snapshot)?;
         if let Some(parent) = path.parent() {
-            create_private_dir(parent)?;
+            crate::fsutil::create_private_dir(parent)?;
         }
         crate::fsutil::write_atomic(path, &payload)?;
         let count = snapshot
@@ -1561,7 +1545,7 @@ impl Store {
 
     pub fn backup(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
-            create_private_dir(parent)?;
+            crate::fsutil::create_private_dir(parent)?;
         }
         if path.exists() {
             return Err(Error::State(format!(
@@ -1832,10 +1816,7 @@ impl Store {
                 "updatedAt": row.get::<_, String>(8)?,
             }))
         })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -2071,10 +2052,7 @@ impl Store {
                         }))
                     },
                 )?;
-                let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
-                }
+                let out = collect_rows(rows)?;
                 Ok(json!({"entity": entity.as_str(), "count": out.len(), "rows": out}))
             }
             QueryEntity::Overrides => {
@@ -2140,10 +2118,7 @@ impl Store {
                         }))
                     },
                 )?;
-                let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
-                }
+                let out = collect_rows(rows)?;
                 Ok(json!({"entity": entity.as_str(), "count": out.len(), "rows": out}))
             }
             QueryEntity::Snapshots => {
@@ -2168,10 +2143,7 @@ impl Store {
                         }))
                     },
                 )?;
-                let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
-                }
+                let out = collect_rows(rows)?;
                 Ok(json!({"entity": entity.as_str(), "count": out.len(), "rows": out}))
             }
             QueryEntity::Runs => {
@@ -2200,10 +2172,7 @@ impl Store {
                         }))
                     },
                 )?;
-                let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
-                }
+                let out = collect_rows(rows)?;
                 Ok(json!({"entity": entity.as_str(), "count": out.len(), "rows": out}))
             }
         }
@@ -2315,10 +2284,7 @@ fn collect_counts(connection: &Connection, sql: &str) -> Result<Vec<(String, i64
     let rows = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
-    }
+    let out = collect_rows(rows)?;
     Ok(out)
 }
 
@@ -2339,6 +2305,14 @@ fn upsert_name(
         |row| row.get(0),
     )?;
     Ok(id)
+}
+
+fn collect_rows<T>(rows: impl Iterator<Item = rusqlite::Result<T>>) -> Result<Vec<T>> {
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
 
 fn map_instance_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstanceRow> {
@@ -2424,28 +2398,6 @@ pub fn instance_to_json(row: &InstanceRow) -> Value {
         "denied": row.denied,
         "addedAt": row.added_at,
     })
-}
-
-fn create_private_dir(path: &Path) -> Result<()> {
-    if path.as_os_str().is_empty() {
-        return Ok(());
-    }
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder
-        .create(path)
-        .map_err(|error| Error::State(format!("cannot create {}: {error}", path.display())))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
-    }
-    Ok(())
 }
 
 fn lock_down_file(path: &Path) -> Result<()> {

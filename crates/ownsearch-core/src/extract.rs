@@ -1,3 +1,4 @@
+use crate::sanitize::sanitize;
 use ego_tree::NodeRef;
 use scraper::Html;
 use scraper::node::Node;
@@ -16,7 +17,7 @@ pub(crate) fn from_pdf_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut paragraph = String::new();
     for raw in text.replace('\r', "\n").lines() {
-        let line = collapse(raw);
+        let line = sanitize(raw);
         if line.is_empty() {
             if !paragraph.is_empty() {
                 out.push_str(&paragraph);
@@ -45,7 +46,7 @@ pub(crate) fn title_of(document: &Html) -> Option<String> {
     document
         .select(&selector)
         .next()
-        .map(|element| collapse(&element.text().collect::<String>()))
+        .map(|element| sanitize(&element.text().collect::<String>()))
         .filter(|text| !text.is_empty())
 }
 
@@ -265,7 +266,7 @@ fn clean_node(node: NodeRef<'_, Node>, out: &mut String, base: &url::Url, depth:
     match node.value() {
         Node::Text(text) => {
             let raw = text.to_string();
-            let text = collapse(&raw);
+            let text = sanitize(&raw);
             if !text.is_empty() {
                 if !out.is_empty() && !out.ends_with([' ', '\n', '>']) {
                     out.push(' ');
@@ -351,7 +352,7 @@ fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::U
     }
     match node.value() {
         Node::Text(text) => {
-            let text = collapse(text);
+            let text = sanitize(text);
             if !text.is_empty() {
                 if !out.is_empty() && !out.ends_with([' ', '\n']) {
                     out.push(' ');
@@ -432,7 +433,7 @@ fn walk(node: NodeRef<'_, Node>, out: &mut String, markdown: bool, base: &url::U
                     for child in node.children() {
                         walk(child, &mut label, true, base, depth + 1);
                     }
-                    let label = collapse(&label).replace(['[', ']'], "");
+                    let label = sanitize(&label).replace(['[', ']'], "");
                     if label.is_empty() {
                         return;
                     }
@@ -547,10 +548,6 @@ fn block(out: &mut String) {
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
-}
-
-fn collapse(text: &str) -> String {
-    crate::sanitize::sanitize(text)
 }
 
 fn tidy(text: &str) -> String {

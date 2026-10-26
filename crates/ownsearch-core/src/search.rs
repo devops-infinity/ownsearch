@@ -112,54 +112,12 @@ pub async fn search(
         ctx.fleet_generation(),
         ctx.hash_args(&request.canonical())
     );
-    if let Some((cached, age)) = ctx.cache.get(&cache_key)?
-        && let Ok(mut output) = serde_json::from_value::<SearchOutput>((*cached).clone())
-    {
-        output.cache = CacheInfo {
-            enabled: true,
-            hit: true,
-            age_secs: Some(age),
-        };
-        ctx.metrics.count_cache_hit();
-        return Ok(SearchOutcome {
-            instances: output.sources.selected.clone(),
-            output,
-            cache_hit: true,
-            cache_age: Some(age),
-            parser: None,
-            http_class: Some("cache".to_owned()),
-            bytes: 0,
-        });
+    if let Some(outcome) = cached_search(ctx, &cache_key)? {
+        return Ok(outcome);
     }
     let _search_slot = ctx.acquire_search().await?;
-    {
-        let ctx = Arc::clone(ctx);
-        blocking_store(move || ctx.ensure_bootstrap()).await?;
-    }
     let mut warnings: Vec<String> = Vec::new();
-    if !ctx.settings.offline() {
-        let budget = Duration::from_secs(SEARCH_DISCOVERY_BUDGET_SECS);
-        match tokio::time::timeout(budget, crate::scanner::refresh_discovery(ctx, false, cancellation))
-            .await
-        {
-            Ok(Ok(outcome)) => {
-                if let Some(error) = outcome.error {
-                    warnings.push(format!("discovery refresh failed: {error}"));
-                }
-            }
-            Ok(Err(error)) => warnings.push(format!("discovery refresh failed: {error}")),
-            Err(_) => warnings.push(format!(
-                "discovery refresh took longer than {SEARCH_DISCOVERY_BUDGET_SECS} seconds and was skipped; the stored fleet answered this search"
-            )),
-        }
-    }
-    let (rows, fleet_warning) = {
-        let ctx = Arc::clone(ctx);
-        blocking_store(move || resolve_fleet(&ctx)).await?
-    };
-    if let Some(warning) = fleet_warning {
-        warnings.push(warning);
-    }
+    let rows = prepare_fleet(ctx, cancellation, &mut warnings).await?;
     let rotation = ctx.settings.round_robin().then(|| {
         ctx.next_rotation(rotation_span(
             rows.len(),
@@ -229,58 +187,18 @@ pub async fn search(
             outcomes.push(outcome);
         }
     }
-    let mut observations: Vec<Observation> = Vec::new();
-    let mut failed: Vec<SourceFailure> = Vec::new();
-    let mut succeeded: Vec<i64> = Vec::new();
-    let mut parser_seen: Option<String> = None;
-    let mut http_class: Option<String> = None;
-    for outcome in outcomes {
-        if let Some(failure) = outcome.failure {
-            failed.push(failure);
-            continue;
-        }
-        succeeded.push(outcome.instance_id);
-        if parser_seen.is_none() {
-            parser_seen.clone_from(&outcome.parser);
-        }
-        if http_class.is_none() {
-            http_class.clone_from(&outcome.http_class);
-        }
-        observations.extend(outcome.observations);
-    }
+    let OutcomeSummary {
+        observations,
+        failed,
+        succeeded,
+        parser,
+        http_class,
+    } = summarise_outcomes(outcomes);
     let merged = merge(observations, request.limit, SNIPPET_CHARS);
-    let results: Vec<SearchResultItem> = merged
-        .results
-        .iter()
-        .map(|result| SearchResultItem {
-            title: result.title.clone(),
-            url: result.url.clone(),
-            snippet: result.snippet.clone(),
-            engines: Some(result.engines.clone()),
-            sources: Some(
-                result
-                    .sources
-                    .iter()
-                    .map(|source| SourceObservation {
-                        instance_id: source.instance_id,
-                        instance_slug: crate::types::instance_slug(&source.instance_url),
-                        instance_url: source.instance_url.clone(),
-                        engine: source.engine.clone(),
-                        parser: source.parser.clone(),
-                        rank: source.rank,
-                        score: source.instance_score,
-                    })
-                    .collect(),
-            ),
-            published_date: result.published_date.clone(),
-            score: result.score,
-            rank: result.rank,
-            kind: Some(result.kind.clone()),
-            truncated: Some(result.truncated),
-        })
-        .collect();
+    let results = result_items(&merged);
     let attempted = attempted_ids.len();
     let succeeded_count = succeeded.len();
+    let partial = !failed.is_empty();
     let mut fallbacks: Vec<i64> = results
         .iter()
         .filter_map(|result| result.sources.as_ref())
@@ -304,7 +222,7 @@ pub async fn search(
             succeeded: succeeded_count,
             results_before_merge: merged.results_before_merge,
             duplicate_groups: merged.duplicate_groups,
-            partial: !failed.is_empty(),
+            partial,
         },
         cache: CacheInfo {
             enabled: ctx.cache.enabled(),
@@ -333,10 +251,138 @@ pub async fn search(
         cache_hit: false,
         cache_age: None,
         instances: attempted_ids,
-        parser: parser_seen,
+        parser,
         http_class,
         bytes,
     })
+}
+
+fn cached_search(ctx: &Arc<ToolContext>, cache_key: &str) -> Result<Option<SearchOutcome>> {
+    let Some((cached, age)) = ctx.cache.get(cache_key)? else {
+        return Ok(None);
+    };
+    let Ok(mut output) = serde_json::from_value::<SearchOutput>((*cached).clone()) else {
+        return Ok(None);
+    };
+    output.cache = CacheInfo {
+        enabled: true,
+        hit: true,
+        age_secs: Some(age),
+    };
+    ctx.metrics.count_cache_hit();
+    Ok(Some(SearchOutcome {
+        instances: output.sources.selected.clone(),
+        output,
+        cache_hit: true,
+        cache_age: Some(age),
+        parser: None,
+        http_class: Some("cache".to_owned()),
+        bytes: 0,
+    }))
+}
+
+async fn prepare_fleet(
+    ctx: &Arc<ToolContext>,
+    cancellation: &CancellationToken,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<InstanceRow>> {
+    {
+        let ctx = Arc::clone(ctx);
+        blocking_store(move || ctx.ensure_bootstrap()).await?;
+    }
+    if !ctx.settings.offline() {
+        let budget = Duration::from_secs(SEARCH_DISCOVERY_BUDGET_SECS);
+        match tokio::time::timeout(
+            budget,
+            crate::scanner::refresh_discovery(ctx, false, cancellation),
+        )
+        .await
+        {
+            Ok(Ok(outcome)) => {
+                if let Some(error) = outcome.error {
+                    warnings.push(format!("discovery refresh failed: {error}"));
+                }
+            }
+            Ok(Err(error)) => warnings.push(format!("discovery refresh failed: {error}")),
+            Err(_) => warnings.push(format!(
+                "discovery refresh took longer than {SEARCH_DISCOVERY_BUDGET_SECS} seconds and was skipped; the stored fleet answered this search"
+            )),
+        }
+    }
+    let (rows, fleet_warning) = {
+        let ctx = Arc::clone(ctx);
+        blocking_store(move || resolve_fleet(&ctx)).await?
+    };
+    if let Some(warning) = fleet_warning {
+        warnings.push(warning);
+    }
+    Ok(rows)
+}
+
+struct OutcomeSummary {
+    observations: Vec<Observation>,
+    failed: Vec<SourceFailure>,
+    succeeded: Vec<i64>,
+    parser: Option<String>,
+    http_class: Option<String>,
+}
+
+fn summarise_outcomes(outcomes: Vec<SourceOutcome>) -> OutcomeSummary {
+    let mut summary = OutcomeSummary {
+        observations: Vec::new(),
+        failed: Vec::new(),
+        succeeded: Vec::new(),
+        parser: None,
+        http_class: None,
+    };
+    for outcome in outcomes {
+        if let Some(failure) = outcome.failure {
+            summary.failed.push(failure);
+            continue;
+        }
+        summary.succeeded.push(outcome.instance_id);
+        if summary.parser.is_none() {
+            summary.parser.clone_from(&outcome.parser);
+        }
+        if summary.http_class.is_none() {
+            summary.http_class.clone_from(&outcome.http_class);
+        }
+        summary.observations.extend(outcome.observations);
+    }
+    summary
+}
+
+fn result_items(merged: &crate::merge::MergeOutput) -> Vec<SearchResultItem> {
+    merged
+        .results
+        .iter()
+        .map(|result| SearchResultItem {
+            title: result.title.clone(),
+            url: result.url.clone(),
+            snippet: result.snippet.clone(),
+            engines: Some(result.engines.clone()),
+            sources: Some(
+                result
+                    .sources
+                    .iter()
+                    .map(|source| SourceObservation {
+                        instance_id: source.instance_id,
+                        instance_slug: crate::types::instance_slug(&source.instance_url),
+                        instance_url: source.instance_url.clone(),
+                        engine: source.engine.clone(),
+                        parser: source.parser.clone(),
+                        rank: source.rank,
+                        score: source.instance_score,
+                    })
+                    .collect(),
+            ),
+            published_date: result.published_date.clone(),
+            score: result.score,
+            rank: result.rank,
+            kind: Some(result.kind.clone()),
+            truncated: Some(result.truncated),
+        })
+        .collect()
 }
 
 fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)> {

@@ -28,7 +28,6 @@ pub async fn call(
     arguments: Option<&Map<String, Value>>,
     cancellation: &CancellationToken,
 ) -> CallToolResult {
-    ctx.metrics.count_call();
     let started = Instant::now();
     let args_value = arguments
         .map(|map| Value::Object(map.clone()))
@@ -62,7 +61,6 @@ pub async fn call(
             result.into_call_tool_result()
         }
         Err(error) => {
-            ctx.metrics.count_error();
             if error.is_internal() {
                 tracing::error!(
                     tool = %tool_name,
@@ -391,7 +389,7 @@ async fn run_scan(
 }
 
 fn session(ctx: &Arc<ToolContext>, args: SessionArgs) -> Result<ToolOutcome> {
-    let (calls, errors, cache_hits) = ctx.metrics.snapshot();
+    let (calls, errors, cache_hits) = ctx.metrics.session_snapshot();
     let totals = ctx.ledger.totals();
     let (entries, head) = ctx.ledger.head();
     let counts = ctx.store.counts()?;

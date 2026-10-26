@@ -1,6 +1,49 @@
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
+
+const LOCK_WAIT: Duration = Duration::from_secs(2);
+
+pub(crate) fn create_private_dir(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(path)
+        .map_err(|error| Error::State(format!("cannot create {}: {error}", path.display())))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(())
+}
+
+fn open_private(path: &Path, append: bool) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.truncate(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .map_err(|error| Error::State(format!("cannot open {}: {error}", path.display())))
+}
 
 pub fn write_atomic(path: &Path, payload: &[u8]) -> Result<()> {
     let parent = path
@@ -39,16 +82,7 @@ pub fn write_atomic(path: &Path, payload: &[u8]) -> Result<()> {
 pub(crate) fn append_line(path: &Path, line: &str) -> Result<()> {
     with_file_lock(path, || {
         use std::io::Write as _;
-        let mut options = std::fs::OpenOptions::new();
-        options.append(true).create(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(path).map_err(|error| {
-            Error::State(format!("cannot append to {}: {error}", path.display()))
-        })?;
+        let mut file = open_private(path, true)?;
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         file.sync_data()?;
@@ -92,15 +126,22 @@ pub(crate) fn trim_lines(path: &Path, keep: impl Fn(&str) -> bool) -> Result<usi
 
 pub(crate) fn with_file_lock<T>(path: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
     let lock = path.with_extension("lock");
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock)
-        .map_err(|error| Error::State(format!("cannot open {}: {error}", lock.display())))?;
-    file.lock()
-        .map_err(|error| Error::State(format!("cannot lock {}: {error}", lock.display())))?;
+    let file = open_private(&lock, false)?;
+    let started = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(_) if started.elapsed() < LOCK_WAIT => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => {
+                return Err(Error::State(format!(
+                    "another process holds {}: {error}",
+                    lock.display()
+                )));
+            }
+        }
+    }
     let value = work();
     let _ = file.unlock();
     value

@@ -109,59 +109,7 @@ impl CrudService {
         let validated = self.validate(&request)?;
         let fingerprint = fingerprint(&validated);
         if request.dry_run {
-            let preview = self.preview(&validated)?;
-            let token = new_token()?;
-            let digest = token_digest(&token);
-            let mut state = self.lock()?;
-            prune_expired(&mut state);
-            if state.pending.len() >= MAX_PENDING_PREVIEWS {
-                return Err(Error::PolicyRefused(format!(
-                    "{} previews are already waiting for a decision; apply or let them expire before asking for another",
-                    MAX_PENDING_PREVIEWS
-                )));
-            }
-            state.previews = state.previews.saturating_add(1);
-            state.pending.insert(
-                digest,
-                Pending {
-                    fingerprint,
-                    instance_id: validated.instance_id,
-                    entity: validated.entity,
-                    operation: validated.operation,
-                    fields: validated.fields.clone(),
-                    reason: validated.reason.clone(),
-                    expires_at: Instant::now() + self.confirm_ttl,
-                    used: false,
-                },
-            );
-            if let Err(error) = self.store.append_event(&EventRecord {
-                kind: "ai_crud_preview".to_owned(),
-                instance_id: Some(validated.instance_id),
-                run_id: None,
-                probe_id: None,
-                old_value: None,
-                new_value: Some(validated.operation.as_str().to_owned()),
-                reasons: vec!["ai.preview".to_owned()],
-                payload: Some(json!({
-                    "entity": validated.entity.as_str(),
-                    "fields": validated.fields,
-                    "reason": validated.reason,
-                })),
-            }) {
-                tracing::warn!(%error, "the preview event could not be written");
-            }
-            return Ok(DbCrudOutput {
-                operation: validated.operation.as_str().to_owned(),
-                entity: validated.entity.as_str().to_owned(),
-                applied: false,
-                dry_run: true,
-                confirmation_token: Some(token),
-                expires_in_secs: Some(self.confirm_ttl.as_secs()),
-                before: preview.before,
-                after: preview.after,
-                refused_reasons: Vec::new(),
-                record: None,
-            });
+            return self.preview_change(&validated, fingerprint);
         }
         let token = request
             .confirmation_token
@@ -248,6 +196,62 @@ impl CrudService {
             after: None,
             refused_reasons: Vec::new(),
             record: record.as_ref().map(crate::db::instance_to_json),
+        })
+    }
+
+    fn preview_change(&self, validated: &Validated, fingerprint: String) -> Result<DbCrudOutput> {
+        let preview = self.preview(validated)?;
+        let token = new_token()?;
+        let digest = token_digest(&token);
+        let mut state = self.lock()?;
+        prune_expired(&mut state);
+        if state.pending.len() >= MAX_PENDING_PREVIEWS {
+            return Err(Error::PolicyRefused(format!(
+                "{} previews are already waiting for a decision; apply or let them expire before asking for another",
+                MAX_PENDING_PREVIEWS
+            )));
+        }
+        state.previews = state.previews.saturating_add(1);
+        state.pending.insert(
+            digest,
+            Pending {
+                fingerprint,
+                instance_id: validated.instance_id,
+                entity: validated.entity,
+                operation: validated.operation,
+                fields: validated.fields.clone(),
+                reason: validated.reason.clone(),
+                expires_at: Instant::now() + self.confirm_ttl,
+                used: false,
+            },
+        );
+        if let Err(error) = self.store.append_event(&EventRecord {
+            kind: "ai_crud_preview".to_owned(),
+            instance_id: Some(validated.instance_id),
+            run_id: None,
+            probe_id: None,
+            old_value: None,
+            new_value: Some(validated.operation.as_str().to_owned()),
+            reasons: vec!["ai.preview".to_owned()],
+            payload: Some(json!({
+                "entity": validated.entity.as_str(),
+                "fields": validated.fields.clone(),
+                "reason": validated.reason.clone(),
+            })),
+        }) {
+            tracing::warn!(%error, "the preview event could not be written");
+        }
+        Ok(DbCrudOutput {
+            operation: validated.operation.as_str().to_owned(),
+            entity: validated.entity.as_str().to_owned(),
+            applied: false,
+            dry_run: true,
+            confirmation_token: Some(token),
+            expires_in_secs: Some(self.confirm_ttl.as_secs()),
+            before: preview.before,
+            after: preview.after,
+            refused_reasons: Vec::new(),
+            record: None,
         })
     }
 

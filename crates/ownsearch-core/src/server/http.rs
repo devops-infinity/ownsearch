@@ -286,20 +286,29 @@ impl Listener for LimitedListener {
             match self.inner.accept().await {
                 Ok((stream, address)) => {
                     let client_ip = address.ip();
-                    let tracked = !client_ip.is_loopback();
-                    let allowed = !tracked
-                        || self
-                            .per_ip
-                            .lock()
-                            .map(|mut counts| {
+                    let counted = !client_ip.is_loopback();
+                    let (allowed, counted) = if !counted {
+                        (true, false)
+                    } else {
+                        match self.per_ip.lock() {
+                            Ok(mut counts) => {
                                 let entry = counts.entry(client_ip).or_insert(0);
                                 if *entry >= MAX_CONNECTIONS_PER_IP {
-                                    return false;
+                                    (false, false)
+                                } else {
+                                    *entry += 1;
+                                    (true, true)
                                 }
-                                *entry += 1;
-                                true
-                            })
-                            .unwrap_or(false);
+                            }
+                            Err(error) => {
+                                tracing::error!(
+                                    %error,
+                                    "the connection counter is poisoned; accepting the connection untracked"
+                                );
+                                (true, false)
+                            }
+                        }
+                    };
                     if !allowed {
                         drop(stream);
                         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -310,7 +319,7 @@ impl Listener for LimitedListener {
                             inner: stream,
                             _permit: permit,
                             client_ip,
-                            tracked,
+                            tracked: counted,
                             per_ip: Arc::clone(&self.per_ip),
                             header_deadline: Instant::now() + Duration::from_secs(HEADER_READ_SECS),
                             header_done: false,

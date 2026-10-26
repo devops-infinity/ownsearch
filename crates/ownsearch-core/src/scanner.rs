@@ -19,7 +19,7 @@ use crate::quality::{
 };
 use crate::response::{ScanOutput, StatusChange};
 use crate::searxng::{ProbeReport, SearchQuery, config_client, search_html, search_json};
-use crate::time::{now_rfc3339, now_unix, rfc3339};
+use crate::time::{jitter, now_rfc3339, now_unix, rfc3339};
 use crate::tls_probe::TlsReport;
 use crate::types::{InstanceStatus, ProbeKind, ProbeOutcome};
 
@@ -782,16 +782,6 @@ async fn record_is_public(url: &str, allow_private: bool) -> bool {
     }
 }
 
-async fn jitter(max_ms: u64) {
-    if max_ms == 0 {
-        return;
-    }
-    let mut bytes = [0u8; 8];
-    let _ = getrandom::fill(&mut bytes);
-    let spread = u64::from_le_bytes(bytes) % max_ms.saturating_add(1);
-    tokio::time::sleep(std::time::Duration::from_millis(spread)).await;
-}
-
 async fn probe_one(
     ctx: &ToolContext,
     target: &ScanTarget,
@@ -889,18 +879,18 @@ async fn probe_one_inner(
         .discovery_metrics(target.instance_id)
         .ok()
         .flatten();
-    let evidence = build_evidence(
-        metrics.as_ref(),
-        &tls,
-        config.as_ref(),
-        config_outcome.is_success(),
+    let evidence = build_evidence(ProbeEvidence {
+        metrics: metrics.as_ref(),
+        tls: &tls,
+        config: config.as_ref(),
+        config_ok: config_outcome.is_success(),
         json_outcome,
         html_outcome,
         google_outcome,
         parser_drift,
-        target.consecutive_successes,
-        target.consecutive_failures,
-    );
+        successes: target.consecutive_successes,
+        failures: target.consecutive_failures,
+    });
     let assessment = assess(
         &evidence,
         crate::quality::Policy {
@@ -1052,11 +1042,10 @@ fn failed_probe(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_evidence(
-    metrics: Option<&DiscoveredInstance>,
-    tls: &TlsReport,
-    config: Option<&config_client::ConfigDocument>,
+struct ProbeEvidence<'a> {
+    metrics: Option<&'a DiscoveredInstance>,
+    tls: &'a TlsReport,
+    config: Option<&'a config_client::ConfigDocument>,
     config_ok: bool,
     json_outcome: ProbeOutcome,
     html_outcome: Option<ProbeOutcome>,
@@ -1064,7 +1053,21 @@ fn build_evidence(
     parser_drift: bool,
     successes: i64,
     failures: i64,
-) -> Evidence {
+}
+
+fn build_evidence(input: ProbeEvidence<'_>) -> Evidence {
+    let ProbeEvidence {
+        metrics,
+        tls,
+        config,
+        config_ok,
+        json_outcome,
+        html_outcome,
+        google_outcome,
+        parser_drift,
+        successes,
+        failures,
+    } = input;
     let version = config
         .and_then(|document| document.version.clone())
         .or_else(|| metrics.and_then(|item| item.version.clone()));

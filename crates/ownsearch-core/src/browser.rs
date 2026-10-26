@@ -331,7 +331,7 @@ fn start_watchdog(inner: &Arc<RenderInner>) {
 }
 
 async fn launch(inner: &Arc<RenderInner>) -> Result<Session> {
-    create_private_dir(&inner.profile)?;
+    crate::fsutil::create_private_dir(&inner.profile)?;
     let mut builder = BrowserConfig::builder()
         .user_data_dir(&inner.profile)
         .arg("--no-proxy-server");
@@ -379,22 +379,25 @@ async fn shutdown(session: &mut Option<Session>) {
         return;
     };
     let close = Duration::from_secs(5);
-    let _ = tokio::time::timeout(close, current.browser.close()).await;
-    let _ = tokio::time::timeout(close, current.browser.wait()).await;
-    let _ = tokio::time::timeout(close, current.browser.kill()).await;
+    let closed = tokio::time::timeout(close, current.browser.close())
+        .await
+        .is_ok_and(|result| result.is_ok());
+    let waited = tokio::time::timeout(close, current.browser.wait())
+        .await
+        .is_ok();
+    let stopped = (closed && waited)
+        || tokio::time::timeout(close, current.browser.kill())
+            .await
+            .is_ok_and(|killed| killed.is_none_or(|status| status.is_ok()));
     current.handler.abort();
-    discard_profile(&current.profile);
-}
-
-fn create_private_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path)
-        .map_err(|error| Error::State(format!("cannot create {}: {error}", path.display())))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+    if stopped {
+        discard_profile(&current.profile);
+        return;
     }
-    Ok(())
+    tracing::warn!(
+        profile = %current.profile.display(),
+        "the browser did not stop; its profile is kept for the next reap"
+    );
 }
 
 fn discard_profile(path: &Path) {

@@ -3,6 +3,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::client::{FleetClient, search_url};
+use crate::sanitize::sanitize;
 use crate::searxng::{ProbeReport, SearchQuery, classify_outcome};
 
 const MAX_PARSED_RESULTS: usize = 200;
@@ -52,7 +53,7 @@ impl HtmlSearch {
                 .and_then(|selector| element.select(selector).next());
             let href = anchor.and_then(|anchor| anchor.value().attr("href"));
             let title = anchor
-                .map(|anchor| collapse(&anchor.text().collect::<String>()))
+                .map(|anchor| sanitize(&anchor.text().collect::<String>()))
                 .unwrap_or_default();
             let url = href
                 .and_then(|href| base.join(href).ok())
@@ -66,12 +67,12 @@ impl HtmlSearch {
             let snippet_text = snippet
                 .as_ref()
                 .and_then(|selector| element.select(selector).next())
-                .map(|node| collapse(&node.text().collect::<String>()))
+                .map(|node| sanitize(&node.text().collect::<String>()))
                 .filter(|text| !text.is_empty());
             let mut engine_names: Vec<String> = Vec::new();
             if let Some(selector) = &engine_spans {
                 for node in element.select(selector) {
-                    let text = collapse(&node.text().collect::<String>());
+                    let text = sanitize(&node.text().collect::<String>());
                     if !text.is_empty() && !engine_names.contains(&text) {
                         engine_names.push(text);
                     }
@@ -81,7 +82,7 @@ impl HtmlSearch {
                 && let Some(selector) = &engine_single
                 && let Some(node) = element.select(selector).next()
             {
-                let text = collapse(&node.text().collect::<String>());
+                let text = sanitize(&node.text().collect::<String>());
                 if !text.is_empty() {
                     engine_names.push(text);
                 }
@@ -108,10 +109,6 @@ impl HtmlSearch {
 
 fn selector(raw: &str) -> Option<Selector> {
     Selector::parse(raw).ok()
-}
-
-fn collapse(text: &str) -> String {
-    crate::sanitize::sanitize(text)
 }
 
 pub async fn fetch(

@@ -63,17 +63,8 @@ pub async fn fetch(
         ctx.fleet_generation(),
         ctx.hash_args(&canonical)
     );
-    if let Some((cached, age)) = ctx.cache.get(&cache_key)?
-        && let Ok(mut output) = serde_json::from_value::<FetchOutput>((*cached).clone())
-    {
-        output.cache_hit = true;
-        output.cached_age_secs = Some(age);
-        ctx.metrics.count_cache_hit();
-        return Ok(FetchOutcome {
-            bytes: 0,
-            cache_hit: true,
-            output,
-        });
+    if let Some(outcome) = cached_fetch(ctx, &cache_key)? {
+        return Ok(outcome);
     }
     let budget = std::time::Duration::from_secs(ctx.settings.fetch_deadline_secs().max(5));
     let deadline = tokio::time::Instant::now() + budget;
@@ -123,20 +114,7 @@ pub async fn fetch(
             cached_age_secs: None,
             elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
-        if ctx.cache.enabled()
-            && let Ok(value) = serde_json::to_value(&output)
-            && let Err(error) = ctx.cache.put(cache_key, Arc::new(value))
-        {
-            tracing::warn!(%error, "the fetched page was not cached");
-        }
-        let bytes = serde_json::to_vec(&output)
-            .map(|body| body.len() as u64)
-            .unwrap_or(0);
-        return Ok(FetchOutcome {
-            output,
-            cache_hit: false,
-            bytes,
-        });
+        return Ok(cached_outcome(ctx, cache_key, output));
     }
     let body = fetched.text();
     let is_html = fetched.is_html() || looks_like_html(&body);
@@ -145,23 +123,7 @@ pub async fn fetch(
     } else {
         Vec::new()
     };
-    let (title, content) = match (request.format, is_html) {
-        (FetchFormat::Html, true) => (
-            extract::title_from_html(&body),
-            extract::clean_html(&body, &url),
-        ),
-        (FetchFormat::Html, false) => (None, body.clone()),
-        (FetchFormat::Markdown, true) => {
-            let extracted = extract::to_markdown(&body, &url);
-            (extracted.title, extracted.body)
-        }
-        (FetchFormat::Markdown, false) => (None, body.clone()),
-        (FetchFormat::Text, true) => {
-            let extracted = extract::to_text(&body, &url);
-            (extracted.title, extracted.body)
-        }
-        (FetchFormat::Text, false) => (None, body.clone()),
-    };
+    let (title, content) = extract_content(request, &body, is_html, &url);
     let mut fetch_mode = "http".to_owned();
     let mut warnings: Vec<String> = Vec::new();
     let needs_render = match request.render {
@@ -174,25 +136,7 @@ pub async fn fetch(
         match ctx.browser.page(&url, remaining).await {
             Ok((rendered_html, rendered_markdown)) => {
                 fetch_mode = "browser".to_owned();
-                match request.format {
-                    FetchFormat::Html => (
-                        extract::title_from_html(&rendered_html),
-                        extract::clean_html(&rendered_html, &url),
-                    ),
-                    FetchFormat::Markdown => {
-                        match rendered_markdown.filter(|markdown| !markdown.trim().is_empty()) {
-                            Some(markdown) => (extract::title_from_html(&rendered_html), markdown),
-                            None => {
-                                let extracted = extract::to_markdown(&rendered_html, &url);
-                                (extracted.title, extracted.body)
-                            }
-                        }
-                    }
-                    FetchFormat::Text => {
-                        let extracted = extract::to_text(&rendered_html, &url);
-                        (extracted.title, extracted.body)
-                    }
-                }
+                rendered_content(request, &rendered_html, rendered_markdown, &url)
             }
             Err(error) if request.render == RenderMode::Always => return Err(error),
             Err(error) => {
@@ -222,6 +166,27 @@ pub async fn fetch(
         cached_age_secs: None,
         elapsed_ms,
     };
+    Ok(cached_outcome(ctx, cache_key, output))
+}
+
+fn cached_fetch(ctx: &Arc<ToolContext>, cache_key: &str) -> Result<Option<FetchOutcome>> {
+    let Some((cached, age)) = ctx.cache.get(cache_key)? else {
+        return Ok(None);
+    };
+    let Ok(mut output) = serde_json::from_value::<FetchOutput>((*cached).clone()) else {
+        return Ok(None);
+    };
+    output.cache_hit = true;
+    output.cached_age_secs = Some(age);
+    ctx.metrics.count_cache_hit();
+    Ok(Some(FetchOutcome {
+        bytes: 0,
+        cache_hit: true,
+        output,
+    }))
+}
+
+fn cached_outcome(ctx: &Arc<ToolContext>, cache_key: String, output: FetchOutput) -> FetchOutcome {
     if ctx.cache.enabled()
         && let Ok(value) = serde_json::to_value(&output)
         && let Err(error) = ctx.cache.put(cache_key, Arc::new(value))
@@ -231,11 +196,61 @@ pub async fn fetch(
     let bytes = serde_json::to_vec(&output)
         .map(|body| body.len() as u64)
         .unwrap_or(0);
-    Ok(FetchOutcome {
+    FetchOutcome {
         output,
         cache_hit: false,
         bytes,
-    })
+    }
+}
+
+fn extract_content(
+    request: &FetchRequest,
+    body: &str,
+    is_html: bool,
+    url: &Url,
+) -> (Option<String>, String) {
+    match (request.format, is_html) {
+        (FetchFormat::Html, true) => (
+            extract::title_from_html(body),
+            extract::clean_html(body, url),
+        ),
+        (FetchFormat::Html, false) => (None, body.to_owned()),
+        (FetchFormat::Markdown, true) => {
+            let extracted = extract::to_markdown(body, url);
+            (extracted.title, extracted.body)
+        }
+        (FetchFormat::Markdown, false) => (None, body.to_owned()),
+        (FetchFormat::Text, true) => {
+            let extracted = extract::to_text(body, url);
+            (extracted.title, extracted.body)
+        }
+        (FetchFormat::Text, false) => (None, body.to_owned()),
+    }
+}
+
+fn rendered_content(
+    request: &FetchRequest,
+    html: &str,
+    markdown: Option<String>,
+    url: &Url,
+) -> (Option<String>, String) {
+    match request.format {
+        FetchFormat::Html => (
+            extract::title_from_html(html),
+            extract::clean_html(html, url),
+        ),
+        FetchFormat::Markdown => match markdown.filter(|markdown| !markdown.trim().is_empty()) {
+            Some(markdown) => (extract::title_from_html(html), markdown),
+            None => {
+                let extracted = extract::to_markdown(html, url);
+                (extracted.title, extracted.body)
+            }
+        },
+        FetchFormat::Text => {
+            let extracted = extract::to_text(html, url);
+            (extracted.title, extracted.body)
+        }
+    }
 }
 
 async fn crawl(

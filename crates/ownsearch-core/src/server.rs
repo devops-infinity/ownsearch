@@ -5,12 +5,9 @@ pub use http::serve_http;
 pub use stdio::serve_stdio;
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rmcp::model::{
@@ -23,13 +20,12 @@ use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Settings;
+pub(crate) use crate::context::Metrics;
 use crate::context::ToolContext;
 use crate::error::Result;
+use crate::time::jitter;
 use crate::tools;
 use crate::{APP_NAME, VERSION};
-
-type HttpCalls = BTreeMap<String, u64>;
-type HttpLatency = BTreeMap<String, (u64, u64, u64)>;
 
 const CACHE_TTL_MS: u64 = 60_000;
 const CANCELLED_CALL_GRACE: Duration = Duration::from_secs(2);
@@ -39,99 +35,11 @@ const INSTRUCTIONS: &str = "OwnSearch searches the web through a quality-ranked 
 const PROTOCOL_VERSIONS: &[ProtocolVersion] =
     &[ProtocolVersion::V_2026_07_28, ProtocolVersion::V_2025_11_25];
 
-#[derive(Debug, Default)]
-pub(crate) struct Metrics {
-    calls: AtomicU64,
-    errors: AtomicU64,
-    inflight: AtomicI64,
-    per_tool: Mutex<BTreeMap<String, u64>>,
-    http_calls: Mutex<HttpCalls>,
-    http_latency: Mutex<HttpLatency>,
-}
-
-pub(crate) struct CallGuard {
-    metrics: Arc<Metrics>,
-}
-
-impl std::fmt::Debug for CallGuard {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("CallGuard")
-    }
-}
-
 impl std::fmt::Debug for OwnsearchHandler {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("OwnsearchHandler")
             .finish_non_exhaustive()
-    }
-}
-
-impl Drop for CallGuard {
-    fn drop(&mut self) {
-        self.metrics.inflight.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-impl Metrics {
-    pub(crate) fn begin_call(self: &Arc<Self>) -> CallGuard {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        self.inflight.fetch_add(1, Ordering::Relaxed);
-        CallGuard {
-            metrics: Arc::clone(self),
-        }
-    }
-
-    pub(crate) fn count_error(&self) {
-        self.errors.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn count_tool_call(&self, tool: &str) {
-        if let Ok(mut counts) = self.per_tool.lock() {
-            *counts.entry(tool.to_owned()).or_insert(0) += 1;
-        }
-    }
-
-    pub(crate) fn snapshot(&self) -> (u64, u64, i64) {
-        (
-            self.calls.load(Ordering::Relaxed),
-            self.errors.load(Ordering::Relaxed),
-            self.inflight.load(Ordering::Relaxed),
-        )
-    }
-
-    pub(crate) fn record_http(&self, method: &str, route: &str, status: u16, elapsed_ms: u64) {
-        let key = format!("{method} {route}");
-        if let Ok(mut counts) = self.http_calls.lock() {
-            *counts.entry(format!("{key} {status}")).or_insert(0) += 1;
-        }
-        if let Ok(mut latencies) = self.http_latency.lock() {
-            let entry = latencies.entry(key).or_insert((0, 0, 0));
-            entry.0 = entry.0.saturating_add(1);
-            entry.1 = entry.1.saturating_add(elapsed_ms);
-            entry.2 = entry.2.max(elapsed_ms);
-        }
-    }
-
-    pub(crate) fn http_snapshot(&self) -> (HttpCalls, HttpLatency) {
-        let calls = self
-            .http_calls
-            .lock()
-            .map(|counts| counts.clone())
-            .unwrap_or_default();
-        let latencies = self
-            .http_latency
-            .lock()
-            .map(|values| values.clone())
-            .unwrap_or_default();
-        (calls, latencies)
-    }
-
-    pub(crate) fn per_tool(&self) -> BTreeMap<String, u64> {
-        self.per_tool
-            .lock()
-            .map(|counts| counts.clone())
-            .unwrap_or_default()
     }
 }
 
@@ -147,20 +55,22 @@ impl OwnsearchHandler {
     pub fn new(settings: Settings) -> Result<Self> {
         let tools = tools::definitions()?;
         let context = Arc::new(ToolContext::new(settings)?);
+        let metrics = Arc::clone(&context.metrics);
         Ok(Self {
             context,
             tools: Arc::new(tools),
-            metrics: Arc::new(Metrics::default()),
+            metrics,
             shutdown: CancellationToken::new(),
         })
     }
 
     pub fn from_context(context: Arc<ToolContext>) -> Result<Self> {
         let tools = tools::definitions()?;
+        let metrics = Arc::clone(&context.metrics);
         Ok(Self {
             context,
             tools: Arc::new(tools),
-            metrics: Arc::new(Metrics::default()),
+            metrics,
             shutdown: CancellationToken::new(),
         })
     }
@@ -374,19 +284,7 @@ pub(crate) fn spawn_scanner(context: Arc<ToolContext>, shutdown: CancellationTok
 
 async fn scan_loop(context: Arc<ToolContext>, shutdown: CancellationToken) {
     if !context.settings.offline() {
-        match tokio::select! {
-            () = shutdown.cancelled() => return,
-            outcome = crate::scanner::refresh_discovery(&context, false, &shutdown) => outcome,
-        } {
-            Ok(outcome) if !outcome.skipped => tracing::info!(
-                added = outcome.added,
-                changed = outcome.changed,
-                missing = outcome.missing,
-                "discovery refreshed"
-            ),
-            Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "the startup discovery refresh failed"),
-        }
+        refresh_once(&context, &shutdown, true).await;
     }
     let tick = Duration::from_secs(context.settings.scan_min_interval_secs().clamp(30, 3600));
     let mut pulse = tokio::time::interval(tick);
@@ -400,59 +298,70 @@ async fn scan_loop(context: Arc<ToolContext>, shutdown: CancellationToken) {
         if context.settings.offline() {
             continue;
         }
-        if let Ok(outcome) = crate::scanner::refresh_discovery(&context, false, &shutdown).await
-            && !outcome.skipped
-        {
-            tracing::info!(
-                added = outcome.added,
-                changed = outcome.changed,
-                missing = outcome.missing,
-                "discovery refreshed"
-            );
-        }
-        let limit = context.settings.fleet_max().max(1);
-        let now = crate::time::rfc3339(crate::time::now_unix());
-        match context.store.scan_targets(limit, &now) {
-            Ok(targets) if targets.is_empty() => continue,
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(%error, "the due-instance query failed");
-                continue;
-            }
-        }
-        jitter(context.settings.scan_jitter_ms()).await;
-        let options = crate::scanner::ScanOptions {
-            dry_run: false,
-            limit,
-            ..crate::scanner::ScanOptions::default()
-        };
-        let deadline = Duration::from_secs(context.settings.scan_deadline_secs().max(30));
-        match tokio::time::timeout(
-            deadline,
-            crate::scanner::run_scan(&context, &options, &shutdown),
-        )
-        .await
-        {
-            Ok(Ok(output)) => tracing::info!(
-                probed = output.probed,
-                changed = output.status_changes.len(),
-                fleet = output.fleet.len(),
-                "the scheduled scan finished"
-            ),
-            Ok(Err(error)) => tracing::warn!(%error, "the scheduled scan failed"),
-            Err(_) => tracing::warn!("the scheduled scan reached its deadline"),
-        }
+        refresh_once(&context, &shutdown, false).await;
+        run_scan_tick(&context, &shutdown).await;
     }
 }
 
-async fn jitter(max_ms: u64) {
-    if max_ms == 0 {
-        return;
+async fn refresh_once(context: &Arc<ToolContext>, shutdown: &CancellationToken, startup: bool) {
+    let outcome = tokio::select! {
+        () = shutdown.cancelled() => return,
+        outcome = crate::scanner::refresh_discovery(context, false, shutdown) => outcome,
+    };
+    match outcome {
+        Ok(outcome) if !outcome.skipped => tracing::info!(
+            added = outcome.added,
+            changed = outcome.changed,
+            missing = outcome.missing,
+            "discovery refreshed"
+        ),
+        Ok(_) => {}
+        Err(error) if startup => {
+            tracing::warn!(%error, "the startup discovery refresh failed")
+        }
+        Err(error) => tracing::warn!(%error, "the discovery refresh failed"),
     }
-    let mut bytes = [0u8; 8];
-    let _ = getrandom::fill(&mut bytes);
-    let spread = u64::from_le_bytes(bytes) % max_ms.saturating_add(1);
-    tokio::time::sleep(Duration::from_millis(spread)).await;
+}
+
+async fn run_scan_tick(context: &Arc<ToolContext>, shutdown: &CancellationToken) {
+    let limit = context.settings.fleet_max().max(1);
+    let now = crate::time::rfc3339(crate::time::now_unix());
+    let store = Arc::clone(&context.store);
+    let due = tokio::task::spawn_blocking(move || store.scan_targets(limit, &now)).await;
+    match due {
+        Ok(Ok(targets)) if targets.is_empty() => return,
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "the due-instance query failed");
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the due-instance query task failed");
+            return;
+        }
+    }
+    jitter(context.settings.scan_jitter_ms()).await;
+    let options = crate::scanner::ScanOptions {
+        dry_run: false,
+        limit,
+        ..crate::scanner::ScanOptions::default()
+    };
+    let deadline = Duration::from_secs(context.settings.scan_deadline_secs().max(30));
+    match tokio::time::timeout(
+        deadline,
+        crate::scanner::run_scan(context, &options, shutdown),
+    )
+    .await
+    {
+        Ok(Ok(output)) => tracing::info!(
+            probed = output.probed,
+            changed = output.status_changes.len(),
+            fleet = output.fleet.len(),
+            "the scheduled scan finished"
+        ),
+        Ok(Err(error)) => tracing::warn!(%error, "the scheduled scan failed"),
+        Err(_) => tracing::warn!("the scheduled scan reached its deadline"),
+    }
 }
 
 pub(crate) fn start_hang_watchdog(

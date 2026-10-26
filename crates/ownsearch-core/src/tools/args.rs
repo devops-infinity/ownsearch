@@ -53,8 +53,8 @@ impl SearchArgs {
                 "query is longer than {MAX_QUERY_CHARS} characters"
             )));
         }
-        let categories = clean_list(self.categories, "categories")?;
-        let engines = clean_list(self.engines, "engines")?;
+        let categories = bounded_list(self.categories, "categories")?;
+        let engines = bounded_list(self.engines, "engines")?;
         if let Some(language) = &self.language
             && !is_language_code(language)
         {
@@ -113,7 +113,7 @@ pub(crate) struct ValidatedSearch {
     pub text_mode: TextMode,
 }
 
-fn clean_list(values: Option<Vec<String>>, field: &str) -> Result<Vec<String>> {
+fn bounded_list(values: Option<Vec<String>>, field: &str) -> Result<Vec<String>> {
     let Some(values) = values else {
         return Ok(Vec::new());
     };
