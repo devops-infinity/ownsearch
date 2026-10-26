@@ -38,7 +38,7 @@
 ## Maintenance
 
 - Corrective: fix defects found by the gate, a smoke failure, or an incident.
-- Adaptive: dependency and toolchain refresh on the cadence in `SECURITY.md`, plus a new edition through `cargo fix --edition`, the edition bump, the full gate, and `cargo fmt`.
+- Adaptive: dependency and toolchain refresh, plus a new edition through `cargo fix --edition`, the edition bump, the full gate, and `cargo fmt`.
 - Perfective: keep-window tuning and query-plan review at each release.
 - Preventive: the advisory scan, the deny policy, and the smoke timer.
 

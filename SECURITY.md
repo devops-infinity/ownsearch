@@ -6,7 +6,7 @@ Write to sazzad@devops.bd with the subject line `OwnSearch security`. Include th
 
 Do not report a security problem through a public issue, pull request, or discussion. If the address above does not answer within the acknowledgement window, open a bare issue that asks for a private contact route and carries no detail.
 
-You get an acknowledgement within three working days. A fix ships in the next release, and the advisory names the affected versions once the fix is published.
+You get an acknowledgement within three working days. A fix ships in the next release, and a published advisory names the affected versions once the fix is published.
 
 ## Supported versions
 
