@@ -1,0 +1,54 @@
+[package]
+name = "ownsearch-core"
+description = "Engine for the OwnSearch MCP server: SearXNG fleet discovery, scanning, search, merge, and local state"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+reqwest.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+secrecy.workspace = true
+keyring.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+hmac.workspace = true
+getrandom.workspace = true
+url.workspace = true
+toml.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-native-certs.workspace = true
+x509-parser.workspace = true
+rusqlite.workspace = true
+scraper.workspace = true
+lopdf.workspace = true
+chromiumoxide.workspace = true
+ego-tree.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+rusqlite.workspace = true
+insta.workspace = true
+wiremock.workspace = true
+proptest.workspace = true
+tower.workspace = true

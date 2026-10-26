@@ -1,0 +1,2605 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-10-25T19:39:54+06:00",
+  "source": {
+    "name": "searx.space",
+    "url": "https://searx.space/data/instances.json",
+    "page": "https://searx.space/",
+    "snapshot_at": "2026-10-25T19:39:54+06:00",
+    "reported_online_https_count": 67
+  },
+  "instances": [
+    {
+      "url": "https://www.isci.si/",
+      "rank": 1,
+      "type": "normal",
+      "version": "2026.10.21+dedeb8f7d",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  8 17:29:56 2027 GMT",
+        "certificate_days_remaining": 75
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "C",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 99.13,
+        "year": 99.27
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.113,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.05,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 6,
+        "working_engines": [
+          "bing",
+          "marginalia",
+          "privacywall",
+          "seznam",
+          "yacy",
+          "yahoo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.ononoki.org/",
+      "rank": 2,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 30 23:59:59 2026 GMT",
+        "certificate_days_remaining": 66
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 100.0
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.112,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.579,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 4,
+        "working_engines": [
+          "bing",
+          "fynd",
+          "mwmbl",
+          "yahoo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://priv.au/",
+      "rank": 3,
+      "type": "normal",
+      "version": "2026.10.21+dedeb8f7d",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Oct 31 10:03:19 2026 GMT",
+        "certificate_days_remaining": 5
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "F",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.76
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.137,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.268,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 4,
+        "working_engines": [
+          "brave",
+          "google",
+          "google cse",
+          "yahoo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": true,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.serpensin.com/",
+      "rank": 4,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  2 19:44:47 2027 GMT",
+        "certificate_days_remaining": 69
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 98.7
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.13,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.384,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 3,
+        "working_engines": [
+          "brave",
+          "duckduckgo",
+          "startpage"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.pi.vps.pw/",
+      "rank": 5,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 18 15:13:53 2026 GMT",
+        "certificate_days_remaining": 54
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "C",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 74.53
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.185,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.376,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 4,
+        "working_engines": [
+          "brave",
+          "duckduckgo",
+          "google cse",
+          "yahoo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://baresearch.org/",
+      "rank": 6,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 21 23:59:59 2027 GMT",
+        "certificate_days_remaining": 88
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.91
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.445,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.89,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 3,
+        "working_engines": [
+          "brave",
+          "duckduckgo",
+          "google cse"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.femboy.ad/",
+      "rank": 7,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 14 21:48:41 2027 GMT",
+        "certificate_days_remaining": 81
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.7
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.404,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 3.564,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 4,
+        "working_engines": [
+          "bing",
+          "mwmbl",
+          "openlibrary",
+          "yahoo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.site/",
+      "rank": 8,
+      "type": "normal",
+      "version": "2026.10.25+aa18ff0fc",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  4 15:33:53 2027 GMT",
+        "certificate_days_remaining": 71
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.2
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.058,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.263,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 2,
+        "working_engines": [
+          "bing",
+          "yacy"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.tiekoetter.com/",
+      "rank": 9,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da (553817147)",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 13 21:10:09 2027 GMT",
+        "certificate_days_remaining": 80
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.93
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.12,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.787,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 2,
+        "working_engines": [
+          "bing",
+          "yahoo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.hbubli.cc/",
+      "rank": 10,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  3 08:19:38 2027 GMT",
+        "certificate_days_remaining": 69
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "C",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.91
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.114,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.834,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 2,
+        "working_engines": [
+          "bing",
+          "mwmbl"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.shreven.org/",
+      "rank": 11,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 14 21:52:02 2026 GMT",
+        "certificate_days_remaining": 50
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.2
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.51,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.862,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 2,
+        "working_engines": [
+          "brave",
+          "duckduckgo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://libresearch.space/",
+      "rank": 12,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 23 11:05:06 2026 GMT",
+        "certificate_days_remaining": 58
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 99.28,
+        "year": 99.55
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.401,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 3.32,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 2,
+        "working_engines": [
+          "brave",
+          "duckduckgo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.rhscz.eu/",
+      "rank": 13,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Nov 27 21:56:40 2026 GMT",
+        "certificate_days_remaining": 33
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.93
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.15,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.17,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "bing"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.deggo.fyi/",
+      "rank": 14,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 14 00:32:48 2027 GMT",
+        "certificate_days_remaining": 80
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 97.66,
+        "year": 98.03
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.096,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.205,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "bing"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.rhscz.eu/",
+      "rank": 15,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Nov 27 21:56:40 2026 GMT",
+        "certificate_days_remaining": 33
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.9
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.102,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.258,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "bing"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://etsi.me/",
+      "rank": 16,
+      "type": "normal",
+      "version": "2026.9.22+019460e07",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 16 22:34:53 2026 GMT",
+        "certificate_days_remaining": 52
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "C",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.87
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.49,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.275,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "bing"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.oloke.xyz/",
+      "rank": 17,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 17 00:32:10 2026 GMT",
+        "certificate_days_remaining": 52
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.94
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.16,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.248,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "bing"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.website/",
+      "rank": 18,
+      "type": "normal",
+      "version": "2026.10.25+c47a74045",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 17 01:42:05 2026 GMT",
+        "certificate_days_remaining": 52
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 98.7
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.067,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.31,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "yacy"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.linxx.net/",
+      "rank": 19,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 14 17:09:16 2027 GMT",
+        "certificate_days_remaining": 81
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 100.0
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.054,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.324,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "bing"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.yuri.llc/",
+      "rank": 20,
+      "type": "normal",
+      "version": "2026.10.21+dedeb8f7d",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 21 13:10:08 2027 GMT",
+        "certificate_days_remaining": 87
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "F",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 100.0
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.352,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.354,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "bing"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.eshnetwork.space/",
+      "rank": 21,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 17 13:13:17 2026 GMT",
+        "certificate_days_remaining": 52
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 98.92,
+        "year": 98.34
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.402,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.47,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "bing"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://xka.cz/",
+      "rank": 22,
+      "type": "normal",
+      "version": "2026.10.19+81371861f",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 29 07:13:18 2026 GMT",
+        "certificate_days_remaining": 64
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 100.0
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.133,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.218,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "duckduckgo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://kantan.cat/",
+      "rank": 23,
+      "type": "normal",
+      "version": "2026.10.25+e186bab79",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 27 05:21:24 2026 GMT",
+        "certificate_days_remaining": 62
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "F",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 99.71,
+        "year": 97.94
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.238,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.236,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "duckduckgo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://anonsearch.win/",
+      "rank": 24,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  5 19:32:34 2027 GMT",
+        "certificate_days_remaining": 72
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 100.0
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.374,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 3.408,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "brave"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://failsearx.culturanerd.it/",
+      "rank": 25,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 12 07:18:30 2026 GMT",
+        "certificate_days_remaining": 47
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 95.41,
+        "year": 98.93
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.087,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.825,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "duckduckgo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.pereira.is/",
+      "rank": 26,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 24 04:44:36 2026 GMT",
+        "certificate_days_remaining": 59
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 88.58,
+        "week": 82.55,
+        "month": 80.58,
+        "year": 91.49
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.13,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 3.051,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 2,
+        "working_engines": [
+          "bing",
+          "google cse"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.chocolatemoo53.com/",
+      "rank": 27,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 13 08:23:37 2026 GMT",
+        "certificate_days_remaining": 48
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 0.0,
+        "week": 0.0,
+        "month": 18.81,
+        "year": 71.53
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.457,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.227,
+        "google_success_percent": 100.0,
+        "google_median_seconds": 1.685,
+        "working_engine_count": 3,
+        "working_engines": [
+          "braveapi",
+          "duckduckgo",
+          "google"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": true,
+        "dedicated_success_percent": 100.0
+      }
+    },
+    {
+      "url": "https://search.banke.cloud/",
+      "rank": 28,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+, ?",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec  9 08:50:52 2026 GMT",
+        "certificate_days_remaining": 44
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "C",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 98.61,
+        "year": 98.61
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.386,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 0.476,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 2,
+        "working_engines": [
+          "bing",
+          "yahoo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://sx.catgirl.cloud/",
+      "rank": 29,
+      "type": "normal",
+      "version": "2026.10.2+19ffbcd3",
+      "tls": {
+        "grade": "E",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 27 18:31:03 2026 GMT",
+        "certificate_days_remaining": 63
+      },
+      "http_grade": "B",
+      "csp_grade": "B",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.99
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.102,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 3.043,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "google cse"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.dresden.network/",
+      "rank": 30,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "F",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 11 03:53:43 2027 GMT",
+        "certificate_days_remaining": 77
+      },
+      "http_grade": "C",
+      "csp_grade": "C",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.7
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.04,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.496,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "duckduckgo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://opnxng.com/",
+      "rank": 31,
+      "type": "normal",
+      "version": "2026.10.21+dedeb8f7d",
+      "tls": {
+        "grade": "?",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  7 11:34:26 2027 GMT",
+        "certificate_days_remaining": 73
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "F",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 98.11,
+        "year": 99.16
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.684,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.361,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 2,
+        "working_engines": [
+          "duckduckgo web",
+          "google cse"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.buffon.cloud/",
+      "rank": 32,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "?",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec  4 13:19:54 2026 GMT",
+        "certificate_days_remaining": 39
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 99.28,
+        "year": 97.45
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 1.002,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.945,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 2,
+        "working_engines": [
+          "brave",
+          "duckduckgo"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.jeremyh.xyz/",
+      "rank": 33,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "?",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 23 22:25:15 2026 GMT",
+        "certificate_days_remaining": 59
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 95.96,
+        "month": 97.33,
+        "year": 97.33
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.506,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 6.254,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 9,
+        "working_engines": [
+          "bing",
+          "brave",
+          "duckduckgo",
+          "fynd",
+          "mwmbl",
+          "privacywall",
+          "startpage",
+          "yahoo",
+          "yep"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://paulgo.io/",
+      "rank": 34,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  9 18:34:18 2027 GMT",
+        "certificate_days_remaining": 76
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 99.55,
+        "year": 99.69
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.16,
+        "search_success_percent": 80.0,
+        "search_median_seconds": 0.47,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "google cse"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.ctq.ro/",
+      "rank": 35,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 23 16:36:27 2026 GMT",
+        "certificate_days_remaining": 59
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.5
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.147,
+        "search_success_percent": 60.0,
+        "search_median_seconds": 0.803,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 2,
+        "working_engines": [
+          "duckduckgo",
+          "marginalia"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.thefloatinglab.world/",
+      "rank": 36,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec  3 06:46:43 2026 GMT",
+        "certificate_days_remaining": 38
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "C",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 98.19,
+        "month": 91.53,
+        "year": 97.62
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.077,
+        "search_success_percent": 60.0,
+        "search_median_seconds": 0.961,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.undertale.uk/",
+      "rank": 37,
+      "type": "normal",
+      "version": "2026.10.13+22c64b8d",
+      "tls": {
+        "grade": "E, ?",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 23 12:31:57 2027 GMT",
+        "certificate_days_remaining": 89
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 94.12
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.507,
+        "search_success_percent": 60.0,
+        "search_median_seconds": 3.212,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.perennialte.ch/",
+      "rank": 38,
+      "type": "normal",
+      "version": "2026.10.17+2a6fc07be",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 14 13:40:46 2026 GMT",
+        "certificate_days_remaining": 49
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.29
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.364,
+        "search_success_percent": 40.0,
+        "search_median_seconds": 1.59,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.einfachzocken.eu/",
+      "rank": 39,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "E",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  9 21:02:07 2027 GMT",
+        "certificate_days_remaining": 76
+      },
+      "http_grade": "D",
+      "csp_grade": "D",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 99.36,
+        "year": 99.87
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.133,
+        "search_success_percent": 20.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.wuemeli.com/",
+      "rank": 40,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "E",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 10 15:30:11 2026 GMT",
+        "certificate_days_remaining": 46
+      },
+      "http_grade": "D",
+      "csp_grade": "D",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 97.69
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.555,
+        "search_success_percent": 20.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://find.xenorio.xyz/",
+      "rank": 41,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 11 22:32:01 2026 GMT",
+        "certificate_days_remaining": 47
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.25
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.187,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://grep.vim.wtf/",
+      "rank": 42,
+      "type": "normal",
+      "version": "2026.9.15+ca4965040",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 13 14:29:02 2026 GMT",
+        "certificate_days_remaining": 48
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.83
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.177,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://sear.lurx.net/",
+      "rank": 43,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  5 16:50:29 2027 GMT",
+        "certificate_days_remaining": 72
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 98.33,
+        "week": 99.76,
+        "month": 99.06,
+        "year": 98.63
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.678,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.bladerunn.in/",
+      "rank": 44,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 27 01:55:25 2026 GMT",
+        "certificate_days_remaining": 62
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 98.67
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.128,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.catboy.house/",
+      "rank": 45,
+      "type": "normal",
+      "version": "2026.9.3+a1144dda3",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  5 01:29:27 2027 GMT",
+        "certificate_days_remaining": 71
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 96.97
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.084,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.ethibox.fr/",
+      "rank": 46,
+      "type": "normal",
+      "version": "2026.10.19+81371861f",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 19 14:31:37 2026 GMT",
+        "certificate_days_remaining": 54
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 97.46
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.154,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.liuzj.net/",
+      "rank": 47,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 20 12:59:10 2026 GMT",
+        "certificate_days_remaining": 55
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.85
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 1.599,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.minus27315.dev/",
+      "rank": 48,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 22 23:59:59 2027 GMT",
+        "certificate_days_remaining": 89
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 99.74,
+        "year": 94.41
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.156,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.rowie.at/",
+      "rank": 49,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 22 11:11:57 2027 GMT",
+        "certificate_days_remaining": 88
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 93.08
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.339,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.spiralab.org/",
+      "rank": 50,
+      "type": "normal",
+      "version": "2026.9.5+c7f3080aa",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 10 02:30:06 2027 GMT",
+        "certificate_days_remaining": 76
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 98.68,
+        "week": 99.81,
+        "month": 99.56,
+        "year": 97.68
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.381,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.namejeff.xyz/",
+      "rank": 51,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 19 14:26:48 2027 GMT",
+        "certificate_days_remaining": 85
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.24
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.15,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.gdebest.net/",
+      "rank": 52,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 11 12:57:01 2027 GMT",
+        "certificate_days_remaining": 77
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.3
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.32,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.paralaxitaentomology.org/",
+      "rank": 53,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec  5 13:16:36 2026 GMT",
+        "certificate_days_remaining": 40
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "C",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.75
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.528,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://www.gruble.de/",
+      "rank": 54,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 11 21:54:44 2026 GMT",
+        "certificate_days_remaining": 47
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "C",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 99.3,
+        "year": 98.61
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.069,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.im-in.space/",
+      "rank": 55,
+      "type": "normal",
+      "version": "2026.10.19+81371861f",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  9 05:36:16 2027 GMT",
+        "certificate_days_remaining": 75
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 67.55,
+        "month": 92.53,
+        "year": 99.35
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.051,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.party/",
+      "rank": 56,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  3 23:53:58 2027 GMT",
+        "certificate_days_remaining": 70
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 94.69,
+        "year": 96.5
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.349,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.unredacted.org/",
+      "rank": 57,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "A+",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Nov 28 08:20:49 2026 GMT",
+        "certificate_days_remaining": 33
+      },
+      "http_grade": "B",
+      "csp_grade": "B",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.82
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.454,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.mxchange.org/",
+      "rank": 58,
+      "type": "normal",
+      "version": "2026.10.18+468ab170c",
+      "tls": {
+        "grade": "E",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Nov 23 20:11:54 2026 GMT",
+        "certificate_days_remaining": 29
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 93.83
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.114,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.zina.dev/",
+      "rank": 59,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "E",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 13 04:48:17 2027 GMT",
+        "certificate_days_remaining": 79
+      },
+      "http_grade": "C",
+      "csp_grade": "C",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.54
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.078,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.moonshadow.dev/",
+      "rank": 60,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "E",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  1 07:44:21 2027 GMT",
+        "certificate_days_remaining": 67
+      },
+      "http_grade": "C",
+      "csp_grade": "C",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 99.06,
+        "year": 83.14
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.488,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.redgarden.cv/",
+      "rank": 61,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "E",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 23 17:20:10 2026 GMT",
+        "certificate_days_remaining": 59
+      },
+      "http_grade": "D",
+      "csp_grade": "D",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.23
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.688,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.tsmdt.de/",
+      "rank": 62,
+      "type": "normal",
+      "version": "2026.10.19+81371861f",
+      "tls": {
+        "grade": "E",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 27 11:34:57 2026 GMT",
+        "certificate_days_remaining": 62
+      },
+      "http_grade": "D",
+      "csp_grade": "D",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 96.21
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.099,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.cups.moe/",
+      "rank": 63,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "E",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 12 10:12:14 2027 GMT",
+        "certificate_days_remaining": 78
+      },
+      "http_grade": "D",
+      "csp_grade": "D",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 96.74
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.086,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searxng.tr/",
+      "rank": 64,
+      "type": "normal",
+      "version": "2026.10.21+dedeb8f7d",
+      "tls": {
+        "grade": "E",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan  6 10:30:46 2027 GMT",
+        "certificate_days_remaining": 72
+      },
+      "http_grade": "D",
+      "csp_grade": "D",
+      "html_grade": "F",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 94.0,
+        "year": 97.7
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.288,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://search.anoni.net/",
+      "rank": 65,
+      "type": "normal",
+      "version": "2026.10.19+81371861f",
+      "tls": {
+        "grade": "?",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec  8 17:06:43 2026 GMT",
+        "certificate_days_remaining": 44
+      },
+      "http_grade": "A+",
+      "csp_grade": "A+",
+      "html_grade": "C",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 99.51,
+        "year": 98.32
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 1.656,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": null,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.mbuf.net/",
+      "rank": 66,
+      "type": "normal",
+      "version": "2026.10.19+81371861f",
+      "tls": {
+        "grade": "?",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Jan 14 12:20:23 2027 GMT",
+        "certificate_days_remaining": 80
+      },
+      "http_grade": "C",
+      "csp_grade": "C",
+      "html_grade": "V",
+      "analytics": false,
+      "ipv6": false,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 100.0,
+        "year": 99.34
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.084,
+        "search_success_percent": 0.0,
+        "search_median_seconds": null,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 0,
+        "working_engines": []
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    },
+    {
+      "url": "https://searx.sev.monster/",
+      "rank": 67,
+      "type": "normal",
+      "version": "2026.10.24+ef0ec03da",
+      "tls": {
+        "grade": "E",
+        "protocol": "TLSv1.3",
+        "certificate_not_after": "Dec 11 04:06:38 2026 GMT",
+        "certificate_days_remaining": 46
+      },
+      "http_grade": null,
+      "csp_grade": null,
+      "html_grade": "E",
+      "analytics": false,
+      "ipv6": true,
+      "uptime": {
+        "day": 100.0,
+        "week": 100.0,
+        "month": 99.6,
+        "year": 99.05
+      },
+      "timing": {
+        "initial_success_percent": 100.0,
+        "initial_seconds": 0.593,
+        "search_success_percent": 100.0,
+        "search_median_seconds": 1.044,
+        "google_success_percent": 0.0,
+        "google_median_seconds": null,
+        "working_engine_count": 1,
+        "working_engines": [
+          "bing"
+        ]
+      },
+      "google": {
+        "exact_in_default_engines": false,
+        "dedicated_success_percent": 0.0
+      }
+    }
+  ]
+}

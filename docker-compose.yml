@@ -1,0 +1,31 @@
+services:
+  ownsearch:
+    build: .
+    image: ownsearch:local
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:8774:8774"
+    environment:
+      OWNSEARCH_BIND: 0.0.0.0:8774
+      OWNSEARCH_BEARER_TOKENS: ${OWNSEARCH_BEARER_TOKENS:?set OWNSEARCH_BEARER_TOKENS before starting}
+      OWNSEARCH_ALLOWED_HOSTS: ${OWNSEARCH_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      OWNSEARCH_LOG_FORMAT: json
+      OWNSEARCH_STATE_DIR: /home/ownsearch/.local/state/ownsearch
+      OWNSEARCH_LEDGER_DIR: /home/ownsearch/.local/share/ownsearch/ledger
+    volumes:
+      - ownsearch-state:/home/ownsearch/.local/state/ownsearch
+      - ownsearch-ledger:/home/ownsearch/.local/share/ownsearch/ledger
+    shm_size: "1gb"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8774/healthz"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  ownsearch-state:
+  ownsearch-ledger:

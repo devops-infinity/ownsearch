@@ -1,0 +1,7 @@
+.git
+target
+dist
+.remember
+*.db
+*.db-wal
+*.db-shm

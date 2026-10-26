@@ -1,0 +1,38 @@
+{
+  "manifest_version": "0.3",
+  "name": "ownsearch",
+  "display_name": "OwnSearch",
+  "version": "0.1.0",
+  "description": "Quality-ranked public SearXNG search for MCP clients, with a local instance fleet and source-attributed results.",
+  "author": {
+    "name": "Md. Sazzad Hossain Sharkar",
+    "email": "sazzad@devops.bd",
+    "url": "https://github.com/devops-infinity"
+  },
+  "homepage": "https://github.com/devops-infinity/ownsearch",
+  "license": "MIT OR Apache-2.0",
+  "server": {
+    "type": "binary",
+    "entry_point": "ownsearch",
+    "mcp_config": {
+      "command": "${__dirname}/ownsearch",
+      "args": ["serve"],
+      "env": {
+        "OWNSEARCH_STATE_DIR": "${user_config.state_dir}"
+      }
+    }
+  },
+  "user_config": {
+    "state_dir": {
+      "type": "directory",
+      "title": "State directory",
+      "description": "Where OwnSearch keeps instances.db, the fleet snapshot, and backups.",
+      "required": false,
+      "default": "${HOME}/.local/state/ownsearch"
+    }
+  },
+  "tools_generated": false,
+  "compatibility": {
+    "platforms": ["darwin", "linux"]
+  }
+}

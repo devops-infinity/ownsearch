@@ -1,0 +1,50 @@
+# Security Policy
+
+## Reporting a vulnerability
+
+Write to sazzad@devops.bd with the subject line `OwnSearch security`. Include the version you run, the command or tool you called, the smallest reproducer you have, and the impact you expect.
+
+Do not report a security problem through a public issue, pull request, or discussion. If the address above does not answer within the acknowledgement window, open a bare issue that asks for a private contact route and carries no detail.
+
+You get an acknowledgement within three working days. A fix ships in the next release, and the advisory names the affected versions once the fix is published.
+
+## Supported versions
+
+Version 0.1.x receives security fixes. A release outside that line gets a fix only when the problem can be exploited without special conditions and the fix does not break compatibility.
+
+## What OwnSearch handles
+
+- Public instance URLs, scores, and probe evidence in a local SQLite database.
+- A hash-chained ledger of tool calls. Each row records a keyed arguments hash, the tool and operation, timing, byte counts, result counts, parser, cache state, and instance ids. It never records the query text.
+- An HTTP bearer token list, read from the environment or the OS keychain and required for any non-loopback bind.
+- Search results, treated as untrusted data and sanitized before they reach a client.
+
+OwnSearch stores no credentials for the searched instances, sends no telemetry, and holds no user accounts.
+
+## Scope
+
+In scope:
+
+- The MCP server, both transports.
+- The scanner and its network behavior.
+- The SQLite state layer and its migrations.
+- The typed database change surface.
+- The release scripts and packaging.
+
+Out of scope:
+
+- A public SearXNG instance, its operator, its engines, or its availability.
+- Content returned by upstream engines.
+- A client that chooses to ignore the untrusted-data framing of search results.
+
+## Dependency and release cadence
+
+- Run `tools/verify.sh` before every release and after every dependency change. It runs the full gate, including cargo audit, cargo deny, cargo machete, and a secret scan.
+- Recheck the advisory suppressions in `deny.toml` by their stated dates. A suppression past its date is a gate failure at the next refresh.
+- Rebuild against the current stable toolchain at each release. The pinned toolchain in `rust-toolchain.toml` is the one shipped.
+
+## Known limits
+
+- The operator of a public instance sees your query. This is how public instances work.
+- A search snippet can still be written to persuade a model. OwnSearch sanitizes text, caps length, keeps attribution, and never treats result text as an instruction, but it cannot make the text true.
+- A bot check, a CAPTCHA, or a rate limit is a control set by the operator. OwnSearch records it and stops. It never works around one.

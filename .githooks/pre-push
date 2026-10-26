@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO"
+source "$REPO/tools/lib.sh"
+require_bash 4.4
+
+if [[ -n "$(git status --porcelain)" ]]; then
+	die "push refused: the working tree is not clean"
+fi
+
+"$REPO/tools/verify.sh"

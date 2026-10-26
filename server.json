@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.devops-infinity/ownsearch",
+  "title": "OwnSearch",
+  "description": "Quality-ranked public SearXNG search for MCP clients, with local fleet state, instance scoring, and merged results that keep their source.",
+  "version": "0.1.0",
+  "websiteUrl": "https://github.com/devops-infinity/ownsearch",
+  "repository": {
+    "url": "https://github.com/devops-infinity/ownsearch",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "ownsearch",
+      "version": "0.1.0",
+      "runtimeHint": "binary",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "OWNSEARCH_STATE_DIR",
+          "description": "Directory for instances.db, the snapshot, and backups. Defaults to the XDG state directory.",
+          "isRequired": false
+        },
+        {
+          "name": "OWNSEARCH_HTML_FALLBACK",
+          "description": "Allow the controlled HTML probe on instances that deny JSON.",
+          "isRequired": false
+        }
+      ]
+    },
+    {
+      "registryType": "npm",
+      "identifier": "@devops-infinity/ownsearch",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
