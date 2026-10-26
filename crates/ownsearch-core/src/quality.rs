@@ -277,7 +277,7 @@ pub(crate) fn next_status(input: HysteresisInput) -> Transition {
             reasons,
         };
     }
-    if input.current == InstanceStatus::Missing {
+    if input.current == InstanceStatus::Missing && input.failures == 0 {
         reasons.push("hysteresis.recovered".to_owned());
         return Transition {
             status: InstanceStatus::Probation,
@@ -540,6 +540,36 @@ mod tests {
         });
         assert_eq!(second.status, InstanceStatus::Probation);
         assert!(second.reasons.contains(&"hysteresis.demote".to_owned()));
+    }
+
+    #[test]
+    fn a_missing_instance_recovers_only_after_a_clean_probe() {
+        let recovered = next_status(HysteresisInput {
+            current: InstanceStatus::Missing,
+            successes: 1,
+            failures: 0,
+            promotion_ready: true,
+            ..candidate_input(1)
+        });
+        assert_eq!(recovered.status, InstanceStatus::Probation);
+        assert!(
+            recovered
+                .reasons
+                .contains(&"hysteresis.recovered".to_owned())
+        );
+        let still_failing = next_status(HysteresisInput {
+            current: InstanceStatus::Missing,
+            successes: 0,
+            failures: 1,
+            promotion_ready: false,
+            ..candidate_input(1)
+        });
+        assert_eq!(still_failing.status, InstanceStatus::Missing);
+        assert!(
+            !still_failing
+                .reasons
+                .contains(&"hysteresis.recovered".to_owned())
+        );
     }
 
     #[test]

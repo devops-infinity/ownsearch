@@ -203,7 +203,7 @@ async fn a_rate_limited_probe_cools_down_and_keeps_the_status() {
         output
             .status_changes
             .iter()
-            .all(|change| change.to == "candidate")
+            .all(|change| change.next_status == "candidate")
     );
     assert_eq!(server.received_requests().await.expect("requests").len(), 2);
     let _ = std::fs::remove_dir_all(&dir);

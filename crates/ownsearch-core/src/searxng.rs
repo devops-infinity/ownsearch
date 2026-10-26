@@ -7,7 +7,7 @@ use crate::types::{ProbeOutcome, SafeSearch, TimeRange};
 
 #[derive(Debug, Clone)]
 pub struct SearchQuery {
-    pub q: String,
+    pub query: String,
     pub categories: Vec<String>,
     pub engines: Vec<String>,
     pub language: Option<String>,
@@ -17,9 +17,9 @@ pub struct SearchQuery {
 }
 
 impl SearchQuery {
-    pub fn new(q: impl Into<String>) -> Self {
+    pub fn new(query: impl Into<String>) -> Self {
         Self {
-            q: q.into(),
+            query: query.into(),
             categories: Vec::new(),
             engines: Vec::new(),
             language: None,
@@ -30,7 +30,7 @@ impl SearchQuery {
     }
 
     pub fn params(&self, json: bool) -> Vec<(&'static str, String)> {
-        let mut params: Vec<(&'static str, String)> = vec![("q", self.q.clone())];
+        let mut params: Vec<(&'static str, String)> = vec![("q", self.query.clone())];
         if json {
             params.push(("format", "json".to_owned()));
         }

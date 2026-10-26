@@ -503,10 +503,7 @@ impl Settings {
                 .or(profile.google_required)
                 .unwrap_or(false),
             cert_min_days: i64::try_from(bounded_u64(
-                env_parse(&env, "OWNSEARCH_CERT_MIN_DAYS")?
-                    .or(profile.cert_min_days)
-                    .and_then(|value| u64::try_from(value).ok())
-                    .unwrap_or(14),
+                cert_min_days(&env, profile.cert_min_days)?,
                 0,
                 365,
                 "cert_min_days",
@@ -1104,6 +1101,17 @@ pub fn format_keep_window(secs: u64) -> String {
     }
 }
 
+fn cert_min_days(env: &impl Fn(&str) -> Option<String>, profile: Option<i64>) -> Result<u64> {
+    if let Some(value) = env_parse::<u64>(env, "OWNSEARCH_CERT_MIN_DAYS")? {
+        return Ok(value);
+    }
+    match profile {
+        Some(value) => u64::try_from(value)
+            .map_err(|_| Error::Config(format!("cert_min_days is {value}; use zero or more"))),
+        None => Ok(14),
+    }
+}
+
 fn bounded_u64(value: u64, low: u64, high: u64, name: &str) -> Result<u64> {
     if (low..=high).contains(&value) {
         Ok(value)
@@ -1477,12 +1485,12 @@ mod tests {
 
     #[test]
     fn the_watchdog_switches_off_at_zero_and_reports_its_bounds() {
-        let off = load_with(&[("HOME", "/home/tester"), ("OWNSEARCH_WATCHDOG_SECS", "0")])
+        let disabled = load_with(&[("HOME", "/home/tester"), ("OWNSEARCH_WATCHDOG_SECS", "0")])
             .expect("settings");
-        assert_eq!(off.watchdog_secs(), 0);
-        let on = load_with(&[("HOME", "/home/tester"), ("OWNSEARCH_WATCHDOG_SECS", "45")])
+        assert_eq!(disabled.watchdog_secs(), 0);
+        let enabled = load_with(&[("HOME", "/home/tester"), ("OWNSEARCH_WATCHDOG_SECS", "45")])
             .expect("settings");
-        assert_eq!(on.watchdog_secs(), 45);
+        assert_eq!(enabled.watchdog_secs(), 45);
         let error = load_with(&[
             ("HOME", "/home/tester"),
             ("OWNSEARCH_BROWSER_WATCHDOG_SECS", "1"),

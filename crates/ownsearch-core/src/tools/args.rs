@@ -329,6 +329,14 @@ impl DbQueryArgs {
                 self.entity.as_str()
             )));
         }
+        if self.instance_id.is_some()
+            && matches!(self.entity, QueryEntity::Snapshots | QueryEntity::Runs)
+        {
+            return Err(Error::InvalidArgs(format!(
+                "instance_id does not apply to entity={}, which belongs to no single instance",
+                self.entity.as_str()
+            )));
+        }
 
         Ok(crate::db::InstanceFilter {
             status: self.status,

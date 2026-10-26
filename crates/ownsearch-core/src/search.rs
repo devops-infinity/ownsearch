@@ -39,7 +39,7 @@ pub struct SearchRequest {
 impl SearchRequest {
     pub fn to_query(&self) -> SearchQuery {
         SearchQuery {
-            q: self.query.clone(),
+            query: self.query.clone(),
             categories: self.categories.clone(),
             engines: self.engines.clone(),
             language: self.language.clone(),
@@ -340,7 +340,13 @@ pub async fn search(
 }
 
 fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)> {
-    let fleet = ctx.store.fleet(64)?;
+    let now = crate::time::now_rfc3339();
+    let not_cooling = |row: &InstanceRow| {
+        row.cooldown_until
+            .as_deref()
+            .is_none_or(|until| until <= now.as_str())
+    };
+    let fleet = ctx.store.fleet(64, &now)?;
     if !fleet.is_empty() {
         let ids: Vec<i64> = fleet.iter().map(|row| row.instance_id).collect();
         let rows = ctx.store.list_instances(&crate::db::InstanceFilter {
@@ -348,16 +354,22 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
             limit: 64,
             ..crate::db::InstanceFilter::default()
         })?;
+        let rows: Vec<InstanceRow> = rows.into_iter().filter(not_cooling).collect();
         if !rows.is_empty() {
             return Ok((rows, None));
         }
     }
-    let probation = ctx.store.list_instances(&crate::db::InstanceFilter {
-        status: Some(InstanceStatus::Probation),
-        min_score: Some(1.0),
-        limit: 32,
-        ..crate::db::InstanceFilter::default()
-    })?;
+    let probation: Vec<InstanceRow> = ctx
+        .store
+        .list_instances(&crate::db::InstanceFilter {
+            status: Some(InstanceStatus::Probation),
+            min_score: Some(1.0),
+            limit: 32,
+            ..crate::db::InstanceFilter::default()
+        })?
+        .into_iter()
+        .filter(not_cooling)
+        .collect();
     if !probation.is_empty() {
         return Ok((
             probation,
@@ -373,6 +385,7 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
             ..crate::db::InstanceFilter::default()
         })?
         .into_iter()
+        .filter(not_cooling)
         .filter(|row| row.hard_gate_passed == Some(true))
         .collect();
     if !candidates.is_empty() {
@@ -393,6 +406,7 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
         .into_iter()
         .filter(|row| {
             !row.denied
+                && not_cooling(row)
                 && row.hard_gate_passed != Some(false)
                 && row.kind != crate::types::InstanceType::Tor
                 && matches!(

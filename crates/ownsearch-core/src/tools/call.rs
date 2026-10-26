@@ -296,7 +296,7 @@ fn instance_info(ctx: &Arc<ToolContext>, args: InstanceInfoArgs) -> Result<ToolO
         })
         .collect();
     let count = instances.len();
-    let fleet = ctx.store.fleet(64)?.len();
+    let fleet = ctx.store.fleet(64, &crate::time::now_rfc3339())?.len();
     let text = format!("{count} instances listed; {fleet} in the active fleet");
     let output = InstanceInfoOutput { instances, count };
     Ok(ToolOutcome {

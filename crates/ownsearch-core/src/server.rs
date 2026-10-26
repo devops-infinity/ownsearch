@@ -365,77 +365,84 @@ fn sweep_under_lock(context: &ToolContext) -> Vec<String> {
 
 pub(crate) fn spawn_scanner(context: Arc<ToolContext>, shutdown: CancellationToken) {
     tokio::spawn(async move {
-        if !context.settings.offline() {
-            match tokio::select! {
-                () = shutdown.cancelled() => return,
-                outcome = crate::scanner::refresh_discovery(&context, false, &shutdown) => outcome,
-            } {
-                Ok(outcome) if !outcome.skipped => tracing::info!(
-                    added = outcome.added,
-                    changed = outcome.changed,
-                    missing = outcome.missing,
-                    "discovery refreshed"
-                ),
-                Ok(_) => {}
-                Err(error) => tracing::warn!(%error, "the startup discovery refresh failed"),
-            }
-        }
-        let tick = Duration::from_secs(context.settings.scan_min_interval_secs().clamp(30, 3600));
-        let mut pulse = tokio::time::interval(tick);
-        pulse.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        pulse.tick().await;
-        loop {
-            tokio::select! {
-                () = shutdown.cancelled() => break,
-                _ = pulse.tick() => {}
-            }
-            if context.settings.offline() {
-                continue;
-            }
-            if let Ok(outcome) = crate::scanner::refresh_discovery(&context, false, &shutdown).await
-                && !outcome.skipped
-            {
-                tracing::info!(
-                    added = outcome.added,
-                    changed = outcome.changed,
-                    missing = outcome.missing,
-                    "discovery refreshed"
-                );
-            }
-            let limit = context.settings.fleet_max().max(1);
-            let now = crate::time::rfc3339(crate::time::now_unix());
-            match context.store.scan_targets(limit, &now) {
-                Ok(targets) if targets.is_empty() => continue,
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "the due-instance query failed");
-                    continue;
-                }
-            }
-            jitter(context.settings.scan_jitter_ms()).await;
-            let options = crate::scanner::ScanOptions {
-                dry_run: false,
-                limit,
-                ..crate::scanner::ScanOptions::default()
-            };
-            let deadline = Duration::from_secs(context.settings.scan_deadline_secs().max(30));
-            match tokio::time::timeout(
-                deadline,
-                crate::scanner::run_scan(&context, &options, &shutdown),
-            )
-            .await
-            {
-                Ok(Ok(output)) => tracing::info!(
-                    probed = output.probed,
-                    changed = output.status_changes.len(),
-                    fleet = output.fleet.len(),
-                    "the scheduled scan finished"
-                ),
-                Ok(Err(error)) => tracing::warn!(%error, "the scheduled scan failed"),
-                Err(_) => tracing::warn!("the scheduled scan reached its deadline"),
-            }
+        let inner = tokio::spawn(scan_loop(context, shutdown));
+        if let Err(error) = inner.await {
+            tracing::error!(%error, "the scanner task stopped unexpectedly");
         }
     });
+}
+
+async fn scan_loop(context: Arc<ToolContext>, shutdown: CancellationToken) {
+    if !context.settings.offline() {
+        match tokio::select! {
+            () = shutdown.cancelled() => return,
+            outcome = crate::scanner::refresh_discovery(&context, false, &shutdown) => outcome,
+        } {
+            Ok(outcome) if !outcome.skipped => tracing::info!(
+                added = outcome.added,
+                changed = outcome.changed,
+                missing = outcome.missing,
+                "discovery refreshed"
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "the startup discovery refresh failed"),
+        }
+    }
+    let tick = Duration::from_secs(context.settings.scan_min_interval_secs().clamp(30, 3600));
+    let mut pulse = tokio::time::interval(tick);
+    pulse.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    pulse.tick().await;
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => break,
+            _ = pulse.tick() => {}
+        }
+        if context.settings.offline() {
+            continue;
+        }
+        if let Ok(outcome) = crate::scanner::refresh_discovery(&context, false, &shutdown).await
+            && !outcome.skipped
+        {
+            tracing::info!(
+                added = outcome.added,
+                changed = outcome.changed,
+                missing = outcome.missing,
+                "discovery refreshed"
+            );
+        }
+        let limit = context.settings.fleet_max().max(1);
+        let now = crate::time::rfc3339(crate::time::now_unix());
+        match context.store.scan_targets(limit, &now) {
+            Ok(targets) if targets.is_empty() => continue,
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "the due-instance query failed");
+                continue;
+            }
+        }
+        jitter(context.settings.scan_jitter_ms()).await;
+        let options = crate::scanner::ScanOptions {
+            dry_run: false,
+            limit,
+            ..crate::scanner::ScanOptions::default()
+        };
+        let deadline = Duration::from_secs(context.settings.scan_deadline_secs().max(30));
+        match tokio::time::timeout(
+            deadline,
+            crate::scanner::run_scan(&context, &options, &shutdown),
+        )
+        .await
+        {
+            Ok(Ok(output)) => tracing::info!(
+                probed = output.probed,
+                changed = output.status_changes.len(),
+                fleet = output.fleet.len(),
+                "the scheduled scan finished"
+            ),
+            Ok(Err(error)) => tracing::warn!(%error, "the scheduled scan failed"),
+            Err(_) => tracing::warn!("the scheduled scan reached its deadline"),
+        }
+    }
 }
 
 async fn jitter(max_ms: u64) {
@@ -458,16 +465,19 @@ pub(crate) fn start_hang_watchdog(
     }
     let heartbeat = Arc::clone(&context.heartbeat);
     let step = (stale_after / 4).max(Duration::from_millis(50));
-    tokio::spawn({
-        let heartbeat = Arc::clone(&heartbeat);
-        async move {
+    let beat_source = Arc::clone(&heartbeat);
+    tokio::spawn(async move {
+        let beat = tokio::spawn(async move {
             loop {
-                heartbeat.beat();
+                beat_source.beat();
                 tokio::select! {
                     () = tokio::time::sleep(step) => {}
                     () = shutdown.cancelled() => break,
                 }
             }
+        });
+        if let Err(error) = beat.await {
+            tracing::error!(%error, "the heartbeat task stopped unexpectedly");
         }
     });
     Some(crate::watchdog::start(heartbeat, stale_after))

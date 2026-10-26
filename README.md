@@ -99,7 +99,7 @@ tools/reinstall.sh
 ```sh
 ownsearch doctor
 ownsearch scan                # refresh discovery and probe the fleet
-ownsearch scan                # a second pass promotes repeat successes to active
+ownsearch scan                # once OWNSEARCH_SCAN_MIN_INTERVAL_SECS (30 by default) has passed, a second pass promotes repeat successes to active
 ownsearch serve               # MCP over stdio
 ```
 

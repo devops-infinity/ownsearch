@@ -11,7 +11,7 @@ use axum::body::Bytes;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State};
 use axum::http::{
     HeaderMap, HeaderValue, StatusCode,
-    header::{AUTHORIZATION, RETRY_AFTER},
+    header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER},
 };
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -45,6 +45,7 @@ const SHUTDOWN_GRACE_SECS: u64 = 10;
 const FAILED_AUTH_WINDOW_SECS: u64 = 60;
 const FAILED_AUTH_LIMIT: u32 = 5;
 const LOCKOUT_SECS: u64 = 30;
+const MAX_FAILED_AUTH_ENTRIES: usize = 1024;
 
 type FailedAuth = Arc<std::sync::Mutex<HashMap<std::net::IpAddr, (u32, Instant, Instant)>>>;
 
@@ -169,6 +170,7 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .merge(protected)
         .method_not_allowed_fallback(method_not_allowed)
         .fallback(not_found)
+        .layer(middleware::from_fn(problem_fallback))
         .layer(middleware::from_fn(security_headers));
     let listener = TcpListener::bind(&bind).await.map_err(|error| Error::Io {
         context: "binding the HTTP listener",
@@ -260,7 +262,8 @@ struct LimitedListener {
 struct LimitedStream {
     inner: TcpStream,
     _permit: OwnedSemaphorePermit,
-    ip: std::net::IpAddr,
+    client_ip: std::net::IpAddr,
+    tracked: bool,
     per_ip: Arc<std::sync::Mutex<HashMap<std::net::IpAddr, usize>>>,
     header_deadline: Instant,
     header_done: bool,
@@ -282,19 +285,21 @@ impl Listener for LimitedListener {
             };
             match self.inner.accept().await {
                 Ok((stream, address)) => {
-                    let ip = address.ip();
-                    let allowed = self
-                        .per_ip
-                        .lock()
-                        .map(|mut counts| {
-                            let entry = counts.entry(ip).or_insert(0);
-                            if *entry >= MAX_CONNECTIONS_PER_IP {
-                                return false;
-                            }
-                            *entry += 1;
-                            true
-                        })
-                        .unwrap_or(false);
+                    let client_ip = address.ip();
+                    let tracked = !client_ip.is_loopback();
+                    let allowed = !tracked
+                        || self
+                            .per_ip
+                            .lock()
+                            .map(|mut counts| {
+                                let entry = counts.entry(client_ip).or_insert(0);
+                                if *entry >= MAX_CONNECTIONS_PER_IP {
+                                    return false;
+                                }
+                                *entry += 1;
+                                true
+                            })
+                            .unwrap_or(false);
                     if !allowed {
                         drop(stream);
                         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -304,7 +309,8 @@ impl Listener for LimitedListener {
                         LimitedStream {
                             inner: stream,
                             _permit: permit,
-                            ip,
+                            client_ip,
+                            tracked,
                             per_ip: Arc::clone(&self.per_ip),
                             header_deadline: Instant::now() + Duration::from_secs(HEADER_READ_SECS),
                             header_done: false,
@@ -328,12 +334,15 @@ impl Listener for LimitedListener {
 
 impl Drop for LimitedStream {
     fn drop(&mut self) {
+        if !self.tracked {
+            return;
+        }
         if let Ok(mut counts) = self.per_ip.lock()
-            && let Some(count) = counts.get_mut(&self.ip)
+            && let Some(count) = counts.get_mut(&self.client_ip)
         {
             *count = count.saturating_sub(1);
             if *count == 0 {
-                counts.remove(&self.ip);
+                counts.remove(&self.client_ip);
             }
         }
     }
@@ -556,6 +565,7 @@ fn rest_error_status(code: Option<&str>) -> StatusCode {
         Some("ownsearch.timeout") => StatusCode::GATEWAY_TIMEOUT,
         Some("ownsearch.no_fleet") => StatusCode::SERVICE_UNAVAILABLE,
         Some("ownsearch.upstream_failed") => StatusCode::BAD_GATEWAY,
+        Some("ownsearch.parser_failed") => StatusCode::BAD_GATEWAY,
         Some("ownsearch.not_found") => StatusCode::NOT_FOUND,
         Some("ownsearch.tool_not_found") => StatusCode::NOT_FOUND,
         Some("ownsearch.cancelled") => StatusCode::SERVICE_UNAVAILABLE,
@@ -599,7 +609,7 @@ async fn healthz() -> impl IntoResponse {
 async fn startupz(State(state): State<HttpState>) -> impl IntoResponse {
     let store = std::sync::Arc::clone(&state.context.store);
     let checked = tokio::task::spawn_blocking(move || store.quick_check()).await;
-    let (ok, message) = checked.map_or_else(
+    let (healthy, message) = checked.map_or_else(
         |error| (false, error.to_string()),
         |result| {
             result.map_or_else(
@@ -608,7 +618,7 @@ async fn startupz(State(state): State<HttpState>) -> impl IntoResponse {
             )
         },
     );
-    if ok {
+    if healthy {
         (StatusCode::OK, Json(json!({"status": "started"})))
     } else {
         (
@@ -669,12 +679,14 @@ async fn metrics_handler(State(state): State<HttpState>) -> impl IntoResponse {
 }
 
 async fn reject_origin(State(state): State<HttpState>, request: Request, next: Next) -> Response {
+    let instance = request_id_of(request.headers());
     if let Some(origin) = request.headers().get(axum::http::header::ORIGIN) {
         let Ok(origin) = origin.to_str() else {
             return rejection(
                 StatusCode::FORBIDDEN,
                 "ownsearch.auth_failed",
                 "the Origin header is not text",
+                &instance,
             );
         };
         let allowed = state
@@ -686,6 +698,7 @@ async fn reject_origin(State(state): State<HttpState>, request: Request, next: N
                 StatusCode::FORBIDDEN,
                 "ownsearch.auth_failed",
                 "this Origin is not allowed; name it in OWNSEARCH_ALLOWED_ORIGINS",
+                &instance,
             );
         }
     }
@@ -698,6 +711,7 @@ async fn gate_requests(State(state): State<HttpState>, request: Request, next: N
             StatusCode::SERVICE_UNAVAILABLE,
             "ownsearch.rate_limited",
             "too many requests in flight",
+            &request_id_of(request.headers()),
         );
         response
             .headers_mut()
@@ -739,6 +753,7 @@ async fn assign_request_id(
 }
 
 async fn require_host(State(state): State<HttpState>, request: Request, next: Next) -> Response {
+    let instance = request_id_of(request.headers());
     let Some(host) = request
         .headers()
         .get(axum::http::header::HOST)
@@ -749,6 +764,7 @@ async fn require_host(State(state): State<HttpState>, request: Request, next: Ne
             StatusCode::BAD_REQUEST,
             "ownsearch.bad_request",
             "the Host header is missing or malformed",
+            &instance,
         );
     };
     let allowed = state
@@ -761,6 +777,7 @@ async fn require_host(State(state): State<HttpState>, request: Request, next: Ne
             StatusCode::FORBIDDEN,
             "ownsearch.auth_failed",
             "this Host is not allowed",
+            &instance,
         );
     }
     next.run(request).await
@@ -770,10 +787,12 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
     if state.tokens.is_empty() {
         return next.run(request).await;
     }
-    let address = request
+    let instance = request_id_of(request.headers());
+    let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|info| info.0.ip());
+    let address = client_address(request.headers(), peer);
     if let Some(address) = address
         && locked_out(&state, address)
     {
@@ -781,6 +800,7 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
             StatusCode::TOO_MANY_REQUESTS,
             "ownsearch.rate_limited",
             "too many failed authentication attempts",
+            &instance,
         );
     }
     let Some(presented) = bearer_token(&request) else {
@@ -789,6 +809,7 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
             StatusCode::UNAUTHORIZED,
             "ownsearch.auth_failed",
             "a bearer token is required",
+            &instance,
         );
     };
     let matched = state
@@ -801,17 +822,36 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
             StatusCode::UNAUTHORIZED,
             "ownsearch.auth_failed",
             "the bearer token is not valid",
+            &instance,
         );
     }
     next.run(request).await
 }
 
+fn client_address(headers: &HeaderMap, peer: Option<std::net::IpAddr>) -> Option<std::net::IpAddr> {
+    let peer = peer?;
+    if !peer.is_loopback() {
+        return Some(peer);
+    }
+    forwarded_client(headers).or(Some(peer))
+}
+
+fn forwarded_client(headers: &HeaderMap) -> Option<std::net::IpAddr> {
+    let raw = headers.get("x-forwarded-for")?.to_str().ok()?;
+    raw.rsplit(',').next()?.trim().parse().ok()
+}
+
 fn bearer_token(request: &Request) -> Option<&str> {
     let header = request.headers().get(AUTHORIZATION)?.to_str().ok()?;
-    let token = header
-        .strip_prefix("Bearer ")
-        .or_else(|| header.strip_prefix("bearer "))?;
-    Some(token.trim())
+    let (scheme, token) = header.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    Some(token)
 }
 
 fn locked_out(state: &HttpState, address: std::net::IpAddr) -> bool {
@@ -831,6 +871,12 @@ fn note_failure(state: &HttpState, address: Option<std::net::IpAddr>) {
     let Ok(mut failed) = state.failed.lock() else {
         return;
     };
+    if failed.len() >= MAX_FAILED_AUTH_ENTRIES {
+        failed.retain(|_, (_, _, last)| last.elapsed() < Duration::from_secs(LOCKOUT_SECS));
+        if failed.len() >= MAX_FAILED_AUTH_ENTRIES {
+            failed.clear();
+        }
+    }
     let now = Instant::now();
     let entry = failed.entry(address).or_insert((0, now, now));
     if entry.1.elapsed() > Duration::from_secs(FAILED_AUTH_WINDOW_SECS) {
@@ -974,7 +1020,12 @@ fn host_matches(request: &HostIdentity, allowed: &HostIdentity) -> bool {
     }
 }
 
-fn rejection(status: StatusCode, code: &'static str, message: &'static str) -> Response {
+fn rejection(
+    status: StatusCode,
+    code: &'static str,
+    message: &'static str,
+    instance: &str,
+) -> Response {
     let kind = code.strip_prefix("ownsearch.").unwrap_or(code);
     let mut response = (
         status,
@@ -983,7 +1034,7 @@ fn rejection(status: StatusCode, code: &'static str, message: &'static str) -> R
             "title": status.canonical_reason().unwrap_or("Error"),
             "status": status.as_u16(),
             "detail": message,
-            "instance": "unknown",
+            "instance": instance,
             "code": code,
             "remedy": remedy_for(code),
         })),
@@ -997,6 +1048,46 @@ fn rejection(status: StatusCode, code: &'static str, message: &'static str) -> R
         .headers_mut()
         .insert("cache-control", HeaderValue::from_static("no-store"));
     response
+}
+
+async fn problem_fallback(request: Request, next: Next) -> Response {
+    let instance = request_id_of(request.headers());
+    let response = next.run(request).await;
+    let status = response.status();
+    if !matches!(status.as_u16(), 408 | 413 | 415 | 431) {
+        return response;
+    }
+    let described = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("application/problem+json"));
+    if described {
+        return response;
+    }
+    let (code, message) = match status.as_u16() {
+        408 => (
+            "ownsearch.timeout",
+            "the request body did not arrive in time",
+        ),
+        413 => (
+            "ownsearch.bad_request",
+            "the request body is larger than the 1 MiB limit",
+        ),
+        415 => (
+            "ownsearch.bad_request",
+            "the request body type is not supported",
+        ),
+        _ => (
+            "ownsearch.bad_request",
+            "the request headers are not acceptable",
+        ),
+    };
+    let mut rewritten = problem(status, code, message, remedy_for(code), &instance);
+    rewritten
+        .headers_mut()
+        .insert("cache-control", HeaderValue::from_static("no-store"));
+    rewritten
 }
 
 async fn record_http_metrics(

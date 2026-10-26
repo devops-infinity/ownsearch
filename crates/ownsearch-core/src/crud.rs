@@ -335,7 +335,7 @@ impl CrudService {
             .as_deref()
             .map(str::trim)
             .filter(|value| value.chars().count() >= 3)
-            .map(|value| crate::sanitize::cap(value, 200).0)
+            .map(|value| crate::sanitize::cap(&crate::sanitize::sanitize(value), 200).0)
             .ok_or_else(|| Error::InvalidArgs("give a reason of at least 3 characters".into()))?;
         Ok(Validated {
             instance_id,
@@ -503,7 +503,7 @@ struct Preview {
 }
 
 fn validate_value(key: &str, value: &Value) -> Result<()> {
-    let ok = match key {
+    let accepted = match key {
         "status" => value
             .as_str()
             .is_some_and(|raw| InstanceStatus::parse(raw).is_some()),
@@ -513,7 +513,7 @@ fn validate_value(key: &str, value: &Value) -> Result<()> {
         "scanEnabled" | "htmlFallbackAllowed" | "pinned" | "denied" => value.is_boolean(),
         _ => false,
     };
-    if ok {
+    if accepted {
         Ok(())
     } else {
         Err(Error::InvalidArgs(format!(

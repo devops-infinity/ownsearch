@@ -180,14 +180,14 @@ fn content_root(document: &Html) -> NodeRef<'_, Node> {
             if let Node::Text(text) = descendant.value() {
                 let length = i64::try_from(text.trim().chars().count()).unwrap_or(0);
                 let link = descendant.ancestors().any(
-                    |ancestor| matches!(ancestor.value(), Node::Element(el) if el.name() == "a"),
+                    |ancestor| matches!(ancestor.value(), Node::Element(node) if node.name() == "a"),
                 );
                 text_chars = text_chars.saturating_add(length);
                 if link {
                     link_chars = link_chars.saturating_add(length);
                 }
-            } else if let Node::Element(el) = descendant.value()
-                && el.name() == "p"
+            } else if let Node::Element(node) = descendant.value()
+                && node.name() == "p"
             {
                 paragraphs = paragraphs.saturating_add(1);
             }

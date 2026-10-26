@@ -105,7 +105,7 @@ pub async fn fetch(
     let redirects = fetched.redirects.clone();
     if is_pdf {
         let text = pdf_text(fetched.body.clone(), deadline).await?;
-        let content = cap(&extract::from_pdf_text(&text), request.max_chars).0;
+        let (content, truncated) = cap(&extract::from_pdf_text(&text), request.max_chars);
         let output = FetchOutput {
             url: url.to_string(),
             final_url: final_url.to_string(),
@@ -116,7 +116,7 @@ pub async fn fetch(
             fetch_mode: "http".to_owned(),
             title: None,
             content,
-            truncated: false,
+            truncated,
             pages: Vec::new(),
             warnings: Vec::new(),
             cache_hit: false,
@@ -285,7 +285,14 @@ async fn crawl(
         if !fetched.is_success() {
             continue;
         }
-        let page_body = fetched.text();
+        let page_body = if fetched.is_pdf() {
+            match pdf_text(fetched.body.clone(), deadline).await {
+                Ok(text) => text,
+                Err(_) => continue,
+            }
+        } else {
+            fetched.text()
+        };
         let page_is_html = fetched.is_html() || looks_like_html(&page_body);
         let (title, content) = match (request.format, page_is_html) {
             (FetchFormat::Html, true) => (

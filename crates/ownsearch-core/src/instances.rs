@@ -432,13 +432,13 @@ impl DiscoveryInstance {
         let asn_cidr = network
             .ips
             .values()
-            .find_map(|ip| ip.asn_cidr.clone())
+            .find_map(|record| record.asn_cidr.clone())
             .or_else(|| {
                 network
                     .ips
                     .keys()
                     .next()
-                    .map(|ip| ip_prefix_group(ip))
+                    .map(|address| ip_prefix_group(address))
                     .filter(|group| !group.is_empty())
             });
         let working_engines = search.working_engine_names.clone();
@@ -478,8 +478,8 @@ impl DiscoveryInstance {
     }
 }
 
-fn ip_prefix_group(ip: &str) -> String {
-    if let Ok(parsed) = ip.parse::<std::net::Ipv4Addr>() {
+fn ip_prefix_group(address: &str) -> String {
+    if let Ok(parsed) = address.parse::<std::net::Ipv4Addr>() {
         let octets = parsed.octets();
         return format!(
             "{}.{}.{}.0/24",
@@ -488,7 +488,7 @@ fn ip_prefix_group(ip: &str) -> String {
             octets.get(2).copied().unwrap_or(0)
         );
     }
-    if let Ok(parsed) = ip.parse::<std::net::Ipv6Addr>() {
+    if let Ok(parsed) = address.parse::<std::net::Ipv6Addr>() {
         let segments = parsed.segments();
         return format!(
             "{:x}:{:x}:{:x}::/48",
