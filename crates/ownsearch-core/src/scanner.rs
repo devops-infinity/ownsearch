@@ -859,6 +859,19 @@ async fn probe_one_inner(
         html_outcome = Some(report.outcome);
         html_report = Some(report);
     }
+    let mut formats_ok = false;
+    if options.probe_search && json_denied && !rate_limited && !blocked {
+        let query = SearchQuery::new(PROBE_QUERY);
+        for format in ["rss", "csv"] {
+            if let Ok(entries) =
+                crate::formats::fetch(&ctx.probe_client, &base, &query, format, cancellation).await
+                && !entries.is_empty()
+            {
+                formats_ok = true;
+                break;
+            }
+        }
+    }
     let mut google_report = None;
     let mut google_outcome = None;
     let exact_google_capability = config
@@ -910,7 +923,8 @@ async fn probe_one_inner(
         },
     );
     let succeeded = assessment.hard_gate_passed
-        && (json_outcome.is_success() || html_outcome == Some(ProbeOutcome::Success));
+        && (json_outcome.is_success() || html_outcome == Some(ProbeOutcome::Success) || formats_ok);
+    let inconclusive = evidence.json_ok.is_none() && evidence.html_ok.is_none();
     let successes = if succeeded {
         target.consecutive_successes.saturating_add(1)
     } else {
@@ -918,6 +932,8 @@ async fn probe_one_inner(
     };
     let failures = if succeeded {
         0
+    } else if inconclusive {
+        target.consecutive_failures
     } else {
         target.consecutive_failures.saturating_add(1)
     };
@@ -1066,6 +1082,14 @@ struct ProbeEvidence<'a> {
     failures: i64,
 }
 
+fn evidence_value(outcome: ProbeOutcome) -> Option<bool> {
+    match outcome {
+        ProbeOutcome::Success => Some(true),
+        ProbeOutcome::HttpError | ProbeOutcome::ParserError => Some(false),
+        _ => None,
+    }
+}
+
 fn build_evidence(input: ProbeEvidence<'_>) -> Evidence {
     let ProbeEvidence {
         metrics,
@@ -1093,8 +1117,8 @@ fn build_evidence(input: ProbeEvidence<'_>) -> Evidence {
             ProbeOutcome::ParserError => Some(false),
             _ => None,
         },
-        json_ok: Some(json_outcome.is_success()),
-        html_ok: html_outcome.map(ProbeOutcome::is_success),
+        json_ok: evidence_value(json_outcome),
+        html_ok: html_outcome.and_then(evidence_value),
         google_ok: google_outcome.map(ProbeOutcome::is_success),
         uptime_month: metrics.and_then(|item| item.uptime_month),
         uptime_year: metrics.and_then(|item| item.uptime_year),

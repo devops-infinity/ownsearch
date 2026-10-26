@@ -698,6 +698,25 @@ async fn search_instance(
             http_class: report.http_status.map(http_class),
         };
     }
+    if report.outcome == ProbeOutcome::ParserError {
+        for format in ["rss", "csv"] {
+            if let Ok(entries) =
+                crate::formats::fetch(&ctx.client, &base, query, format, cancellation).await
+                && !entries.is_empty()
+            {
+                let observations = observations_from_formats(row, format, &entries);
+                if !observations.is_empty() {
+                    return SourceOutcome {
+                        instance_id: row.instance_id,
+                        parser: Some(format.to_owned()),
+                        observations,
+                        failure: None,
+                        http_class: None,
+                    };
+                }
+            }
+        }
+    }
     let html_allowed = row.html_fallback_allowed || ctx.settings.html_fallback();
     let denied = matches!(
         report.outcome,
@@ -786,6 +805,40 @@ fn observations_from_json(
         });
     }
     out
+}
+
+fn observations_from_formats(
+    row: &InstanceRow,
+    parser: &str,
+    entries: &[crate::formats::Entry],
+) -> Vec<Observation> {
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let url = clean_url(&entry.url)?;
+            let (title, _) = cap(&sanitize(&entry.title), TITLE_CHARS);
+            if title.is_empty() {
+                return None;
+            }
+            let snippet = (!entry.snippet.is_empty()).then(|| {
+                let (text, _) = cap(&sanitize(&entry.snippet), 300);
+                text
+            });
+            Some(Observation {
+                instance_id: row.instance_id,
+                instance_url: row.url.clone(),
+                instance_score: row.score.unwrap_or(0.0),
+                parser: parser.to_owned(),
+                engine: entry.engine.clone(),
+                rank: Some(u32::try_from(index + 1).unwrap_or(u32::MAX)),
+                title,
+                url,
+                snippet,
+                published_date: None,
+            })
+        })
+        .collect()
 }
 
 fn observations_from_html(

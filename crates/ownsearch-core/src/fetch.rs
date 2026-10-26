@@ -68,6 +68,30 @@ pub async fn fetch(
     }
     let budget = std::time::Duration::from_secs(ctx.settings.fetch_deadline_secs().max(5));
     let deadline = tokio::time::Instant::now() + budget;
+    if request.render == RenderMode::Always {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let (rendered_html, rendered_markdown) = ctx.browser.page(&url, remaining).await?;
+        let (title, content) = rendered_content(request, &rendered_html, rendered_markdown, &url);
+        let (content, truncated) = cap(&content, request.max_chars);
+        let output = FetchOutput {
+            url: url.to_string(),
+            final_url: url.to_string(),
+            redirects: Vec::new(),
+            status: 200,
+            content_type: Some("text/html".to_owned()),
+            format: request.format.as_str().to_owned(),
+            fetch_mode: "browser".to_owned(),
+            title,
+            content,
+            truncated,
+            pages: Vec::new(),
+            warnings: Vec::new(),
+            cache_hit: false,
+            cached_age_secs: None,
+            elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        };
+        return Ok(cached_outcome(ctx, cache_key, output));
+    }
     let fetched = tokio::time::timeout_at(
         deadline,
         ctx.client.get(

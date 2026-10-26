@@ -21,6 +21,7 @@ mod db;
 mod error;
 mod extract;
 mod fetch;
+mod formats;
 mod fsutil;
 mod instances;
 mod ledger;
