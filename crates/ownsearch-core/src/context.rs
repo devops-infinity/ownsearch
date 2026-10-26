@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use crate::cache::ResponseCache;
 use crate::client::FleetClient;
@@ -10,32 +12,107 @@ use crate::instances::BootstrapSnapshot;
 use crate::ledger::{Ledger, args_hash};
 use crate::tls_probe::TlsProber;
 
+pub(crate) type HttpCalls = BTreeMap<String, u64>;
+pub(crate) type HttpLatency = BTreeMap<String, (u64, u64, u64)>;
+
 #[derive(Debug, Default)]
-pub(crate) struct RuntimeMetrics {
-    pub calls: AtomicU64,
-    pub errors: AtomicU64,
-    pub cache_hits: AtomicU64,
+pub(crate) struct Metrics {
+    calls: AtomicU64,
+    errors: AtomicU64,
+    cache_hits: AtomicU64,
+    inflight: AtomicI64,
+    per_tool: Mutex<BTreeMap<String, u64>>,
+    http_calls: Mutex<HttpCalls>,
+    http_latency: Mutex<HttpLatency>,
 }
 
-impl RuntimeMetrics {
-    pub(crate) fn count_call(&self) {
+pub(crate) struct CallGuard {
+    metrics: Arc<Metrics>,
+}
+
+impl std::fmt::Debug for CallGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CallGuard")
+    }
+}
+
+impl Drop for CallGuard {
+    fn drop(&mut self) {
+        self.metrics.inflight.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Metrics {
+    pub(crate) fn begin_call(self: &Arc<Self>) -> CallGuard {
         self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inflight.fetch_add(1, Ordering::Relaxed);
+        CallGuard {
+            metrics: Arc::clone(self),
+        }
     }
 
     pub(crate) fn count_error(&self) {
         self.errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn count_tool_call(&self, tool: &str) {
+        if let Ok(mut counts) = self.per_tool.lock() {
+            *counts.entry(tool.to_owned()).or_insert(0) += 1;
+        }
+    }
+
     pub(crate) fn count_cache_hit(&self) {
         self.cache_hits.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn snapshot(&self) -> (u64, u64, u64) {
+    pub(crate) fn snapshot(&self) -> (u64, u64, i64) {
+        (
+            self.calls.load(Ordering::Relaxed),
+            self.errors.load(Ordering::Relaxed),
+            self.inflight.load(Ordering::Relaxed),
+        )
+    }
+
+    pub(crate) fn session_snapshot(&self) -> (u64, u64, u64) {
         (
             self.calls.load(Ordering::Relaxed),
             self.errors.load(Ordering::Relaxed),
             self.cache_hits.load(Ordering::Relaxed),
         )
+    }
+
+    pub(crate) fn record_http(&self, method: &str, route: &str, status: u16, elapsed_ms: u64) {
+        let key = format!("{method} {route}");
+        if let Ok(mut counts) = self.http_calls.lock() {
+            *counts.entry(format!("{key} {status}")).or_insert(0) += 1;
+        }
+        if let Ok(mut latencies) = self.http_latency.lock() {
+            let entry = latencies.entry(key).or_insert((0, 0, 0));
+            entry.0 = entry.0.saturating_add(1);
+            entry.1 = entry.1.saturating_add(elapsed_ms);
+            entry.2 = entry.2.max(elapsed_ms);
+        }
+    }
+
+    pub(crate) fn http_snapshot(&self) -> (HttpCalls, HttpLatency) {
+        let calls = self
+            .http_calls
+            .lock()
+            .map(|counts| counts.clone())
+            .unwrap_or_default();
+        let latencies = self
+            .http_latency
+            .lock()
+            .map(|values| values.clone())
+            .unwrap_or_default();
+        (calls, latencies)
+    }
+
+    pub(crate) fn per_tool(&self) -> BTreeMap<String, u64> {
+        self.per_tool
+            .lock()
+            .map(|counts| counts.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -50,7 +127,7 @@ pub struct ToolContext {
     pub ledger: std::sync::Arc<Ledger>,
     pub cache: ResponseCache,
     pub crud: crate::crud::CrudService,
-    pub(crate) metrics: RuntimeMetrics,
+    pub(crate) metrics: Arc<Metrics>,
     round_robin: std::sync::atomic::AtomicUsize,
     args_key: [u8; 32],
     fleet_generation: std::sync::atomic::AtomicU64,
@@ -83,6 +160,7 @@ impl ToolContext {
             settings.browser_executable().map(str::to_owned),
             settings.browser_idle_secs(),
             settings.browser_no_sandbox(),
+            settings.allow_private_instances(),
             settings.browser_watchdog_secs(),
             settings.browser_max_lifetime_secs(),
             &settings.state_dir().join("browser"),
@@ -102,7 +180,7 @@ impl ToolContext {
             ledger,
             cache,
             crud,
-            metrics: RuntimeMetrics::default(),
+            metrics: Arc::new(Metrics::default()),
             round_robin: std::sync::atomic::AtomicUsize::new(0),
             args_key,
             fleet_generation: std::sync::atomic::AtomicU64::new(0),
@@ -126,6 +204,7 @@ impl ToolContext {
             settings.browser_executable().map(str::to_owned),
             settings.browser_idle_secs(),
             settings.browser_no_sandbox(),
+            settings.allow_private_instances(),
             settings.browser_watchdog_secs(),
             settings.browser_max_lifetime_secs(),
             &settings.state_dir().join("browser"),
@@ -145,7 +224,7 @@ impl ToolContext {
             ledger,
             cache,
             crud,
-            metrics: RuntimeMetrics::default(),
+            metrics: Arc::new(Metrics::default()),
             round_robin: std::sync::atomic::AtomicUsize::new(0),
             args_key,
             fleet_generation: std::sync::atomic::AtomicU64::new(0),

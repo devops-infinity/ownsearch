@@ -96,26 +96,33 @@ impl Ledger {
     pub fn open(path: impl Into<PathBuf>, key: &[u8]) -> Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent() {
-            create_private_dir(parent)?;
+            crate::fsutil::create_private_dir(parent).map_err(ledger_error)?;
         }
-        let mut file = open_append(&path)?;
-        let (mut valid_len, seq, head, oldest_ts, totals) = scan(&mut file, &path, key)?;
-        let length = file.metadata()?.len();
-        if length > valid_len {
-            file.set_len(valid_len)?;
-            tracing::warn!(
-                path = %path.display(),
-                removed = length.saturating_sub(valid_len),
-                "truncated a partial final ledger line before appending"
-            );
-        }
-        if valid_len > 0 && !ends_with_newline(&mut file, valid_len)? {
+        let mut file = open_file(&path)?;
+        lock_file(&file, &path)?;
+        let scanned = scan(&mut file, &path, key);
+        let repaired = scanned.and_then(|(valid_len, seq, head, oldest_ts, totals)| {
+            let length = file.metadata()?.len();
+            let mut valid_len = valid_len;
+            if length > valid_len {
+                file.set_len(valid_len)?;
+                tracing::warn!(
+                    path = %path.display(),
+                    removed = length.saturating_sub(valid_len),
+                    "truncated a partial final ledger line before appending"
+                );
+            }
+            if valid_len > 0 && !ends_with_newline(&mut file, valid_len)? {
+                file.seek(SeekFrom::Start(valid_len))?;
+                file.write_all(b"\n")?;
+                file.sync_data()?;
+                valid_len = valid_len.saturating_add(1);
+            }
             file.seek(SeekFrom::Start(valid_len))?;
-            file.write_all(b"\n")?;
-            file.sync_data()?;
-            valid_len = valid_len.saturating_add(1);
-        }
-        file.seek(SeekFrom::Start(valid_len))?;
+            Ok((valid_len, seq, head, oldest_ts, totals))
+        });
+        let _ = file.unlock();
+        let (valid_len, seq, head, oldest_ts, totals) = repaired?;
         Ok(Self {
             path,
             state: Mutex::new(State {
@@ -141,16 +148,22 @@ impl Ledger {
         if state.oldest_ts == 0 || state.oldest_ts >= cutoff_unix {
             return Ok(false);
         }
-        catch_up(&mut state, &self.path, key)?;
-        state.file.sync_all()?;
-        let stamp = crate::time::rfc3339(crate::time::now_unix())
-            .replace([':', '.'], "-")
-            .replace('T', "_");
-        let archive = self.path.with_file_name(format!("calls-{stamp}.jsonl"));
-        std::fs::rename(&self.path, &archive)
-            .map_err(|error| Error::Ledger(format!("cannot archive the ledger: {error}")))?;
-        let file = open_append(&self.path)?;
-        state.file = file;
+        lock_file(&state.file, &self.path)?;
+        let rotated = catch_up(&mut state, &self.path, key)
+            .and_then(|()| state.file.sync_all().map_err(Error::from))
+            .and_then(|()| {
+                let stamp = crate::time::rfc3339(crate::time::now_unix())
+                    .replace([':', '.'], "-")
+                    .replace('T', "_");
+                let archive = self.path.with_file_name(format!("calls-{stamp}.jsonl"));
+                std::fs::rename(&self.path, &archive)
+                    .map_err(|error| Error::Ledger(format!("cannot archive the ledger: {error}")))
+            });
+        if let Err(error) = rotated {
+            let _ = state.file.unlock();
+            return Err(error);
+        }
+        state.file = open_append(&self.path)?;
         state.offset = 0;
         state.seq = 0;
         state.head = GENESIS.to_owned();
@@ -180,49 +193,54 @@ impl Ledger {
             .state
             .lock()
             .map_err(|_| Error::Ledger("the ledger lock was poisoned".into()))?;
-        catch_up(&mut state, &self.path, key)?;
-        let row = LedgerRow {
-            seq: state.seq.saturating_add(1),
-            ts_unix: crate::time::now_unix(),
-            tool: record.tool,
-            operation: record.operation,
-            status: record.status,
-            duration_ms: record.duration_ms,
-            instances: record.instances,
-            parser: record.parser,
-            http_class: record.http_class,
-            bytes: record.bytes,
-            result_count: record.result_count,
-            cache_state: record.cache_state,
-            args_hash: record.args_hash,
-            prev: state.head.clone(),
-            hash: String::new(),
-        };
-        let row = sign(row, key)?;
-        let mut line = serde_json::to_vec(&row)?;
-        line.push(b'\n');
-        state
-            .file
-            .lock()
-            .map_err(|error| Error::Ledger(format!("cannot lock the ledger: {error}")))?;
-        let written = state
-            .file
-            .write_all(&line)
-            .and_then(|()| state.file.sync_data());
+        lock_file(&state.file, &self.path)?;
+        let written = append_locked(&mut state, &self.path, record, key);
         let _ = state.file.unlock();
-        written.map_err(|error| Error::Ledger(format!("cannot write the ledger row: {error}")))?;
-        state.offset = state.offset.saturating_add(line.len() as u64);
-        if state.oldest_ts == 0 {
-            state.oldest_ts = row.ts_unix;
-        }
-        apply_totals(&mut state.totals, &row);
-        if state.oldest_ts == 0 {
-            state.oldest_ts = row.ts_unix;
-        }
-        state.seq = row.seq;
-        state.head = row.hash.clone();
-        Ok(row)
+        written
     }
+}
+
+fn append_locked(
+    state: &mut State,
+    path: &Path,
+    record: CallRecord,
+    key: &[u8],
+) -> Result<LedgerRow> {
+    catch_up(state, path, key)?;
+    let row = LedgerRow {
+        seq: state.seq.saturating_add(1),
+        ts_unix: crate::time::now_unix(),
+        tool: record.tool,
+        operation: record.operation,
+        status: record.status,
+        duration_ms: record.duration_ms,
+        instances: record.instances,
+        parser: record.parser,
+        http_class: record.http_class,
+        bytes: record.bytes,
+        result_count: record.result_count,
+        cache_state: record.cache_state,
+        args_hash: record.args_hash,
+        prev: state.head.clone(),
+        hash: String::new(),
+    };
+    let row = sign(row, key)?;
+    let mut line = serde_json::to_vec(&row)?;
+    line.push(b'\n');
+    state
+        .file
+        .seek(SeekFrom::Start(state.offset))
+        .and_then(|_| state.file.write_all(&line))
+        .and_then(|()| state.file.sync_data())
+        .map_err(|error| Error::Ledger(format!("cannot write the ledger row: {error}")))?;
+    state.offset = state.offset.saturating_add(line.len() as u64);
+    if state.oldest_ts == 0 {
+        state.oldest_ts = row.ts_unix;
+    }
+    apply_totals(&mut state.totals, &row);
+    state.seq = row.seq;
+    state.head = row.hash.clone();
+    Ok(row)
 }
 
 fn catch_up(state: &mut State, path: &Path, key: &[u8]) -> Result<()> {
@@ -249,6 +267,12 @@ fn catch_up(state: &mut State, path: &Path, key: &[u8]) -> Result<()> {
             Error::Ledger(format!("a concurrent ledger row does not parse: {error}"))
         })?;
         validate(&row, key)?;
+        if row.prev != state.head || row.seq != state.seq.saturating_add(1) {
+            return Err(Error::Ledger(format!(
+                "the ledger chain breaks at row {} written by another process",
+                row.seq
+            )));
+        }
         apply_totals(&mut state.totals, &row);
         if state.oldest_ts == 0 {
             state.oldest_ts = row.ts_unix;
@@ -348,6 +372,7 @@ fn scan(file: &mut File, path: &Path, key: &[u8]) -> Result<(u64, u64, String, i
     for line in raw.split_inclusive('\n') {
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            valid_len = valid_len.saturating_add(line.len() as u64);
             continue;
         }
         let complete = line.ends_with('\n');
@@ -432,7 +457,7 @@ pub fn load_or_create_key(path: &Path) -> Result<[u8; 32]> {
             getrandom::fill(&mut key)
                 .map_err(|error| Error::Ledger(format!("os random: {error}")))?;
             if let Some(parent) = path.parent() {
-                create_private_dir(parent)?;
+                crate::fsutil::create_private_dir(parent).map_err(ledger_error)?;
             }
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
@@ -473,6 +498,17 @@ fn ends_with_newline(file: &mut File, length: u64) -> Result<bool> {
 }
 
 fn open_append(path: &Path) -> Result<File> {
+    let file = open_file(path)?;
+    lock_file(&file, path)?;
+    let _ = file.unlock();
+    Ok(file)
+}
+
+fn ledger_error(error: Error) -> Error {
+    Error::Ledger(error.to_string())
+}
+
+fn open_file(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
     #[cfg(unix)]
@@ -480,13 +516,16 @@ fn open_append(path: &Path) -> Result<File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = options
+    options
         .open(path)
-        .map_err(|error| Error::Ledger(format!("cannot open {}: {error}", path.display())))?;
+        .map_err(|error| Error::Ledger(format!("cannot open {}: {error}", path.display())))
+}
+
+fn lock_file(file: &File, path: &Path) -> Result<()> {
     let started = Instant::now();
     loop {
         match file.try_lock() {
-            Ok(()) => break,
+            Ok(()) => return Ok(()),
             Err(_) if started.elapsed() < LOCK_WAIT => {
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -498,35 +537,11 @@ fn open_append(path: &Path) -> Result<File> {
             }
         }
     }
-    let _ = file.unlock();
-    Ok(file)
 }
 
 fn open_read(path: &Path) -> Result<File> {
     File::open(path)
         .map_err(|error| Error::Ledger(format!("cannot read {}: {error}", path.display())))
-}
-
-fn create_private_dir(path: &Path) -> Result<()> {
-    let existed = path.exists();
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder
-        .create(path)
-        .map_err(|error| Error::Ledger(format!("cannot create {}: {error}", path.display())))?;
-    if !existed {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -631,6 +646,50 @@ mod tests {
         ledger
             .append(record("ownsearch_scan"), &KEY)
             .expect("append after partial");
+        let (entries, _) = verify(&path, &KEY).expect("verify");
+        assert_eq!(entries, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_ledgers_on_one_file_keep_the_chain_intact() {
+        let dir = temp_dir("two-writers");
+        let path = dir.join("calls.jsonl");
+        let first = Ledger::open(&path, &KEY).expect("first");
+        let second = Ledger::open(&path, &KEY).expect("second");
+        first
+            .append(record("ownsearch_search"), &KEY)
+            .expect("first append");
+        second
+            .append(record("ownsearch_search"), &KEY)
+            .expect("second append");
+        first
+            .append(record("ownsearch_scan"), &KEY)
+            .expect("third append");
+        let (entries, _) = verify(&path, &KEY).expect("verify");
+        assert_eq!(entries, 3);
+        assert_eq!(second.totals().calls, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_blank_line_inside_the_ledger_keeps_the_rows_after_it() {
+        let dir = temp_dir("blank-line");
+        let path = dir.join("calls.jsonl");
+        let ledger = Ledger::open(&path, &KEY).expect("ledger");
+        ledger
+            .append(record("ownsearch_search"), &KEY)
+            .expect("append");
+        ledger
+            .append(record("ownsearch_scan"), &KEY)
+            .expect("append");
+        let raw = std::fs::read_to_string(&path).expect("read");
+        let mut lines = raw.lines();
+        let first = lines.next().expect("first line").to_owned();
+        let second = lines.next().expect("second line").to_owned();
+        std::fs::write(&path, format!("{first}\n\n{second}\n")).expect("write");
+        let reopened = Ledger::open(&path, &KEY).expect("reopen");
+        assert_eq!(reopened.totals().calls, 2);
         let (entries, _) = verify(&path, &KEY).expect("verify");
         assert_eq!(entries, 2);
         let _ = std::fs::remove_dir_all(&dir);

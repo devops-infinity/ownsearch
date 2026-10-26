@@ -53,8 +53,8 @@ impl SearchArgs {
                 "query is longer than {MAX_QUERY_CHARS} characters"
             )));
         }
-        let categories = clean_list(self.categories, "categories")?;
-        let engines = clean_list(self.engines, "engines")?;
+        let categories = bounded_list(self.categories, "categories")?;
+        let engines = bounded_list(self.engines, "engines")?;
         if let Some(language) = &self.language
             && !is_language_code(language)
         {
@@ -113,7 +113,7 @@ pub(crate) struct ValidatedSearch {
     pub text_mode: TextMode,
 }
 
-fn clean_list(values: Option<Vec<String>>, field: &str) -> Result<Vec<String>> {
+fn bounded_list(values: Option<Vec<String>>, field: &str) -> Result<Vec<String>> {
     let Some(values) = values else {
         return Ok(Vec::new());
     };
@@ -326,6 +326,14 @@ impl DbQueryArgs {
         if broad && !matches!(self.entity, QueryEntity::Instances) {
             return Err(Error::InvalidArgs(format!(
                 "status, type, and min_score only apply to entity=instances, not {}",
+                self.entity.as_str()
+            )));
+        }
+        if self.instance_id.is_some()
+            && matches!(self.entity, QueryEntity::Snapshots | QueryEntity::Runs)
+        {
+            return Err(Error::InvalidArgs(format!(
+                "instance_id does not apply to entity={}, which belongs to no single instance",
                 self.entity.as_str()
             )));
         }

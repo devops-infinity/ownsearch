@@ -2,22 +2,22 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub(crate) fn is_public(address: IpAddr) -> bool {
     match address {
-        IpAddr::V4(ip) => is_public_v4(ip),
-        IpAddr::V6(ip) => is_public_v6(ip),
+        IpAddr::V4(ipv4) => is_public_v4(ipv4),
+        IpAddr::V6(ipv6) => is_public_v6(ipv6),
     }
 }
 
-fn is_public_v4(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
+fn is_public_v4(address: Ipv4Addr) -> bool {
+    let octets = address.octets();
     let first = octets.first().copied().unwrap_or(0);
     let second = octets.get(1).copied().unwrap_or(0);
-    !(ip.is_private()
-        || ip.is_loopback()
-        || ip.is_link_local()
-        || ip.is_broadcast()
-        || ip.is_documentation()
-        || ip.is_unspecified()
-        || ip.is_multicast()
+    !(address.is_private()
+        || address.is_loopback()
+        || address.is_link_local()
+        || address.is_broadcast()
+        || address.is_documentation()
+        || address.is_unspecified()
+        || address.is_multicast()
         || first == 0
         || first >= 240
         || (first == 100 && (64..=127).contains(&second))
@@ -26,11 +26,11 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || (first == 192 && second == 88 && octets.get(2).copied() == Some(99)))
 }
 
-fn is_public_v6(ip: Ipv6Addr) -> bool {
-    if let Some(mapped) = ip.to_ipv4_mapped() {
+fn is_public_v6(address: Ipv6Addr) -> bool {
+    if let Some(mapped) = address.to_ipv4_mapped() {
         return is_public_v4(mapped);
     }
-    let segments = ip.segments();
+    let segments = address.segments();
     let documentation =
         segments.first().copied() == Some(0x2001) && segments.get(1).copied() == Some(0x0db8);
     let discard = segments.first().copied() == Some(0x0100)
@@ -56,7 +56,7 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         .copied()
         .is_some_and(|first| (0x3fff..0x4000).contains(&first));
     let sr_v6 = segments.first().copied() == Some(0x5f00);
-    !(ip.is_loopback()
+    !(address.is_loopback()
         || ipv4_compatible
         || site_local
         || benchmarking
@@ -66,10 +66,10 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         || teredo
         || six_to_four
         || nat64
-        || ip.is_unspecified()
-        || ip.is_multicast()
-        || ip.is_unique_local()
-        || ip.is_unicast_link_local()
+        || address.is_unspecified()
+        || address.is_multicast()
+        || address.is_unique_local()
+        || address.is_unicast_link_local()
         || documentation
         || discard)
 }

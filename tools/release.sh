@@ -120,7 +120,7 @@ prepare)
 package)
 	require_tool dist "run: cargo install cargo-dist --locked"
 	OWNSEARCH_STRICT_GATE=1 "$REPO/tools/verify.sh"
-	dist build --artifacts=local --target=x86_64-unknown-linux-gnu
+	dist build --artifacts=local
 	if command -v minisign >/dev/null 2>&1 && [[ -f "$HOME/.minisign/ownsearch.key" ]]; then
 		(
 			cd dist

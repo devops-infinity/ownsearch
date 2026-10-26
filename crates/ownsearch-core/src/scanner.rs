@@ -19,7 +19,7 @@ use crate::quality::{
 };
 use crate::response::{ScanOutput, StatusChange};
 use crate::searxng::{ProbeReport, SearchQuery, config_client, search_html, search_json};
-use crate::time::{now_rfc3339, now_unix, rfc3339};
+use crate::time::{jitter, now_rfc3339, now_unix, rfc3339};
 use crate::tls_probe::TlsReport;
 use crate::types::{InstanceStatus, ProbeKind, ProbeOutcome};
 
@@ -28,6 +28,10 @@ const SUCCESS_NEXT_SCAN_SECS: i64 = 3_600;
 const FAILURE_NEXT_SCAN_SECS: i64 = 900;
 const PROBE_STEP_COUNT: u64 = 5;
 const QUARANTINE_NEXT_SCAN_SECS: i64 = 21_600;
+const RESOLVE_CONCURRENCY: usize = 8;
+const RESOLVE_PASS_SECS: u64 = 60;
+
+static DISCOVERY_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
@@ -95,7 +99,7 @@ struct InstanceProbe {
 }
 
 impl InstanceProbe {
-    fn ok(&self) -> bool {
+    fn succeeded(&self) -> bool {
         self.hard_gate_passed
             && (self.json_outcome.is_success() || self.html_outcome == Some(ProbeOutcome::Success))
     }
@@ -112,6 +116,7 @@ pub async fn refresh_discovery(
             ..DiscoveryOutcome::default()
         });
     }
+    let _gate = DISCOVERY_GATE.lock().await;
     if !force
         && let Some(last) = ctx.store.last_run_at(SOURCE_ID_SEARX_SPACE)?
         && now_unix().saturating_sub(last)
@@ -181,12 +186,14 @@ pub async fn refresh_discovery(
     let stamp = rfc3339(now);
     let loaded = public_records(ctx, document.to_discovered(now)).await;
     let source_len = loaded.source_len;
+    let resolved = loaded.complete;
     let discovered = loaded.kept;
     let (added, changed, present) =
         ctx.store
             .import_discovered(&discovered, SOURCE_ID_SEARX_SPACE, Some(&run_id), &stamp)?;
     let known = usize::try_from(ctx.store.instance_count()?).unwrap_or(0);
-    let plausible = source_len >= 20
+    let plausible = resolved
+        && source_len >= 20
         && (known == 0 || source_len.saturating_mul(2) >= known)
         && source_len <= MAX_DISCOVERY_RECORDS;
     let missing = if plausible {
@@ -402,8 +409,8 @@ pub async fn run_scan(
             instance_id: probe.instance_id,
             slug: crate::types::instance_slug(&probe.url),
             url: probe.url.clone(),
-            from: probe.previous.as_str().to_owned(),
-            to: probe.next_status.as_str().to_owned(),
+            previous_status: probe.previous.as_str().to_owned(),
+            next_status: probe.next_status.as_str().to_owned(),
             reasons: probe.reasons.clone(),
         })
         .collect();
@@ -519,8 +526,8 @@ async fn dry_run_scan(
             instance_id: probe.instance_id,
             slug: crate::types::instance_slug(&probe.url),
             url: probe.url.clone(),
-            from: probe.previous.as_str().to_owned(),
-            to: probe.next_status.as_str().to_owned(),
+            previous_status: probe.previous.as_str().to_owned(),
+            next_status: probe.next_status.as_str().to_owned(),
             reasons: probe.reasons.clone(),
         })
         .collect();
@@ -623,14 +630,61 @@ async fn discovery_preview(
 struct PublicRecords {
     kept: Vec<DiscoveredInstance>,
     source_len: usize,
+    complete: bool,
 }
 
 async fn public_records(ctx: &ToolContext, mut records: Vec<DiscoveredInstance>) -> PublicRecords {
     let source_len = records.len();
     cap_records(&mut records);
-    let mut kept = Vec::with_capacity(records.len());
-    for record in records {
-        if record_is_public(&record.url, ctx.settings.allow_private_instances()).await {
+    if ctx.settings.allow_private_instances() {
+        return PublicRecords {
+            kept: records,
+            source_len,
+            complete: true,
+        };
+    }
+    let count = records.len();
+    let permits = Arc::new(tokio::sync::Semaphore::new(RESOLVE_CONCURRENCY));
+    let mut set: JoinSet<(usize, DiscoveredInstance, bool)> = JoinSet::new();
+    for (index, record) in records.into_iter().enumerate() {
+        let permits = Arc::clone(&permits);
+        set.spawn(async move {
+            let Ok(_permit) = permits.acquire_owned().await else {
+                return (index, record, false);
+            };
+            let allowed = record_is_public(&record.url, false).await;
+            (index, record, allowed)
+        });
+    }
+    let mut checked: Vec<Option<(DiscoveredInstance, bool)>> = (0..count).map(|_| None).collect();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(RESOLVE_PASS_SECS);
+    let mut complete = true;
+    loop {
+        match tokio::time::timeout_at(deadline, set.join_next()).await {
+            Ok(Some(Ok((index, record, allowed)))) => {
+                if let Some(slot) = checked.get_mut(index) {
+                    *slot = Some((record, allowed));
+                }
+            }
+            Ok(Some(Err(_))) => continue,
+            Ok(None) => break,
+            Err(_) => {
+                set.abort_all();
+                while set.join_next().await.is_some() {}
+                complete = false;
+                tracing::warn!(
+                    records = count,
+                    seconds = RESOLVE_PASS_SECS,
+                    "the discovery address check ran out of time; no instance is marked missing"
+                );
+                break;
+            }
+        }
+    }
+    let mut kept = Vec::with_capacity(count);
+    for slot in checked.into_iter().flatten() {
+        let (record, allowed) = slot;
+        if allowed {
             kept.push(record);
         } else {
             tracing::warn!(
@@ -639,7 +693,11 @@ async fn public_records(ctx: &ToolContext, mut records: Vec<DiscoveredInstance>)
             );
         }
     }
-    PublicRecords { kept, source_len }
+    PublicRecords {
+        kept,
+        source_len,
+        complete,
+    }
 }
 
 fn unique_reasons(reasons: Vec<String>) -> Vec<String> {
@@ -722,16 +780,6 @@ async fn record_is_public(url: &str, allow_private: bool) -> bool {
         Ok(parsed) => crate::network_guard::url_is_public(&parsed).await,
         Err(_) => false,
     }
-}
-
-async fn jitter(max_ms: u64) {
-    if max_ms == 0 {
-        return;
-    }
-    let mut bytes = [0u8; 8];
-    let _ = getrandom::fill(&mut bytes);
-    let spread = u64::from_le_bytes(bytes) % max_ms.saturating_add(1);
-    tokio::time::sleep(std::time::Duration::from_millis(spread)).await;
 }
 
 async fn probe_one(
@@ -831,18 +879,18 @@ async fn probe_one_inner(
         .discovery_metrics(target.instance_id)
         .ok()
         .flatten();
-    let evidence = build_evidence(
-        metrics.as_ref(),
-        &tls,
-        config.as_ref(),
-        config_outcome.is_success(),
+    let evidence = build_evidence(ProbeEvidence {
+        metrics: metrics.as_ref(),
+        tls: &tls,
+        config: config.as_ref(),
+        config_ok: config_outcome.is_success(),
         json_outcome,
         html_outcome,
         google_outcome,
         parser_drift,
-        target.consecutive_successes,
-        target.consecutive_failures,
-    );
+        successes: target.consecutive_successes,
+        failures: target.consecutive_failures,
+    });
     let assessment = assess(
         &evidence,
         crate::quality::Policy {
@@ -850,14 +898,14 @@ async fn probe_one_inner(
             google_required: ctx.settings.google_required(),
         },
     );
-    let ok = assessment.hard_gate_passed
+    let succeeded = assessment.hard_gate_passed
         && (json_outcome.is_success() || html_outcome == Some(ProbeOutcome::Success));
-    let successes = if ok {
+    let successes = if succeeded {
         target.consecutive_successes.saturating_add(1)
     } else {
         0
     };
-    let failures = if ok {
+    let failures = if succeeded {
         0
     } else {
         target.consecutive_failures.saturating_add(1)
@@ -866,7 +914,7 @@ async fn probe_one_inner(
         current: target.status,
         successes: u32::try_from(successes).unwrap_or(u32::MAX),
         failures: u32::try_from(failures).unwrap_or(u32::MAX),
-        promotion_ready: ok,
+        promotion_ready: succeeded,
         gate_failed: !assessment.hard_gate_passed,
         rate_limited,
         blocked,
@@ -882,7 +930,7 @@ async fn probe_one_inner(
         )))
     } else if transition.status == InstanceStatus::Quarantined {
         Some(rfc3339(now.saturating_add(QUARANTINE_NEXT_SCAN_SECS)))
-    } else if ok {
+    } else if succeeded {
         Some(rfc3339(now.saturating_add(SUCCESS_NEXT_SCAN_SECS)))
     } else {
         Some(rfc3339(now.saturating_add(FAILURE_NEXT_SCAN_SECS)))
@@ -994,11 +1042,10 @@ fn failed_probe(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_evidence(
-    metrics: Option<&DiscoveredInstance>,
-    tls: &TlsReport,
-    config: Option<&config_client::ConfigDocument>,
+struct ProbeEvidence<'a> {
+    metrics: Option<&'a DiscoveredInstance>,
+    tls: &'a TlsReport,
+    config: Option<&'a config_client::ConfigDocument>,
     config_ok: bool,
     json_outcome: ProbeOutcome,
     html_outcome: Option<ProbeOutcome>,
@@ -1006,7 +1053,21 @@ fn build_evidence(
     parser_drift: bool,
     successes: i64,
     failures: i64,
-) -> Evidence {
+}
+
+fn build_evidence(input: ProbeEvidence<'_>) -> Evidence {
+    let ProbeEvidence {
+        metrics,
+        tls,
+        config,
+        config_ok,
+        json_outcome,
+        html_outcome,
+        google_outcome,
+        parser_drift,
+        successes,
+        failures,
+    } = input;
     let version = config
         .and_then(|document| document.version.clone())
         .or_else(|| metrics.and_then(|item| item.version.clone()));
@@ -1184,8 +1245,8 @@ async fn persist_probe(ctx: &Arc<ToolContext>, probe: &InstanceProbe, dry_run: b
                     reasons: probe.reasons.clone(),
                     next_scan_at: probe.next_scan_at.clone(),
                     cooldown_until: probe.cooldown_until.clone(),
-                    last_success_at: probe.ok().then(|| now.clone()),
-                    last_failure_at: (!probe.ok()).then(|| now.clone()),
+                    last_success_at: probe.succeeded().then(|| now.clone()),
+                    last_failure_at: (!probe.succeeded()).then(|| now.clone()),
                     version: probe.version.clone(),
                     capability_id: Some(capability_id),
                     tls_id: Some(tls_id),
@@ -1436,7 +1497,7 @@ fn select_and_rank(ctx: &ToolContext) -> Result<FleetSelection> {
 fn dry_run_fleet(probes: &[InstanceProbe], ctx: &ToolContext) -> Vec<i64> {
     let candidates: Vec<FleetCandidate> = probes
         .iter()
-        .filter(|probe| probe.hard_gate_passed && probe.ok())
+        .filter(|probe| probe.hard_gate_passed && probe.succeeded())
         .map(|probe| FleetCandidate {
             instance_id: probe.instance_id,
             score: probe.score,

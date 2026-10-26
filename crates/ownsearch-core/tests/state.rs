@@ -126,7 +126,7 @@ fn a_scan_update_sets_the_score_and_rank_used_by_the_fleet_query() {
             tls_id: None,
         })
         .expect("update");
-    let fleet = store.fleet(10).expect("fleet");
+    let fleet = store.fleet(10, &now_rfc3339()).expect("fleet");
     assert_eq!(fleet.len(), 1);
     assert_eq!(
         fleet.first().map(|item| item.instance_id),

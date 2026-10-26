@@ -1,5 +1,15 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub(crate) async fn jitter(max_ms: u64) {
+    if max_ms == 0 {
+        return;
+    }
+    let mut bytes = [0u8; 8];
+    let _ = getrandom::fill(&mut bytes);
+    let spread = u64::from_le_bytes(bytes) % max_ms.saturating_add(1);
+    tokio::time::sleep(std::time::Duration::from_millis(spread)).await;
+}
+
 pub fn now_unix() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),

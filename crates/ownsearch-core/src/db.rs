@@ -90,6 +90,12 @@ pub struct ScanTarget {
     pub consecutive_failures: i64,
 }
 
+struct Upserted {
+    instance_id: i64,
+    is_new: bool,
+    changed: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProbeRecord {
     pub instance_id: i64,
@@ -255,7 +261,7 @@ fn checksum(sql: &str) -> String {
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            create_private_dir(parent)?;
+            crate::fsutil::create_private_dir(parent)?;
         }
         let writer = Connection::open(path)?;
         configure(&writer)?;
@@ -538,7 +544,8 @@ impl Store {
         now: &str,
     ) -> Result<(i64, bool)> {
         self.write_atomic(|connection| {
-            self.upsert_instance_on(connection, record, source_id, run_id, now)
+            let outcome = self.upsert_instance_on(connection, record, source_id, run_id, now)?;
+            Ok((outcome.instance_id, outcome.is_new))
         })
     }
 
@@ -554,11 +561,11 @@ impl Store {
             let mut changed = 0usize;
             let mut present = Vec::with_capacity(records.len());
             for record in records {
-                let (_, is_new) =
+                let outcome =
                     self.upsert_instance_on(connection, record, source_id, run_id, now)?;
-                if is_new {
+                if outcome.is_new {
                     added = added.saturating_add(1);
-                } else {
+                } else if outcome.changed {
                     changed = changed.saturating_add(1);
                 }
                 present.push(record.url.clone());
@@ -574,20 +581,22 @@ impl Store {
         source_id: &str,
         run_id: Option<&str>,
         now: &str,
-    ) -> Result<(i64, bool)> {
+    ) -> Result<Upserted> {
         let digest = {
             use sha2::{Digest, Sha256};
             Sha256::digest(record.url.as_bytes()).to_vec()
         };
-        let existing: Option<(i64, String)> = connection
+        let existing: Option<(i64, String, Option<String>)> = connection
             .query_row(
-                "SELECT instance_id, instance_kind FROM instances WHERE normalized_url = ?1",
+                "SELECT instance_id, instance_kind, discovery_metrics_json FROM instances WHERE normalized_url = ?1",
                 params![record.url],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        if let Some((instance_id, previous_type)) = existing {
-            let metrics = serde_json::to_string(record).unwrap_or_default();
+        if let Some((instance_id, previous_type, previous_metrics)) = existing {
+            let metrics = serde_json::to_string(record)?;
+            let changed = previous_type != record.kind.as_str()
+                || previous_metrics.as_deref() != Some(metrics.as_str());
             connection.execute(
                 "UPDATE instances SET last_announced_at = ?2, updated_at = ?2, discovery_rank = COALESCE(?3, discovery_rank),
                     network_group = COALESCE(?4, network_group), current_discovery_run_id = ?5,
@@ -623,9 +632,13 @@ impl Store {
                     params![instance_id, record.kind.as_str()],
                 )?;
             }
-            Ok((instance_id, false))
+            Ok(Upserted {
+                instance_id,
+                is_new: false,
+                changed,
+            })
         } else {
-            let metrics = serde_json::to_string(record).unwrap_or_default();
+            let metrics = serde_json::to_string(record)?;
             let slug = unique_slug(connection, &record.url)?;
             connection.execute(
                 "INSERT INTO instances (instance_slug, normalized_url, url_digest_sha256, host, instance_kind, lifecycle_status,
@@ -652,7 +665,11 @@ impl Store {
                  VALUES (?1, 'instance_added', ?2, ?3, 'candidate', ?4)",
                 params![now, instance_id, run_id, json!(["discovery.added"]).to_string()],
             )?;
-            Ok((instance_id, true))
+            Ok(Upserted {
+                instance_id,
+                is_new: true,
+                changed: true,
+            })
         }
     }
 
@@ -660,7 +677,11 @@ impl Store {
         let mut connection = self.writer_conn()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut statement = transaction.prepare(
-            "SELECT instance_id, normalized_url, lifecycle_status FROM instances WHERE lifecycle_status NOT IN ('missing', 'retired')",
+            "SELECT i.instance_id, i.normalized_url, i.lifecycle_status
+               FROM instances AS i
+               LEFT JOIN instance_policy_overrides AS o ON o.instance_id = i.instance_id
+              WHERE COALESCE(o.is_denied, 0) = 0
+                AND i.lifecycle_status NOT IN ('missing', 'retired')",
         )?;
         let rows: Vec<(i64, String, String)> = statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
@@ -987,8 +1008,13 @@ impl Store {
         })?;
         for row in rows {
             let (instance_id, raw) = row?;
-            if let Ok(metrics) = serde_json::from_str(&raw) {
-                out.insert(instance_id, metrics);
+            match serde_json::from_str(&raw) {
+                Ok(metrics) => {
+                    out.insert(instance_id, metrics);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, instance_id, "the stored discovery metrics do not parse")
+                }
             }
         }
         Ok(out)
@@ -1014,10 +1040,7 @@ impl Store {
         let reader = self.reader_conn()?;
         let mut statement = reader.prepare("SELECT normalized_url FROM instances")?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -1058,9 +1081,9 @@ impl Store {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut added = 0;
         for record in &discovered {
-            let (_, is_new) =
+            let outcome =
                 self.upsert_instance_on(&transaction, record, SOURCE_ID_BOOTSTRAP, None, &stamp)?;
-            if is_new {
+            if outcome.is_new {
                 added += 1;
             }
         }
@@ -1140,10 +1163,7 @@ impl Store {
         params_vec.push(limit_box.as_ref());
         params_vec.push(offset_box.as_ref());
         let rows = statement.query_map(params_vec.as_slice(), map_instance_row)?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -1203,14 +1223,11 @@ impl Store {
                     consecutive_failures: row.get(6)?,
                 })
             })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
-    pub fn fleet(&self, limit: usize) -> Result<Vec<FleetRow>> {
+    pub fn fleet(&self, limit: usize, now: &str) -> Result<Vec<FleetRow>> {
         let reader = self.reader_conn()?;
         let mut statement = reader.prepare(
             "SELECT i.instance_id, i.normalized_url, COALESCE(q.score, 0), COALESCE(q.fleet_rank, 0),
@@ -1224,26 +1241,25 @@ impl Store {
                 AND i.is_scan_enabled <> 0
                 AND COALESCE(o.is_denied, 0) = 0
                 AND i.instance_kind <> 'tor'
+                AND (i.cooldown_until IS NULL OR i.cooldown_until <= ?2)
               ORDER BY COALESCE(q.fleet_rank, 2147483647), q.score DESC
               LIMIT ?1",
         )?;
-        let rows = statement.query_map(params![i64::try_from(limit).unwrap_or(64)], |row| {
-            Ok(FleetRow {
-                instance_id: row.get(0)?,
-                url: row.get(1)?,
-                score: row.get(2)?,
-                rank: row.get(3)?,
-                json_enabled: row.get::<_, i64>(4)? != 0,
-                html_enabled: row.get::<_, i64>(5)? != 0,
-                google_exact: row.get::<_, i64>(6)? != 0,
-                google_cse: row.get::<_, i64>(7)? != 0,
-                network_group: row.get(8)?,
-            })
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let rows =
+            statement.query_map(params![i64::try_from(limit).unwrap_or(64), now], |row| {
+                Ok(FleetRow {
+                    instance_id: row.get(0)?,
+                    url: row.get(1)?,
+                    score: row.get(2)?,
+                    rank: row.get(3)?,
+                    json_enabled: row.get::<_, i64>(4)? != 0,
+                    html_enabled: row.get::<_, i64>(5)? != 0,
+                    google_exact: row.get::<_, i64>(6)? != 0,
+                    google_cse: row.get::<_, i64>(7)? != 0,
+                    network_group: row.get(8)?,
+                })
+            })?;
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -1256,10 +1272,7 @@ impl Store {
               WHERE i.instance_id = ?1 ORDER BY e.engine_name",
         )?;
         let rows = statement.query_map(params![instance_id], |row| row.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -1272,10 +1285,7 @@ impl Store {
               WHERE i.instance_id = ?1 ORDER BY c.category_name",
         )?;
         let rows = statement.query_map(params![instance_id], |row| row.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -1461,10 +1471,7 @@ impl Store {
                 .query_map(params![offset, limit], mapper)?
                 .collect::<Vec<_>>(),
         };
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows.into_iter())?;
         Ok(out)
     }
 
@@ -1525,7 +1532,7 @@ impl Store {
         let snapshot = self.export_snapshot()?;
         let payload = serde_json::to_vec_pretty(&snapshot)?;
         if let Some(parent) = path.parent() {
-            create_private_dir(parent)?;
+            crate::fsutil::create_private_dir(parent)?;
         }
         crate::fsutil::write_atomic(path, &payload)?;
         let count = snapshot
@@ -1538,7 +1545,7 @@ impl Store {
 
     pub fn backup(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
-            create_private_dir(parent)?;
+            crate::fsutil::create_private_dir(parent)?;
         }
         if path.exists() {
             return Err(Error::State(format!(
@@ -1809,10 +1816,7 @@ impl Store {
                 "updatedAt": row.get::<_, String>(8)?,
             }))
         })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
+        let out = collect_rows(rows)?;
         Ok(out)
     }
 
@@ -2048,10 +2052,7 @@ impl Store {
                         }))
                     },
                 )?;
-                let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
-                }
+                let out = collect_rows(rows)?;
                 Ok(json!({"entity": entity.as_str(), "count": out.len(), "rows": out}))
             }
             QueryEntity::Overrides => {
@@ -2117,10 +2118,7 @@ impl Store {
                         }))
                     },
                 )?;
-                let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
-                }
+                let out = collect_rows(rows)?;
                 Ok(json!({"entity": entity.as_str(), "count": out.len(), "rows": out}))
             }
             QueryEntity::Snapshots => {
@@ -2145,10 +2143,7 @@ impl Store {
                         }))
                     },
                 )?;
-                let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
-                }
+                let out = collect_rows(rows)?;
                 Ok(json!({"entity": entity.as_str(), "count": out.len(), "rows": out}))
             }
             QueryEntity::Runs => {
@@ -2177,10 +2172,7 @@ impl Store {
                         }))
                     },
                 )?;
-                let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
-                }
+                let out = collect_rows(rows)?;
                 Ok(json!({"entity": entity.as_str(), "count": out.len(), "rows": out}))
             }
         }
@@ -2292,10 +2284,7 @@ fn collect_counts(connection: &Connection, sql: &str) -> Result<Vec<(String, i64
     let rows = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
-    }
+    let out = collect_rows(rows)?;
     Ok(out)
 }
 
@@ -2316,6 +2305,14 @@ fn upsert_name(
         |row| row.get(0),
     )?;
     Ok(id)
+}
+
+fn collect_rows<T>(rows: impl Iterator<Item = rusqlite::Result<T>>) -> Result<Vec<T>> {
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
 
 fn map_instance_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstanceRow> {
@@ -2401,31 +2398,6 @@ pub fn instance_to_json(row: &InstanceRow) -> Value {
         "denied": row.denied,
         "addedAt": row.added_at,
     })
-}
-
-fn create_private_dir(path: &Path) -> Result<()> {
-    if path.as_os_str().is_empty() {
-        return Ok(());
-    }
-    let existed = path.exists();
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder
-        .create(path)
-        .map_err(|error| Error::State(format!("cannot create {}: {error}", path.display())))?;
-    if !existed {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
-        }
-    }
-    Ok(())
 }
 
 fn lock_down_file(path: &Path) -> Result<()> {

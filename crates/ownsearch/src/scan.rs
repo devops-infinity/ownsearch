@@ -59,8 +59,8 @@ pub(crate) fn run(args: ScanArgs) -> anyhow::Result<()> {
             println!(
                 "  {} {} -> {} ({})",
                 change.instance_id,
-                change.from,
-                change.to,
+                change.previous_status,
+                change.next_status,
                 change.reasons.join(", ")
             );
         }

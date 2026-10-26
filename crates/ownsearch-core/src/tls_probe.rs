@@ -97,9 +97,10 @@ impl TlsProber {
     }
 
     pub(crate) async fn probe(&self, url: &Url, cancellation: &CancellationToken) -> TlsReport {
-        let Some(host) = url.host_str() else {
+        let Some(raw_host) = url.host_str() else {
             return TlsReport::failed(ProbeOutcome::Refused, "the url has no host");
         };
+        let host = bare_host(raw_host);
         if url.scheme() != "https" {
             return TlsReport::failed(ProbeOutcome::Refused, "the url does not use https");
         }
@@ -211,6 +212,12 @@ impl TlsProber {
     }
 }
 
+fn bare_host(raw: &str) -> &str {
+    raw.strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(raw)
+}
+
 fn protocol_label(version: rustls::ProtocolVersion) -> Option<&'static str> {
     match version {
         rustls::ProtocolVersion::TLSv1_2 => Some("TLSv1.2"),
@@ -245,6 +252,21 @@ mod tests {
                 .error_message
                 .as_deref()
                 .is_some_and(|message| message.contains("non-public"))
+        );
+    }
+
+    #[test]
+    fn an_ipv6_literal_host_loses_its_brackets() {
+        assert_eq!(bare_host("[::1]"), "::1");
+        assert_eq!(bare_host("[2606:4700::1111]"), "2606:4700::1111");
+        assert_eq!(bare_host("searx.example"), "searx.example");
+        let url = Url::parse("https://[::1]:8443/").expect("url");
+        let host = url.host_str().expect("host");
+        assert_eq!(
+            ServerName::try_from(bare_host(host).to_owned())
+                .expect("server name")
+                .to_str(),
+            "::1"
         );
     }
 

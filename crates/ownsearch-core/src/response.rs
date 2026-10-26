@@ -197,8 +197,8 @@ pub struct StatusChange {
     pub instance_id: i64,
     pub slug: String,
     pub url: String,
-    pub from: String,
-    pub to: String,
+    pub previous_status: String,
+    pub next_status: String,
     pub reasons: Vec<String>,
 }
 

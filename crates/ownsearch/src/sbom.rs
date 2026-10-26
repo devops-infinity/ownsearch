@@ -42,6 +42,18 @@ fn build(lock: &Path) -> anyhow::Result<Value> {
         .and_then(toml::Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let mut versions: BTreeMap<String, String> = BTreeMap::new();
+    for package in &packages {
+        if let (Some(name), Some(version)) = (
+            package.get("name").and_then(toml::Value::as_str),
+            package.get("version").and_then(toml::Value::as_str),
+        ) {
+            versions
+                .entry(name.to_owned())
+                .or_insert_with(|| version.to_owned());
+        }
+    }
+    let root = purl(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     let mut components: Vec<Value> = Vec::new();
     let mut depends: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut root_deps: BTreeSet<String> = BTreeSet::new();
@@ -53,8 +65,8 @@ fn build(lock: &Path) -> anyhow::Result<Value> {
             continue;
         };
         let reference = purl(name, version);
-        let local = is_workspace_member(package);
-        if !local {
+        let is_root = reference == root;
+        if !is_root {
             components.push(json!({
                 "type": "library",
                 "bom-ref": reference,
@@ -73,15 +85,16 @@ fn build(lock: &Path) -> anyhow::Result<Value> {
             let Some(text) = entry.as_str() else {
                 continue;
             };
-            let Some(dependency) = dependency_ref(text) else {
+            let Some(dependency) = dependency_ref(text, &versions) else {
                 continue;
             };
-            own.insert(dependency.clone());
-            if local {
-                root_deps.insert(dependency);
-            }
+            own.insert(dependency);
         }
-        depends.insert(reference, own);
+        if is_root {
+            root_deps = own;
+        } else {
+            depends.insert(reference, own);
+        }
     }
     let mut dependencies: Vec<Value> = Vec::new();
     for (reference, own) in &depends {
@@ -90,7 +103,6 @@ fn build(lock: &Path) -> anyhow::Result<Value> {
             "dependsOn": own.iter().cloned().collect::<Vec<String>>(),
         }));
     }
-    let root = purl("ownsearch", env!("CARGO_PKG_VERSION"));
     dependencies.push(json!({
         "ref": root,
         "dependsOn": root_deps.into_iter().collect::<Vec<String>>(),
@@ -137,13 +149,6 @@ fn build(lock: &Path) -> anyhow::Result<Value> {
     }))
 }
 
-fn is_workspace_member(package: &toml::Value) -> bool {
-    package
-        .get("source")
-        .and_then(toml::Value::as_str)
-        .is_none()
-}
-
 fn purl(name: &str, version: &str) -> String {
     let encode = |text: &str| {
         text.chars()
@@ -158,13 +163,12 @@ fn purl(name: &str, version: &str) -> String {
     format!("pkg:cargo/{}@{}", encode(name), encode(version))
 }
 
-fn dependency_ref(text: &str) -> Option<String> {
+fn dependency_ref(text: &str, versions: &BTreeMap<String, String>) -> Option<String> {
     let mut parts = text.split_whitespace();
     let name = parts.next()?;
-    let version = parts.next();
-    match version {
+    match parts.next() {
         Some(version) => Some(purl(name, version)),
-        None => Some(format!("pkg:cargo/{name}")),
+        None => versions.get(name).map(|version| purl(name, version)),
     }
 }
 
@@ -178,12 +182,64 @@ mod tests {
     }
 
     #[test]
-    fn a_dependency_line_without_a_version_keeps_the_name() {
-        assert_eq!(dependency_ref("serde").as_deref(), Some("pkg:cargo/serde"));
+    fn a_dependency_line_takes_its_version_from_the_lock_when_missing() {
+        let mut versions = BTreeMap::new();
+        versions.insert("serde".to_owned(), "1.0.0".to_owned());
         assert_eq!(
-            dependency_ref("anyhow 1.0.95").as_deref(),
+            dependency_ref("serde", &versions).as_deref(),
+            Some("pkg:cargo/serde@1.0.0")
+        );
+        assert_eq!(
+            dependency_ref("anyhow 1.0.95", &versions).as_deref(),
             Some("pkg:cargo/anyhow@1.0.95")
         );
+        assert_eq!(dependency_ref("missing-crate", &versions), None);
+    }
+
+    #[test]
+    fn every_dependency_reference_resolves_to_a_declared_component() {
+        let lock = find_lock();
+        let document = build(&lock).expect("document");
+        let mut known: BTreeSet<String> = document
+            .get("components")
+            .and_then(Value::as_array)
+            .map(|components| {
+                components
+                    .iter()
+                    .filter_map(|item| item.get("bom-ref").and_then(Value::as_str))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let root = document
+            .get("metadata")
+            .and_then(|metadata| metadata.get("component"))
+            .and_then(|component| component.get("bom-ref"))
+            .and_then(Value::as_str)
+            .expect("root ref")
+            .to_owned();
+        known.insert(root.clone());
+        assert!(known.contains(&format!(
+            "pkg:cargo/ownsearch-core@{}",
+            env!("CARGO_PKG_VERSION")
+        )));
+        let dependencies = document
+            .get("dependencies")
+            .and_then(Value::as_array)
+            .expect("dependencies");
+        for entry in dependencies {
+            let reference = entry.get("ref").and_then(Value::as_str).unwrap_or_default();
+            assert!(known.contains(reference), "{reference} is not a component");
+            for target in entry
+                .get("dependsOn")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            {
+                let target = target.as_str().unwrap_or_default();
+                assert!(known.contains(target), "{target} is not a component");
+            }
+        }
     }
 
     #[test]

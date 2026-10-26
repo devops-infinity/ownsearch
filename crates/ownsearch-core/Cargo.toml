@@ -43,6 +43,7 @@ rusqlite.workspace = true
 scraper.workspace = true
 lopdf.workspace = true
 chromiumoxide.workspace = true
+futures-util.workspace = true
 ego-tree.workspace = true
 
 [dev-dependencies]

@@ -180,46 +180,17 @@ impl Settings {
             Some(path) => read_profile_if_present(path, overrides.profile.is_some())?,
             None => Profile::default(),
         };
-        let mut bearer_tokens = Vec::new();
-        let mut bearer_token_error = None;
-        if let Some(raw) = non_empty_env(&env, "OWNSEARCH_BEARER_TOKENS") {
-            bearer_tokens = raw
-                .split(',')
-                .map(str::trim)
-                .filter(|token| !token.is_empty())
-                .map(SecretString::from)
-                .collect();
-        } else {
-            match keychain_get() {
-                Ok(Some(raw)) => {
-                    bearer_tokens = raw
-                        .expose_secret()
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|token| !token.is_empty())
-                        .map(SecretString::from)
-                        .collect();
-                }
-                Ok(None) => {}
-                Err(error) => bearer_token_error = Some(error.to_string()),
-            }
-        }
-        let env_hosts = non_empty_env(&env, "OWNSEARCH_ALLOWED_HOSTS")
-            .map(|raw| parse_list(&raw))
-            .filter(|hosts| !hosts.is_empty());
-        let allowed_hosts = match env_hosts {
-            Some(hosts) => Some(clean_list(hosts)),
-            None => profile.allowed_hosts.map(clean_list),
-        }
-        .transpose()?;
-        let env_origins = non_empty_env(&env, "OWNSEARCH_ALLOWED_ORIGINS")
-            .map(|raw| parse_list(&raw))
-            .filter(|origins| !origins.is_empty());
-        let allowed_origins = match env_origins {
-            Some(origins) => Some(clean_list(origins)),
-            None => profile.allowed_origins.map(clean_list),
-        }
-        .transpose()?;
+        let (bearer_tokens, bearer_token_error) = bearer_tokens_from(&env);
+        let allowed_hosts = allowed_list(
+            &env,
+            "OWNSEARCH_ALLOWED_HOSTS",
+            profile.allowed_hosts.clone(),
+        )?;
+        let allowed_origins = allowed_list(
+            &env,
+            "OWNSEARCH_ALLOWED_ORIGINS",
+            profile.allowed_origins.clone(),
+        )?;
         let state_dir = match overrides
             .state_dir
             .or_else(|| non_empty_env(&env, "OWNSEARCH_STATE_DIR").map(PathBuf::from))
@@ -393,26 +364,7 @@ impl Settings {
             profile_path,
             state_dir,
             ledger_dir,
-            discovery_url: {
-                let raw = non_empty_env(&env, "OWNSEARCH_DISCOVERY_URL")
-                    .or(profile.discovery_url)
-                    .unwrap_or_else(|| DEFAULT_DISCOVERY_URL.to_owned());
-                let parsed = url::Url::parse(&raw).map_err(|error| {
-                    Error::Config(format!("discovery_url {raw:?} does not parse: {error}"))
-                })?;
-                let loopback = parsed.host_str().is_some_and(|host| {
-                    host.eq_ignore_ascii_case("localhost")
-                        || host
-                            .parse::<std::net::IpAddr>()
-                            .is_ok_and(|address| address.is_loopback())
-                });
-                if parsed.scheme() != "https" && !loopback {
-                    return Err(Error::Config(format!(
-                        "discovery_url {raw:?} must use https"
-                    )));
-                }
-                raw
-            },
+            discovery_url: discovery_url_from(&env, profile.discovery_url.clone())?,
             discovery_refresh_secs: bounded_u64(
                 env_parse(&env, "OWNSEARCH_DISCOVERY_REFRESH_SECS")?
                     .or(profile.discovery_refresh_secs)
@@ -503,10 +455,7 @@ impl Settings {
                 .or(profile.google_required)
                 .unwrap_or(false),
             cert_min_days: i64::try_from(bounded_u64(
-                env_parse(&env, "OWNSEARCH_CERT_MIN_DAYS")?
-                    .or(profile.cert_min_days)
-                    .and_then(|value| u64::try_from(value).ok())
-                    .unwrap_or(14),
+                cert_min_days(&env, profile.cert_min_days)?,
                 0,
                 365,
                 "cert_min_days",
@@ -1104,6 +1053,17 @@ pub fn format_keep_window(secs: u64) -> String {
     }
 }
 
+fn cert_min_days(env: &impl Fn(&str) -> Option<String>, profile: Option<i64>) -> Result<u64> {
+    if let Some(value) = env_parse::<u64>(env, "OWNSEARCH_CERT_MIN_DAYS")? {
+        return Ok(value);
+    }
+    match profile {
+        Some(value) => u64::try_from(value)
+            .map_err(|_| Error::Config(format!("cert_min_days is {value}; use zero or more"))),
+        None => Ok(14),
+    }
+}
+
 fn bounded_u64(value: u64, low: u64, high: u64, name: &str) -> Result<u64> {
     if (low..=high).contains(&value) {
         Ok(value)
@@ -1141,6 +1101,65 @@ fn env_parse<T: std::str::FromStr>(
             std::any::type_name::<T>()
         ))
     })
+}
+
+fn bearer_tokens_from(
+    env: &impl Fn(&str) -> Option<String>,
+) -> (Vec<SecretString>, Option<String>) {
+    if let Some(raw) = non_empty_env(env, "OWNSEARCH_BEARER_TOKENS") {
+        return (split_tokens(&raw), None);
+    }
+    match keychain_get() {
+        Ok(Some(raw)) => (split_tokens(raw.expose_secret()), None),
+        Ok(None) => (Vec::new(), None),
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    }
+}
+
+fn split_tokens(raw: &str) -> Vec<SecretString> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(SecretString::from)
+        .collect()
+}
+
+fn allowed_list(
+    env: &impl Fn(&str) -> Option<String>,
+    name: &str,
+    profile: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>> {
+    let from_env = non_empty_env(env, name)
+        .map(|raw| parse_list(&raw))
+        .filter(|values| !values.is_empty());
+    match from_env {
+        Some(values) => Some(clean_list(values)),
+        None => profile.map(clean_list),
+    }
+    .transpose()
+}
+
+fn discovery_url_from(
+    env: &impl Fn(&str) -> Option<String>,
+    profile: Option<String>,
+) -> Result<String> {
+    let raw = non_empty_env(env, "OWNSEARCH_DISCOVERY_URL")
+        .or(profile)
+        .unwrap_or_else(|| DEFAULT_DISCOVERY_URL.to_owned());
+    let parsed = url::Url::parse(&raw)
+        .map_err(|error| Error::Config(format!("discovery_url {raw:?} does not parse: {error}")))?;
+    let loopback = parsed.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    if parsed.scheme() != "https" && !loopback {
+        return Err(Error::Config(format!(
+            "discovery_url {raw:?} must use https"
+        )));
+    }
+    Ok(raw)
 }
 
 fn non_empty_env(env: &impl Fn(&str) -> Option<String>, name: &str) -> Option<String> {
@@ -1477,12 +1496,12 @@ mod tests {
 
     #[test]
     fn the_watchdog_switches_off_at_zero_and_reports_its_bounds() {
-        let off = load_with(&[("HOME", "/home/tester"), ("OWNSEARCH_WATCHDOG_SECS", "0")])
+        let disabled = load_with(&[("HOME", "/home/tester"), ("OWNSEARCH_WATCHDOG_SECS", "0")])
             .expect("settings");
-        assert_eq!(off.watchdog_secs(), 0);
-        let on = load_with(&[("HOME", "/home/tester"), ("OWNSEARCH_WATCHDOG_SECS", "45")])
+        assert_eq!(disabled.watchdog_secs(), 0);
+        let enabled = load_with(&[("HOME", "/home/tester"), ("OWNSEARCH_WATCHDOG_SECS", "45")])
             .expect("settings");
-        assert_eq!(on.watchdog_secs(), 45);
+        assert_eq!(enabled.watchdog_secs(), 45);
         let error = load_with(&[
             ("HOME", "/home/tester"),
             ("OWNSEARCH_BROWSER_WATCHDOG_SECS", "1"),
@@ -1505,20 +1524,25 @@ mod tests {
     }
 
     #[test]
-    fn a_masked_value_keeps_only_the_tail() {}
-}
+    fn a_masked_value_is_cut_to_120_characters() {
+        let long = "a".repeat(200);
+        assert_eq!(mask_text(&long).chars().count(), 120);
+        assert_eq!(mask_text("short"), "short");
+        assert_eq!(mask_text("a\u{200B}b"), "ab");
+    }
 
-#[test]
-fn the_keep_window_accepts_hours_and_days_and_rejects_bad_values() {
-    assert_eq!(parse_keep_window("3d").expect("days"), 259_200);
-    assert_eq!(parse_keep_window("2h").expect("hours"), 7_200);
-    assert_eq!(parse_keep_window("3600").expect("seconds"), 3_600);
-    assert_eq!(parse_keep_window("1D").expect("case"), 86_400);
-    assert!(parse_keep_window("0").is_err());
-    assert!(parse_keep_window("59m").is_err());
-    assert!(parse_keep_window("91d").is_err());
-    assert!(parse_keep_window("-2h").is_err());
-    assert!(parse_keep_window("abc").is_err());
-    assert_eq!(format_keep_window(259_200), "3d");
-    assert_eq!(format_keep_window(7_200), "2h");
+    #[test]
+    fn the_keep_window_accepts_hours_and_days_and_rejects_bad_values() {
+        assert_eq!(parse_keep_window("3d").expect("days"), 259_200);
+        assert_eq!(parse_keep_window("2h").expect("hours"), 7_200);
+        assert_eq!(parse_keep_window("3600").expect("seconds"), 3_600);
+        assert_eq!(parse_keep_window("1D").expect("case"), 86_400);
+        assert!(parse_keep_window("0").is_err());
+        assert!(parse_keep_window("59m").is_err());
+        assert!(parse_keep_window("91d").is_err());
+        assert!(parse_keep_window("-2h").is_err());
+        assert!(parse_keep_window("abc").is_err());
+        assert_eq!(format_keep_window(259_200), "3d");
+        assert_eq!(format_keep_window(7_200), "2h");
+    }
 }

@@ -3,4 +3,8 @@
 *.db
 *.db-wal
 *.db-shm
+args.key
+calls*.jsonl
+instances.snapshot.json
+instances.events.jsonl
 .remember

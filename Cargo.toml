@@ -72,6 +72,7 @@ rustls-native-certs = "0.8.5"
 x509-parser = "0.18.1"
 rusqlite = { version = "0.41.0", features = ["bundled"] }
 chromiumoxide = { package = "chromey", version = "2.58.2" }
+futures-util = "0.3.34"
 scraper = "0.29.0"
 lopdf = "0.46.0"
 ego-tree = "0.11.1"
