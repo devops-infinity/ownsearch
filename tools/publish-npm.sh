@@ -5,38 +5,108 @@ REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 source "$REPO/tools/lib.sh"
 require_bash 4.4
-require_tool npm "install Node.js and npm"
-require_tool jq "brew install jq"
+require_tool npm "install Node.js 22 or newer"
+require_tool jq "run: brew install jq"
 
-PACKAGE_DIR="${1:-}"
-if [[ -z "$PACKAGE_DIR" ]]; then
-	PACKAGE_DIR="$(find dist -type f -name package.json -path '*npm*' 2>/dev/null | head -n 1)"
-fi
-[[ -n "$PACKAGE_DIR" ]] || die "no npm package found; run tools/release.sh --package first or pass a directory"
-PACKAGE_DIR="$(cd -- "$(dirname -- "$PACKAGE_DIR")" && pwd)"
-
-NAME="$(jq -r '.name' "$PACKAGE_DIR/package.json")"
-VERSION="$(jq -r '.version' "$PACKAGE_DIR/package.json")"
-[[ "$NAME" == "@devops-infinity/ownsearch" ]] || die "unexpected package name: $NAME"
-[[ -n "$VERSION" && "$VERSION" != "null" ]] || die "the package has no version"
-
-[[ -z "$(git status --porcelain)" ]] || die "the working tree is not clean"
-
-jq --arg name "io.github.devops-infinity/ownsearch" '.mcpName = $name' \
-	"$PACKAGE_DIR/package.json" >"$PACKAGE_DIR/package.json.next"
-mv "$PACKAGE_DIR/package.json.next" "$PACKAGE_DIR/package.json"
-
-(
-	cd "$PACKAGE_DIR"
-	npm publish --access public
-)
-
-for _ in $(seq 1 12); do
-	published="$(npm view "$NAME@$VERSION" version 2>/dev/null || true)"
-	if [[ "$published" == "$VERSION" ]]; then
-		log_line SUCCESS "$NAME@$VERSION is live"
-		exit 0
+PACKAGE_DIR="$REPO/target/distrib/ownsearch-npm-package"
+WORKSPACE_VERSION="$(workspace_version "$REPO")"
+LOG=""
+TOKEN_NPMRC=""
+cleanup() {
+	if [[ -n "$TOKEN_NPMRC" ]]; then
+		rm -f -- "$TOKEN_NPMRC"
 	fi
-	sleep 5
+	if [[ -n "$LOG" ]]; then
+		rm -f -- "$LOG"
+	fi
+}
+trap cleanup EXIT
+
+usage() {
+	cat <<'USAGE'
+Usage: tools/publish-npm.sh [--dry-run]
+
+Publish the npm package that cargo-dist generated in target/distrib.
+
+Take the package from the release first:
+
+  gh release download vX.Y.Z --pattern 'ownsearch-npm-package.tar.gz' --dir dist
+  mkdir -p target/distrib/ownsearch-npm-package
+  tar -xzf dist/ownsearch-npm-package.tar.gz -C target/distrib/ownsearch-npm-package --strip-components=1
+
+The token comes from NPM_TOKEN when it is set, so nothing is prompted and no
+credential is written. Without it, npm reads the token stored by
+tools/npm-auth-setup.sh. The script adds the mcpName field to the generated
+package.json before publishing, so the published package is not byte-identical
+to the ownsearch-npm-package.tar.gz listed in the signed sha256.sum. The
+version and the files are the same.
+
+  --dry-run  pack and print the file list, publish nothing
+  -h, --help show this
+USAGE
+}
+
+DRY_RUN=0
+case "${1:-}" in
+--dry-run)
+	DRY_RUN=1
+	;;
+-h | --help)
+	usage
+	exit 0
+	;;
+"") ;;
+*)
+	usage
+	die "unknown option: $1"
+	;;
+esac
+
+[[ -f "$PACKAGE_DIR/package.json" ]] || die "missing $PACKAGE_DIR; run tools/release.sh --package first"
+PACKAGE_NAME="$(jq -r .name "$PACKAGE_DIR/package.json")"
+PACKAGE_VERSION="$(jq -r .version "$PACKAGE_DIR/package.json")"
+[[ "$PACKAGE_NAME" == "@devops-infinity/ownsearch" ]] || die "the generated package is $PACKAGE_NAME; check the dist config"
+[[ "$PACKAGE_VERSION" == "$WORKSPACE_VERSION" ]] || die "the generated package is at $PACKAGE_VERSION but the workspace is at $WORKSPACE_VERSION; rebuild with --package"
+if [[ -n "$(git status --porcelain)" ]]; then
+	die "the working tree is not clean; commit first"
+fi
+
+if [[ -n "${NPM_TOKEN:-}" ]]; then
+	TOKEN_NPMRC="$(mktemp "${TMPDIR:-/tmp}/ownsearch-npmrc.XXXXXX")"
+	umask 077
+	printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" >"$TOKEN_NPMRC"
+	chmod 600 "$TOKEN_NPMRC"
+	export NPM_CONFIG_USERCONFIG="$TOKEN_NPMRC"
+	log_line INFO "using NPM_TOKEN from the environment"
+fi
+npm whoami >/dev/null 2>&1 || die "npm is not authenticated; set NPM_TOKEN or run tools/npm-auth-setup.sh first"
+
+MCP_NAME="io.github.devops-infinity/ownsearch"
+jq --arg mcpName "$MCP_NAME" 'if .mcpName == $mcpName then . else .mcpName = $mcpName end' \
+	"$PACKAGE_DIR/package.json" >"$PACKAGE_DIR/package.json.tmp"
+mv "$PACKAGE_DIR/package.json.tmp" "$PACKAGE_DIR/package.json"
+jq -e --arg mcpName "$MCP_NAME" '.mcpName == $mcpName' "$PACKAGE_DIR/package.json" >/dev/null ||
+	die "could not set mcpName in the generated package"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+	(cd "$PACKAGE_DIR" && npm pack --dry-run)
+	exit 0
+fi
+
+LOG="$(mktemp "${TMPDIR:-/tmp}/ownsearch-npm-publish.XXXXXX")"
+
+log_line INFO "publishing $PACKAGE_NAME $PACKAGE_VERSION"
+if ! npm publish "$PACKAGE_DIR" --access public 2>&1 | tee "$LOG"; then
+	if grep -q EOTP "$LOG"; then
+		die "npm asked for a one-time code; run tools/npm-auth-setup.sh once with a granular token that bypasses two-factor authentication"
+	fi
+	die "npm publish failed; read the output above"
+fi
+registry_version=""
+for _ in $(seq 1 24); do
+	registry_version="$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null || true)"
+	[[ "$registry_version" == "$PACKAGE_VERSION" ]] && break
+	sleep 10
 done
-die "$NAME@$VERSION did not appear in the registry"
+[[ "$registry_version" == "$PACKAGE_VERSION" ]] || die "npm accepted the publish but the registry still answers ${registry_version:-nothing} for $PACKAGE_VERSION after 240 seconds"
+log_line SUCCESS "published $PACKAGE_NAME $PACKAGE_VERSION"
