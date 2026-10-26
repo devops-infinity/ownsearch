@@ -10,8 +10,7 @@ use url::Url;
 use crate::challenge::{Challenge, ChallengeKind};
 use crate::error::{Error, Result};
 
-const CREATE_TASK_URL: &str = "https://api.capsolver.com/createTask";
-const GET_RESULT_URL: &str = "https://api.capsolver.com/getTaskResult";
+const DEFAULT_BASE: &str = "https://api.capsolver.com";
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 const MAX_POLLS: u32 = 60;
 
@@ -20,6 +19,7 @@ pub(crate) struct CapSolver {
     http: reqwest::Client,
     key: SecretString,
     deadline: Duration,
+    base: String,
 }
 
 #[derive(Serialize)]
@@ -51,6 +51,15 @@ struct ResultBody<'a> {
 
 impl CapSolver {
     pub(crate) fn new(key: SecretString, timeout_secs: u64) -> Result<Self> {
+        Self::build(key, timeout_secs, DEFAULT_BASE.to_owned())
+    }
+
+    #[cfg(test)]
+    fn with_base(key: SecretString, timeout_secs: u64, base: &str) -> Result<Self> {
+        Self::build(key, timeout_secs, base.to_owned())
+    }
+
+    fn build(key: SecretString, timeout_secs: u64, base: String) -> Result<Self> {
         crate::client::install_crypto_provider();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -62,6 +71,7 @@ impl CapSolver {
             http,
             key,
             deadline: Duration::from_secs(timeout_secs.max(10)),
+            base,
         })
     }
 
@@ -75,7 +85,9 @@ impl CapSolver {
                 page_action: challenge.action.as_deref(),
             },
         };
-        let answer = self.post(CREATE_TASK_URL, &body).await?;
+        let answer = self
+            .post(&format!("{}/createTask", self.base), &body)
+            .await?;
         check_error(&answer)?;
         let task_id = answer
             .get("taskId")
@@ -99,7 +111,7 @@ impl CapSolver {
         for _ in 0..MAX_POLLS {
             let answer = self
                 .post(
-                    GET_RESULT_URL,
+                    &format!("{}/getTaskResult", self.base),
                     &ResultBody {
                         client_key: self.key.expose_secret(),
                         task_id,
@@ -280,5 +292,93 @@ mod tests {
         assert!(script.contains(r#""a\"b""#));
         assert!(injection_script(ChallengeKind::HCaptcha, "t").contains("h-captcha-response"));
         assert!(injection_script(ChallengeKind::RecaptchaV2, "t").contains("g-recaptcha-response"));
+    }
+
+    async fn mock(replies: Vec<serde_json::Value>) -> (String, tokio::task::JoinHandle<()>) {
+        use std::sync::{Arc, Mutex};
+
+        use axum::{Json, Router, routing::post};
+
+        let queue = Arc::new(Mutex::new(replies));
+        let handler = |queue: Arc<Mutex<Vec<serde_json::Value>>>| {
+            move || {
+                let answer = queue
+                    .lock()
+                    .map(|mut pending| {
+                        if pending.is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            pending.remove(0)
+                        }
+                    })
+                    .unwrap_or(serde_json::Value::Null);
+                async move { Json(answer) }
+            }
+        };
+        let app = Router::new()
+            .route("/createTask", post(handler(Arc::clone(&queue))))
+            .route("/getTaskResult", post(handler(Arc::clone(&queue))));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{address}"), server)
+    }
+
+    fn challenge() -> Challenge {
+        Challenge {
+            kind: ChallengeKind::Turnstile,
+            sitekey: "site-key".to_owned(),
+            action: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_ready_answer_returns_the_solved_token() {
+        let (base, server) = mock(vec![
+            serde_json::json!({"errorId": 0, "taskId": "t1"}),
+            serde_json::json!({"errorId": 0, "status": "processing"}),
+            serde_json::json!({"errorId": 0, "status": "ready", "solution": {"token": "solved"}}),
+        ])
+        .await;
+        let solver = CapSolver::with_base(SecretString::from("k"), 15, &base).expect("solver");
+        let page = Url::parse("https://a.example/").expect("url");
+        assert_eq!(
+            solver.solve(&page, &challenge()).await.expect("token"),
+            "solved"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_service_error_code_is_mapped_to_its_message() {
+        let (base, server) = mock(vec![
+            serde_json::json!({"errorId": 1, "errorCode": "ERROR_ZERO_BALANCE"}),
+        ])
+        .await;
+        let solver = CapSolver::with_base(SecretString::from("k"), 15, &base).expect("solver");
+        let page = Url::parse("https://a.example/").expect("url");
+        let error = solver
+            .solve(&page, &challenge())
+            .await
+            .expect_err("refused");
+        assert!(error.to_string().contains("balance"), "{error}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_ready_answer_without_a_token_is_an_error() {
+        let (base, server) = mock(vec![
+            serde_json::json!({"errorId": 0, "taskId": "t1"}),
+            serde_json::json!({"errorId": 0, "status": "ready", "solution": {}}),
+        ])
+        .await;
+        let solver = CapSolver::with_base(SecretString::from("k"), 15, &base).expect("solver");
+        let page = Url::parse("https://a.example/").expect("url");
+        assert!(solver.solve(&page, &challenge()).await.is_err());
+        server.abort();
     }
 }
