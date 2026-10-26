@@ -499,6 +499,16 @@ fn rotation_span(rows: usize, target: usize) -> usize {
     rows.min(target.saturating_mul(2).max(2))
 }
 
+fn capability_rank(row: &InstanceRow) -> u8 {
+    if row.json_enabled == Some(true) {
+        0
+    } else if row.html_enabled == Some(true) {
+        1
+    } else {
+        2
+    }
+}
+
 fn order_instances(
     rows: &[InstanceRow],
     mode: SearchMode,
@@ -511,11 +521,15 @@ fn order_instances(
         .cloned()
         .collect();
     ordered.sort_by(|left, right| {
-        right
-            .score
-            .unwrap_or(0.0)
-            .partial_cmp(&left.score.unwrap_or(0.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
+        capability_rank(left)
+            .cmp(&capability_rank(right))
+            .then_with(|| {
+                right
+                    .score
+                    .unwrap_or(0.0)
+                    .partial_cmp(&left.score.unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| left.instance_id.cmp(&right.instance_id))
     });
     if let Some(offset) = rotation {
@@ -684,6 +698,47 @@ async fn search_instance(
             http_class: report.http_status.map(http_class),
         };
     }
+    if report.outcome == ProbeOutcome::ParserError {
+        for format in ["rss", "csv"] {
+            if let Ok(entries) =
+                crate::formats::fetch(&ctx.client, &base, query, format, cancellation).await
+                && !entries.is_empty()
+            {
+                let observations = observations_from_formats(row, format, &entries);
+                if !observations.is_empty() {
+                    return SourceOutcome {
+                        instance_id: row.instance_id,
+                        parser: Some(format.to_owned()),
+                        observations,
+                        failure: None,
+                        http_class: None,
+                    };
+                }
+            }
+        }
+    }
+    if report.outcome == ProbeOutcome::ParserError
+        && ctx.browser.enabled()
+        && let Ok(url) = crate::client::search_url(&base, &[("q", query.query.clone())])
+        && let Ok((html, _)) = ctx
+            .browser
+            .page(&url, std::time::Duration::from_secs(30))
+            .await
+    {
+        let page = crate::searxng::search_html::HtmlSearch::parse(&html, &url);
+        if !page.blocked && !page.results.is_empty() {
+            let observations = observations_from_page(row, &page);
+            if !observations.is_empty() {
+                return SourceOutcome {
+                    instance_id: row.instance_id,
+                    parser: Some("browser".to_owned()),
+                    observations,
+                    failure: None,
+                    http_class: Some(http_class(200)),
+                };
+            }
+        }
+    }
     let html_allowed = row.html_fallback_allowed || ctx.settings.html_fallback();
     let denied = matches!(
         report.outcome,
@@ -772,6 +827,72 @@ fn observations_from_json(
         });
     }
     out
+}
+
+fn observations_from_page(
+    row: &InstanceRow,
+    page: &crate::searxng::search_html::HtmlSearch,
+) -> Vec<Observation> {
+    page.results
+        .iter()
+        .filter_map(|item| {
+            let url = clean_url(&item.url)?;
+            let (title, _) = cap(&sanitize(&item.title), TITLE_CHARS);
+            if title.is_empty() {
+                return None;
+            }
+            let snippet = item.snippet.as_deref().map(|raw| {
+                let (text, _) = cap(&sanitize(raw), 300);
+                text
+            });
+            Some(Observation {
+                instance_id: row.instance_id,
+                instance_url: row.url.clone(),
+                instance_score: row.score.unwrap_or(0.0),
+                parser: "browser".to_owned(),
+                engine: item.engine.clone(),
+                rank: Some(item.position),
+                title,
+                url,
+                snippet,
+                published_date: None,
+            })
+        })
+        .collect()
+}
+
+fn observations_from_formats(
+    row: &InstanceRow,
+    parser: &str,
+    entries: &[crate::formats::Entry],
+) -> Vec<Observation> {
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let url = clean_url(&entry.url)?;
+            let (title, _) = cap(&sanitize(&entry.title), TITLE_CHARS);
+            if title.is_empty() {
+                return None;
+            }
+            let snippet = (!entry.snippet.is_empty()).then(|| {
+                let (text, _) = cap(&sanitize(&entry.snippet), 300);
+                text
+            });
+            Some(Observation {
+                instance_id: row.instance_id,
+                instance_url: row.url.clone(),
+                instance_score: row.score.unwrap_or(0.0),
+                parser: parser.to_owned(),
+                engine: entry.engine.clone(),
+                rank: Some(u32::try_from(index + 1).unwrap_or(u32::MAX)),
+                title,
+                url,
+                snippet,
+                published_date: None,
+            })
+        })
+        .collect()
 }
 
 fn observations_from_html(
@@ -957,6 +1078,25 @@ mod tests {
         assert_eq!(
             code_for(ProbeOutcome::HttpError, Some(408)),
             "ownsearch.upstream_failed"
+        );
+    }
+
+    #[test]
+    fn an_instance_that_answers_outranks_a_higher_score_that_refuses() {
+        let mut refusing = row(1, 91.0, InstanceStatus::Candidate);
+        refusing.json_enabled = Some(false);
+        refusing.html_enabled = Some(false);
+        let answering = row(2, 25.0, InstanceStatus::Candidate);
+        let mut html_only = row(3, 50.0, InstanceStatus::Candidate);
+        html_only.json_enabled = Some(false);
+        html_only.html_enabled = Some(true);
+        let selected =
+            select_instances(&[refusing, answering, html_only], SearchMode::Exhaustive, 3);
+        let ids: Vec<i64> = selected.iter().map(|row| row.instance_id).collect();
+        assert_eq!(
+            ids,
+            vec![2, 3, 1],
+            "an instance that answers comes before a higher score that refuses"
         );
     }
 }

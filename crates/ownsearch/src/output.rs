@@ -41,6 +41,8 @@ impl From<PrintError> for std::io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error as _;
+
     use super::*;
 
     #[test]
@@ -51,5 +53,25 @@ mod tests {
             PrintError::BrokenPipe.to_string(),
             "the reader closed the pipe"
         );
+    }
+
+    #[test]
+    fn every_shape_converts_to_io_error_and_reports_its_source() {
+        assert_eq!(
+            PrintError::Io(std::io::Error::other("boom")).to_string(),
+            "writing to the output stream failed"
+        );
+        assert!(PrintError::BrokenPipe.source().is_none());
+        assert!(
+            PrintError::Io(std::io::Error::other("boom"))
+                .source()
+                .is_some()
+        );
+
+        let converted: std::io::Error = PrintError::BrokenPipe.into();
+        assert_eq!(converted.kind(), std::io::ErrorKind::BrokenPipe);
+
+        let converted: std::io::Error = PrintError::Io(std::io::Error::other("boom")).into();
+        assert_eq!(converted.kind(), std::io::ErrorKind::Other);
     }
 }

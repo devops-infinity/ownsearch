@@ -13,7 +13,7 @@ pub(crate) struct Evidence {
     pub tls_ok: bool,
     pub certificate_days: Option<i64>,
     pub analytics: bool,
-    pub config_ok: bool,
+    pub config_ok: Option<bool>,
     pub json_ok: Option<bool>,
     pub html_ok: Option<bool>,
     pub google_ok: Option<bool>,
@@ -63,7 +63,7 @@ pub(crate) fn assess(evidence: &Evidence, policy: Policy) -> Assessment {
         passed = false;
         reasons.push("gate.analytics".to_owned());
     }
-    if !evidence.config_ok {
+    if evidence.config_ok == Some(false) {
         passed = false;
         reasons.push("gate.config_unparseable".to_owned());
     }
@@ -375,7 +375,7 @@ mod tests {
             tls_ok: true,
             certificate_days: Some(80),
             analytics: false,
-            config_ok: true,
+            config_ok: Some(true),
             json_ok: Some(true),
             html_ok: None,
             google_ok: Some(true),
@@ -428,12 +428,28 @@ mod tests {
     fn analytics_and_a_broken_config_are_hard_gates() {
         let mut evidence = strong();
         evidence.analytics = true;
-        evidence.config_ok = false;
+        evidence.config_ok = Some(false);
         let assessment = assess(&evidence, policy());
         assert!(!assessment.hard_gate_passed);
         assert!(assessment.reasons.contains(&"gate.analytics".to_owned()));
         assert!(
             assessment
+                .reasons
+                .contains(&"gate.config_unparseable".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_config_probe_with_no_answer_is_not_a_hard_gate() {
+        let mut evidence = strong();
+        evidence.config_ok = None;
+        let assessment = assess(&evidence, policy());
+        assert!(
+            assessment.hard_gate_passed,
+            "a refused or blocked config probe leaves no verdict"
+        );
+        assert!(
+            !assessment
                 .reasons
                 .contains(&"gate.config_unparseable".to_owned())
         );

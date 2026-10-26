@@ -5,9 +5,10 @@ Every step below runs on your machine. Nothing here publishes on its own.
 ## One-time setup
 
 1. Install the tools the gate needs: `shellcheck`, `shfmt`, `bats`, `gitleaks`, `cargo-audit`, `cargo-deny`, `cargo-machete`, `cargo-llvm-cov`, `dist` (cargo-dist 0.32.0), `minisign`, `zig`, `cargo-zigbuild`, `zip`, `jq`, and `mcp-publisher`.
-2. Run `tools/install-hooks.sh` once per checkout so the pre-commit and pre-push hooks use `.githooks`. The pre-commit hook scans the staged diff for secrets, and the pre-push hook runs `tools/verify.sh`.
-3. Create the minisign pair once with `minisign -G -p minisign.pub -s ~/.minisign/minisign.key`, then commit `minisign.pub`. The secret key stays out of the repository, and its text goes into the `MINISIGN_KEY` repository secret. Both are required: a release refuses to publish a signature that has no published key behind it.
-4. Store registry credentials with your usual tools. `tools/registry-auth.sh` refreshes the GitHub, npm, MCP Registry, and ghcr sessions from the environment and reports which ones are usable, without printing a secret.
+2. For a local Linux package build, install `musl-tools` and link the compiler name the build looks for: `sudo apt-get install -y musl-tools`, then `sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc` and `sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/aarch64-linux-musl-gcc`. Without them the x86_64 musl archive fails at `aws-lc-sys` with `failed to find tool "x86_64-linux-musl-gcc"`.
+3. Run `tools/install-hooks.sh` once per checkout so the pre-commit and pre-push hooks use `.githooks`. The pre-commit hook scans the staged diff for secrets, and the pre-push hook runs `tools/verify.sh`.
+4. Create the minisign pair once with `minisign -G -p minisign.pub -s ~/.minisign/minisign.key`, then commit `minisign.pub`. The secret key stays out of the repository, and its text goes into the `MINISIGN_KEY` repository secret. Both are required: a release refuses to publish a signature that has no published key behind it.
+5. Store registry credentials with your usual tools. `tools/registry-auth.sh` refreshes the GitHub, npm, MCP Registry, and ghcr sessions from the environment and reports which ones are usable, without printing a secret.
 
 ## Local checks
 

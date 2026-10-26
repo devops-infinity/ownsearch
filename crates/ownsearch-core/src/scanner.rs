@@ -255,6 +255,7 @@ static SCAN_STATES: std::sync::Mutex<std::collections::BTreeMap<std::path::PathB
 
 struct ScanGuard {
     database: std::path::PathBuf,
+    _lock: Option<std::fs::File>,
     completed: bool,
 }
 
@@ -281,9 +282,19 @@ impl ScanGuard {
                 gap.as_secs()
             )));
         }
+        let lock = match crate::fsutil::try_file_lock(&ctx.settings.state_dir().join("scan")) {
+            Ok(Some(file)) => file,
+            Ok(None) => {
+                return Err(Error::PolicyRefused(
+                    "another session is scanning this state database; wait for it to finish".into(),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
         state.running = true;
         Ok(Self {
             database,
+            _lock: Some(lock),
             completed: false,
         })
     }
@@ -848,6 +859,34 @@ async fn probe_one_inner(
         html_outcome = Some(report.outcome);
         html_report = Some(report);
     }
+    let mut formats_ok = false;
+    if options.probe_search && json_denied && !rate_limited && !blocked {
+        let query = SearchQuery::new(PROBE_QUERY);
+        for format in ["rss", "csv"] {
+            if let Ok(entries) =
+                crate::formats::fetch(&ctx.probe_client, &base, &query, format, cancellation).await
+                && !entries.is_empty()
+            {
+                formats_ok = true;
+                break;
+            }
+        }
+    }
+    let mut browser_ok = false;
+    if options.probe_search
+        && json_denied
+        && !rate_limited
+        && !blocked
+        && ctx.browser.enabled()
+        && let Ok(url) = crate::client::search_url(&base, &[("q", PROBE_QUERY.to_owned())])
+        && let Ok((html, _)) = ctx
+            .browser
+            .page(&url, std::time::Duration::from_secs(30))
+            .await
+    {
+        let page = search_html::HtmlSearch::parse(&html, &base);
+        browser_ok = !page.blocked && !page.results.is_empty();
+    }
     let mut google_report = None;
     let mut google_outcome = None;
     let exact_google_capability = config
@@ -883,7 +922,7 @@ async fn probe_one_inner(
         metrics: metrics.as_ref(),
         tls: &tls,
         config: config.as_ref(),
-        config_ok: config_outcome.is_success(),
+        config_outcome,
         json_outcome,
         html_outcome,
         google_outcome,
@@ -899,7 +938,11 @@ async fn probe_one_inner(
         },
     );
     let succeeded = assessment.hard_gate_passed
-        && (json_outcome.is_success() || html_outcome == Some(ProbeOutcome::Success));
+        && (json_outcome.is_success()
+            || html_outcome == Some(ProbeOutcome::Success)
+            || formats_ok
+            || browser_ok);
+    let inconclusive = evidence.json_ok.is_none() && evidence.html_ok.is_none();
     let successes = if succeeded {
         target.consecutive_successes.saturating_add(1)
     } else {
@@ -907,6 +950,8 @@ async fn probe_one_inner(
     };
     let failures = if succeeded {
         0
+    } else if inconclusive {
+        target.consecutive_failures
     } else {
         target.consecutive_failures.saturating_add(1)
     };
@@ -1046,7 +1091,7 @@ struct ProbeEvidence<'a> {
     metrics: Option<&'a DiscoveredInstance>,
     tls: &'a TlsReport,
     config: Option<&'a config_client::ConfigDocument>,
-    config_ok: bool,
+    config_outcome: ProbeOutcome,
     json_outcome: ProbeOutcome,
     html_outcome: Option<ProbeOutcome>,
     google_outcome: Option<ProbeOutcome>,
@@ -1055,12 +1100,20 @@ struct ProbeEvidence<'a> {
     failures: i64,
 }
 
+fn evidence_value(outcome: ProbeOutcome) -> Option<bool> {
+    match outcome {
+        ProbeOutcome::Success => Some(true),
+        ProbeOutcome::HttpError | ProbeOutcome::ParserError => Some(false),
+        _ => None,
+    }
+}
+
 fn build_evidence(input: ProbeEvidence<'_>) -> Evidence {
     let ProbeEvidence {
         metrics,
         tls,
         config,
-        config_ok,
+        config_outcome,
         json_outcome,
         html_outcome,
         google_outcome,
@@ -1077,9 +1130,13 @@ fn build_evidence(input: ProbeEvidence<'_>) -> Evidence {
             .days_remaining
             .or(metrics.and_then(|item| item.certificate_days_remaining)),
         analytics: metrics.map(|item| item.analytics).unwrap_or(false),
-        config_ok,
-        json_ok: Some(json_outcome.is_success()),
-        html_ok: html_outcome.map(ProbeOutcome::is_success),
+        config_ok: match config_outcome {
+            ProbeOutcome::Success => Some(true),
+            ProbeOutcome::ParserError => Some(false),
+            _ => None,
+        },
+        json_ok: evidence_value(json_outcome),
+        html_ok: html_outcome.and_then(evidence_value),
         google_ok: google_outcome.map(ProbeOutcome::is_success),
         uptime_month: metrics.and_then(|item| item.uptime_month),
         uptime_year: metrics.and_then(|item| item.uptime_year),

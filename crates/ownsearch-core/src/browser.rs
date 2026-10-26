@@ -33,6 +33,7 @@ struct RenderInner {
     max_lifetime: Duration,
     stop: tokio_util::sync::CancellationToken,
     watchdog_started: std::sync::atomic::AtomicBool,
+    capsolver: Option<crate::capsolver::CapSolver>,
     profile: PathBuf,
 }
 
@@ -50,33 +51,49 @@ impl std::fmt::Debug for Renderer {
     }
 }
 
+pub struct RenderConfig {
+    pub enabled: bool,
+    pub executable: Option<String>,
+    pub idle_secs: u64,
+    pub no_sandbox: bool,
+    pub allow_private: bool,
+    pub watchdog_secs: u64,
+    pub max_lifetime_secs: u64,
+    pub profile_root: PathBuf,
+    pub capsolver_key: Option<secrecy::SecretString>,
+    pub capsolver_timeout_secs: u64,
+}
+
 impl Renderer {
-    pub fn new(
-        enabled: bool,
-        executable: Option<String>,
-        idle_secs: u64,
-        no_sandbox: bool,
-        allow_private: bool,
-        watchdog_secs: u64,
-        max_lifetime_secs: u64,
-        profile_root: &Path,
-    ) -> Self {
-        if !enabled {
+    pub fn new(config: RenderConfig) -> Self {
+        if !config.enabled {
             return Self { inner: None };
         }
+        let capsolver = config.capsolver_key.and_then(|key| {
+            match crate::capsolver::CapSolver::new(key, config.capsolver_timeout_secs) {
+                Ok(solver) => Some(solver),
+                Err(error) => {
+                    tracing::warn!(%error, "the captcha solver could not start; captchas stay unsolved");
+                    None
+                }
+            }
+        });
         Self {
             inner: Some(Arc::new(RenderInner {
                 gate: Semaphore::new(1),
                 session: Mutex::new(None),
-                executable,
-                idle: Duration::from_secs(idle_secs.max(30)),
-                no_sandbox,
-                allow_private,
-                watchdog: Duration::from_secs(watchdog_secs.max(5)),
-                max_lifetime: Duration::from_secs(max_lifetime_secs.max(60)),
+                executable: config.executable,
+                idle: Duration::from_secs(config.idle_secs.max(30)),
+                no_sandbox: config.no_sandbox,
+                allow_private: config.allow_private,
+                watchdog: Duration::from_secs(config.watchdog_secs.max(5)),
+                max_lifetime: Duration::from_secs(config.max_lifetime_secs.max(60)),
                 stop: tokio_util::sync::CancellationToken::new(),
                 watchdog_started: std::sync::atomic::AtomicBool::new(false),
-                profile: profile_root.join(format!("profile-{}", std::process::id())),
+                capsolver,
+                profile: config
+                    .profile_root
+                    .join(format!("profile-{}", std::process::id())),
             })),
         }
     }
@@ -134,7 +151,54 @@ impl Renderer {
                 if !inner.allow_private {
                     ensure_public_final(&page).await?;
                 }
-                let html = page.content().await.map_err(browser_error)?;
+                let mut html = page.content().await.map_err(browser_error)?;
+                if let Some(capsolver) = &inner.capsolver {
+                    match crate::challenge::detect(&html) {
+                        Some(challenge) => {
+                            tracing::debug!(
+                                kind = challenge.kind.as_str(),
+                                sitekey = %challenge.sitekey,
+                                page = %url,
+                                "a captcha was detected in the rendered page"
+                            );
+                            let token = match capsolver.solve(url, &challenge).await {
+                                Ok(token) => {
+                                    tracing::debug!(
+                                        kind = challenge.kind.as_str(),
+                                        "the captcha was solved"
+                                    );
+                                    token
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        kind = challenge.kind.as_str(),
+                                        %error,
+                                        "the captcha solve failed"
+                                    );
+                                    return Err(error);
+                                }
+                            };
+                            if challenge.kind.response_field().is_empty() {
+                                tracing::debug!(
+                                    kind = challenge.kind.as_str(),
+                                    "a token was solved; this kind must apply it through the page's own script"
+                                );
+                            } else {
+                                let script =
+                                    crate::capsolver::injection_script(challenge.kind, &token);
+                                let _ = page.evaluate(script).await;
+                                tokio::time::sleep(Duration::from_millis(1_500)).await;
+                                if let Ok(refreshed) = page.content().await {
+                                    html = refreshed;
+                                }
+                            }
+                        }
+                        None => tracing::debug!(
+                            page = %url,
+                            "no captcha was detected in the rendered page"
+                        ),
+                    }
+                }
                 let markdown = chromiumoxide::content_markdown::content_markdown(&page)
                     .await
                     .ok()
@@ -596,11 +660,33 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ownsearch-guard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let url = Url::parse(&format!("{}/page", server.uri())).expect("url");
-        let refused = Renderer::new(true, None, 60, false, false, 30, 120, &root.join("refused"));
+        let refused = Renderer::new(crate::browser::RenderConfig {
+            enabled: true,
+            executable: None,
+            idle_secs: 60,
+            no_sandbox: false,
+            allow_private: false,
+            watchdog_secs: 30,
+            max_lifetime_secs: 120,
+            profile_root: root.join("refused"),
+            capsolver_key: None,
+            capsolver_timeout_secs: 45,
+        });
         let blocked = refused.page(&url, Duration::from_secs(30)).await;
         assert!(blocked.is_err(), "{blocked:?}");
         refused.shutdown().await;
-        let allowed = Renderer::new(true, None, 60, false, true, 30, 120, &root.join("allowed"));
+        let allowed = Renderer::new(crate::browser::RenderConfig {
+            enabled: true,
+            executable: None,
+            idle_secs: 60,
+            no_sandbox: false,
+            allow_private: true,
+            watchdog_secs: 30,
+            max_lifetime_secs: 120,
+            profile_root: root.join("allowed"),
+            capsolver_key: None,
+            capsolver_timeout_secs: 45,
+        });
         let rendered = allowed.page(&url, Duration::from_secs(30)).await;
         assert!(
             rendered

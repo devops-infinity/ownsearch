@@ -359,7 +359,13 @@ async fn run_scan_tick(context: &Arc<ToolContext>, shutdown: &CancellationToken)
             fleet = output.fleet.len(),
             "the scheduled scan finished"
         ),
-        Ok(Err(error)) => tracing::warn!(%error, "the scheduled scan failed"),
+        Ok(Err(error)) => {
+            if matches!(error, crate::error::Error::PolicyRefused(_)) {
+                tracing::debug!(%error, "the scheduled scan was skipped");
+            } else {
+                tracing::warn!(%error, "the scheduled scan failed");
+            }
+        }
         Err(_) => tracing::warn!("the scheduled scan reached its deadline"),
     }
 }

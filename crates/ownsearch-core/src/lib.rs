@@ -10,6 +10,8 @@
 
 mod browser;
 mod cache;
+mod capsolver;
+mod challenge;
 mod cleanup;
 mod client;
 mod config;
@@ -19,6 +21,7 @@ mod db;
 mod error;
 mod extract;
 mod fetch;
+mod formats;
 mod fsutil;
 mod instances;
 mod ledger;

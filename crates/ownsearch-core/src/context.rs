@@ -155,16 +155,18 @@ impl ToolContext {
             settings.probe_timeout_secs(),
             settings.allow_private_instances(),
         )?;
-        let browser = crate::browser::Renderer::new(
-            settings.browser(),
-            settings.browser_executable().map(str::to_owned),
-            settings.browser_idle_secs(),
-            settings.browser_no_sandbox(),
-            settings.allow_private_instances(),
-            settings.browser_watchdog_secs(),
-            settings.browser_max_lifetime_secs(),
-            &settings.state_dir().join("browser"),
-        );
+        let browser = crate::browser::Renderer::new(crate::browser::RenderConfig {
+            enabled: settings.browser(),
+            executable: settings.browser_executable().map(str::to_owned),
+            idle_secs: settings.browser_idle_secs(),
+            no_sandbox: settings.browser_no_sandbox(),
+            allow_private: settings.allow_private_instances(),
+            watchdog_secs: settings.browser_watchdog_secs(),
+            max_lifetime_secs: settings.browser_max_lifetime_secs(),
+            profile_root: settings.state_dir().join("browser"),
+            capsolver_key: settings.capsolver_key().cloned(),
+            capsolver_timeout_secs: settings.capsolver_timeout_secs(),
+        });
         let args_key = crate::ledger::load_or_create_key(&settings.ledger_dir().join("args.key"))?;
         let ledger = std::sync::Arc::new(Ledger::open(settings.ledger_path(), &args_key)?);
         let cache = ResponseCache::new(settings.cache_ttl_secs(), settings.cache_max_bytes());
@@ -199,16 +201,18 @@ impl ToolContext {
             settings.probe_timeout_secs(),
             settings.allow_private_instances(),
         )?;
-        let browser = crate::browser::Renderer::new(
-            settings.browser(),
-            settings.browser_executable().map(str::to_owned),
-            settings.browser_idle_secs(),
-            settings.browser_no_sandbox(),
-            settings.allow_private_instances(),
-            settings.browser_watchdog_secs(),
-            settings.browser_max_lifetime_secs(),
-            &settings.state_dir().join("browser"),
-        );
+        let browser = crate::browser::Renderer::new(crate::browser::RenderConfig {
+            enabled: settings.browser(),
+            executable: settings.browser_executable().map(str::to_owned),
+            idle_secs: settings.browser_idle_secs(),
+            no_sandbox: settings.browser_no_sandbox(),
+            allow_private: settings.allow_private_instances(),
+            watchdog_secs: settings.browser_watchdog_secs(),
+            max_lifetime_secs: settings.browser_max_lifetime_secs(),
+            profile_root: settings.state_dir().join("browser"),
+            capsolver_key: settings.capsolver_key().cloned(),
+            capsolver_timeout_secs: settings.capsolver_timeout_secs(),
+        });
         let args_key = crate::ledger::load_or_create_key(&settings.ledger_dir().join("args.key"))?;
         let ledger = std::sync::Arc::new(Ledger::open(settings.ledger_path(), &args_key)?);
         let cache = ResponseCache::new(settings.cache_ttl_secs(), settings.cache_max_bytes());
