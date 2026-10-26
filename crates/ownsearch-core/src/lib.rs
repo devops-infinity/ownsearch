@@ -10,6 +10,8 @@
 
 mod browser;
 mod cache;
+mod capsolver;
+mod challenge;
 mod cleanup;
 mod client;
 mod config;

@@ -96,6 +96,9 @@ pub struct Settings {
     keep_window_secs: u64,
     maintenance_interval_secs: u64,
     allow_private_instances: bool,
+    capsolver_key: Option<SecretString>,
+    capsolver_timeout_secs: u64,
+    proxy: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -157,6 +160,9 @@ struct Profile {
     keep_window: Option<String>,
     maintenance_interval_secs: Option<u64>,
     allow_private_instances: Option<bool>,
+    capsolver_key: Option<String>,
+    capsolver_timeout_secs: Option<u64>,
+    proxy: Option<String>,
 }
 
 impl Settings {
@@ -346,6 +352,18 @@ impl Settings {
             })?,
             None => profile.ai_db_mode.unwrap_or_default(),
         };
+        let capsolver_key = non_empty_env(&env, "OWNSEARCH_CAPSOLVER_KEY")
+            .or(profile.capsolver_key.clone())
+            .map(SecretString::from);
+        let capsolver_timeout_secs = bounded_u64(
+            env_parse(&env, "OWNSEARCH_CAPSOLVER_TIMEOUT_SECS")?
+                .or(profile.capsolver_timeout_secs)
+                .unwrap_or(45),
+            10,
+            180,
+            "capsolver_timeout_secs",
+        )?;
+        let proxy = non_empty_env(&env, "OWNSEARCH_PROXY").or(profile.proxy.clone());
         Ok(Self {
             http: overrides
                 .http
@@ -563,6 +581,9 @@ impl Settings {
             allow_private_instances: env_parse(&env, "OWNSEARCH_ALLOW_PRIVATE_INSTANCES")?
                 .or(profile.allow_private_instances)
                 .unwrap_or(false),
+            capsolver_key,
+            capsolver_timeout_secs,
+            proxy,
             maintenance_interval_secs: bounded_u64(
                 env_parse(&env, "OWNSEARCH_MAINTENANCE_INTERVAL_SECS")?
                     .or(profile.maintenance_interval_secs)
@@ -818,6 +839,18 @@ impl Settings {
         self.allow_private_instances
     }
 
+    pub fn capsolver_key(&self) -> Option<&SecretString> {
+        self.capsolver_key.as_ref()
+    }
+
+    pub fn capsolver_timeout_secs(&self) -> u64 {
+        self.capsolver_timeout_secs
+    }
+
+    pub fn proxy(&self) -> Option<&str> {
+        self.proxy.as_deref()
+    }
+
     pub fn maintenance_interval_secs(&self) -> u64 {
         self.maintenance_interval_secs
     }
@@ -978,6 +1011,26 @@ impl Settings {
             (
                 "allow_private_instances".to_owned(),
                 self.allow_private_instances.to_string(),
+            ),
+            (
+                "capsolver".to_owned(),
+                if self.capsolver_key.is_some() {
+                    "configured".to_owned()
+                } else {
+                    "disabled".to_owned()
+                },
+            ),
+            (
+                "capsolver_timeout_secs".to_owned(),
+                self.capsolver_timeout_secs.to_string(),
+            ),
+            (
+                "proxy".to_owned(),
+                if self.proxy.is_some() {
+                    "configured".to_owned()
+                } else {
+                    "disabled".to_owned()
+                },
             ),
             (
                 "keep_window".to_owned(),
@@ -1415,6 +1468,64 @@ mod tests {
             settings.database_path(),
             PathBuf::from("/home/tester/.local/state/ownsearch/instances.db")
         );
+        assert!(settings.capsolver_key().is_none());
+        assert_eq!(settings.capsolver_timeout_secs(), 45);
+        assert!(settings.proxy().is_none());
+    }
+
+    #[test]
+    fn the_proxy_comes_from_the_environment_and_never_reaches_the_display() {
+        let settings = load_with(&[
+            ("HOME", "/home/tester"),
+            ("OWNSEARCH_PROXY", "socks5h://user:secret@127.0.0.1:1080"),
+        ])
+        .expect("settings");
+        assert_eq!(
+            settings.proxy(),
+            Some("socks5h://user:secret@127.0.0.1:1080")
+        );
+        let rows = settings.describe();
+        let shown = rows
+            .iter()
+            .find(|(name, _)| name == "proxy")
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+        assert_eq!(shown, "configured");
+        assert!(
+            !rows.iter().any(|(_, value)| value.contains("secret@")),
+            "the proxy credentials must never reach the settings display"
+        );
+    }
+
+    #[test]
+    fn the_capsolver_key_comes_from_the_environment_and_never_reaches_the_display() {
+        let settings = load_with(&[
+            ("HOME", "/home/tester"),
+            ("OWNSEARCH_CAPSOLVER_KEY", "cap-key-value"),
+            ("OWNSEARCH_CAPSOLVER_TIMEOUT_SECS", "90"),
+        ])
+        .expect("settings");
+        assert!(settings.capsolver_key().is_some());
+        assert_eq!(settings.capsolver_timeout_secs(), 90);
+        let rows = settings.describe();
+        let shown = rows
+            .iter()
+            .find(|(name, _)| name == "capsolver")
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+        assert_eq!(shown, "configured");
+        assert!(
+            !rows
+                .iter()
+                .any(|(_, value)| value.contains("cap-key-value")),
+            "the key must never reach the settings display"
+        );
+        let error = load_with(&[
+            ("HOME", "/home/tester"),
+            ("OWNSEARCH_CAPSOLVER_TIMEOUT_SECS", "5"),
+        ])
+        .expect_err("out of range");
+        assert!(error.to_string().contains("capsolver_timeout_secs"));
     }
 
     #[test]

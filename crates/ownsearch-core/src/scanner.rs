@@ -255,6 +255,7 @@ static SCAN_STATES: std::sync::Mutex<std::collections::BTreeMap<std::path::PathB
 
 struct ScanGuard {
     database: std::path::PathBuf,
+    _lock: Option<std::fs::File>,
     completed: bool,
 }
 
@@ -281,9 +282,19 @@ impl ScanGuard {
                 gap.as_secs()
             )));
         }
+        let lock = match crate::fsutil::try_file_lock(&ctx.settings.state_dir().join("scan")) {
+            Ok(Some(file)) => file,
+            Ok(None) => {
+                return Err(Error::PolicyRefused(
+                    "another session is scanning this state database; wait for it to finish".into(),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
         state.running = true;
         Ok(Self {
             database,
+            _lock: Some(lock),
             completed: false,
         })
     }
@@ -883,7 +894,7 @@ async fn probe_one_inner(
         metrics: metrics.as_ref(),
         tls: &tls,
         config: config.as_ref(),
-        config_ok: config_outcome.is_success(),
+        config_outcome,
         json_outcome,
         html_outcome,
         google_outcome,
@@ -1046,7 +1057,7 @@ struct ProbeEvidence<'a> {
     metrics: Option<&'a DiscoveredInstance>,
     tls: &'a TlsReport,
     config: Option<&'a config_client::ConfigDocument>,
-    config_ok: bool,
+    config_outcome: ProbeOutcome,
     json_outcome: ProbeOutcome,
     html_outcome: Option<ProbeOutcome>,
     google_outcome: Option<ProbeOutcome>,
@@ -1060,7 +1071,7 @@ fn build_evidence(input: ProbeEvidence<'_>) -> Evidence {
         metrics,
         tls,
         config,
-        config_ok,
+        config_outcome,
         json_outcome,
         html_outcome,
         google_outcome,
@@ -1077,7 +1088,11 @@ fn build_evidence(input: ProbeEvidence<'_>) -> Evidence {
             .days_remaining
             .or(metrics.and_then(|item| item.certificate_days_remaining)),
         analytics: metrics.map(|item| item.analytics).unwrap_or(false),
-        config_ok,
+        config_ok: match config_outcome {
+            ProbeOutcome::Success => Some(true),
+            ProbeOutcome::ParserError => Some(false),
+            _ => None,
+        },
         json_ok: Some(json_outcome.is_success()),
         html_ok: html_outcome.map(ProbeOutcome::is_success),
         google_ok: google_outcome.map(ProbeOutcome::is_success),

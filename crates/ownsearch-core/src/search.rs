@@ -499,6 +499,16 @@ fn rotation_span(rows: usize, target: usize) -> usize {
     rows.min(target.saturating_mul(2).max(2))
 }
 
+fn capability_rank(row: &InstanceRow) -> u8 {
+    if row.json_enabled == Some(true) {
+        0
+    } else if row.html_enabled == Some(true) {
+        1
+    } else {
+        2
+    }
+}
+
 fn order_instances(
     rows: &[InstanceRow],
     mode: SearchMode,
@@ -511,11 +521,15 @@ fn order_instances(
         .cloned()
         .collect();
     ordered.sort_by(|left, right| {
-        right
-            .score
-            .unwrap_or(0.0)
-            .partial_cmp(&left.score.unwrap_or(0.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
+        capability_rank(left)
+            .cmp(&capability_rank(right))
+            .then_with(|| {
+                right
+                    .score
+                    .unwrap_or(0.0)
+                    .partial_cmp(&left.score.unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| left.instance_id.cmp(&right.instance_id))
     });
     if let Some(offset) = rotation {
@@ -957,6 +971,25 @@ mod tests {
         assert_eq!(
             code_for(ProbeOutcome::HttpError, Some(408)),
             "ownsearch.upstream_failed"
+        );
+    }
+
+    #[test]
+    fn an_instance_that_answers_outranks_a_higher_score_that_refuses() {
+        let mut refusing = row(1, 91.0, InstanceStatus::Candidate);
+        refusing.json_enabled = Some(false);
+        refusing.html_enabled = Some(false);
+        let answering = row(2, 25.0, InstanceStatus::Candidate);
+        let mut html_only = row(3, 50.0, InstanceStatus::Candidate);
+        html_only.json_enabled = Some(false);
+        html_only.html_enabled = Some(true);
+        let selected =
+            select_instances(&[refusing, answering, html_only], SearchMode::Exhaustive, 3);
+        let ids: Vec<i64> = selected.iter().map(|row| row.instance_id).collect();
+        assert_eq!(
+            ids,
+            vec![2, 3, 1],
+            "an instance that answers comes before a higher score that refuses"
         );
     }
 }

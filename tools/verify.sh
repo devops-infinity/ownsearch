@@ -98,7 +98,7 @@ log_line SUCCESS "manifest versions"
 if git describe --tags --abbrev=0 >/dev/null 2>&1; then
 	run_check "semver" "the public API broke against the last release" cargo semver-checks check-release -p ownsearch-core --baseline-rev "$(git describe --tags --abbrev=0)"
 else
-	skip_check "semver" "no release tag exists yet"
+	log_line INFO "semver check does not apply yet: no release tag exists"
 fi
 run_check "secret scan" "a credential pattern is in the tree" gitleaks detect --source . --no-git --redact --exit-code 1 --config .gitleaks.toml
 if git rev-parse --verify HEAD >/dev/null 2>&1; then

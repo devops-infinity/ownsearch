@@ -124,6 +124,19 @@ pub(crate) fn trim_lines(path: &Path, keep: impl Fn(&str) -> bool) -> Result<usi
     })
 }
 
+pub(crate) fn try_file_lock(path: &Path) -> Result<Option<std::fs::File>> {
+    let lock = path.with_extension("lock");
+    let file = open_private(&lock, false)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(Error::State(format!(
+            "cannot lock {}: {error}",
+            lock.display()
+        ))),
+    }
+}
+
 pub(crate) fn with_file_lock<T>(path: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
     let lock = path.with_extension("lock");
     let file = open_private(&lock, false)?;
@@ -191,6 +204,27 @@ mod tests {
         append_line(&path, "{\"a\":2}").expect("append");
         let body = std::fs::read_to_string(&path).expect("read");
         assert_eq!(body, "{\"a\":1}\n{\"a\":2}\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_second_lock_reports_busy_and_dropping_the_first_frees_it() {
+        let dir = std::env::temp_dir().join(format!("ownsearch-fs-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("scan");
+        let first = try_file_lock(&path)
+            .expect("first lock")
+            .expect("first lock is acquired");
+        assert!(
+            try_file_lock(&path).expect("second lock").is_none(),
+            "a held lock must be reported as busy"
+        );
+        drop(first);
+        assert!(
+            try_file_lock(&path).expect("third lock").is_some(),
+            "dropping the holder must free the lock"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

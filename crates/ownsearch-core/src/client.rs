@@ -77,15 +77,21 @@ impl FleetClient {
 
     fn build(settings: &Settings, timeout_secs: u64) -> Result<Self> {
         install_crypto_provider();
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(settings.connect_timeout_secs()))
             .redirect(Policy::none())
             .pool_max_idle_per_host(8)
             .pool_idle_timeout(Duration::from_secs(30))
-            .no_proxy()
             .user_agent(settings.user_agent())
-            .https_only(false)
+            .https_only(false);
+        builder = match settings.proxy() {
+            Some(proxy) => builder.proxy(reqwest::Proxy::all(proxy).map_err(|error| {
+                Error::Config(format!("OWNSEARCH_PROXY does not parse: {error}"))
+            })?),
+            None => builder.no_proxy(),
+        };
+        let http = builder
             .build()
             .map_err(|error| Error::network("building the HTTP client", error))?;
         Ok(Self {

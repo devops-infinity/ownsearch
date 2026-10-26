@@ -96,7 +96,16 @@ impl HtmlSearch {
                 position: u32::try_from(results.len()).unwrap_or(0).saturating_add(1),
             });
         }
-        let blocked = results.is_empty() && crate::searxng::is_challenge_page(markup);
+        let captcha = crate::challenge::detect(markup);
+        if let Some(challenge) = &captcha {
+            tracing::debug!(
+                kind = challenge.kind.as_str(),
+                sitekey = %challenge.sitekey,
+                "the page serves a captcha"
+            );
+        }
+        let blocked =
+            results.is_empty() && (captcha.is_some() || crate::searxng::is_challenge_page(markup));
         let has_results_root = markup.contains("id=\"results\"") || markup.contains("id=\"urls\"");
         Self {
             drifted: results.is_empty() && !blocked && !has_results_root,
