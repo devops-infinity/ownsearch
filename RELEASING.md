@@ -4,10 +4,10 @@ Every step below runs on your machine. Nothing here publishes on its own.
 
 ## One-time setup
 
-1. Install the tools the gate needs: `shellcheck`, `shfmt`, `bats`, `gitleaks`, `cargo-audit`, `cargo-deny`, `cargo-machete`, `cargo-llvm-cov`, `dist` (cargo-dist), `minisign`, `zig`, and `mcp-publisher`.
-2. Run `tools/install-hooks.sh` once per checkout so the pre-commit and pre-push hooks use `.githooks`.
-3. Create a minisign key if you sign releases: `minisign -G -p minisign.pub -s ~/.minisign/ownsearch.key`. Keep the secret key out of the repository.
-4. Store registry credentials with your usual tools. `tools/registry-auth.sh` reports which sessions are usable without printing any secret.
+1. Install the tools the gate needs: `shellcheck`, `shfmt`, `bats`, `gitleaks`, `cargo-audit`, `cargo-deny`, `cargo-machete`, `cargo-llvm-cov`, `dist` (cargo-dist 0.32.0), `minisign`, `zig`, `cargo-zigbuild`, `zip`, `jq`, and `mcp-publisher`.
+2. Run `tools/install-hooks.sh` once per checkout so the pre-commit and pre-push hooks use `.githooks`. The pre-commit hook scans the staged diff for secrets, and the pre-push hook runs `tools/verify.sh`.
+3. Create the minisign pair once with `minisign -G -p minisign.pub -s ~/.minisign/minisign.key`, then commit `minisign.pub`. The secret key stays out of the repository, and its text goes into the `MINISIGN_KEY` repository secret. Both are required: a release refuses to publish a signature that has no published key behind it.
+4. Store registry credentials with your usual tools. `tools/registry-auth.sh` refreshes the GitHub, npm, MCP Registry, and ghcr sessions from the environment and reports which ones are usable, without printing a secret.
 
 ## Local checks
 
@@ -26,7 +26,7 @@ tools/release.sh --prepare --major
 tools/release.sh --prepare --version 1.2.3
 ```
 
-The script refuses a dirty tree, stamps the version into the workspace manifest, the binary dependency, every version field in the MCP Registry manifest, the bundle manifest, and the Dockerfile label, and inserts a changelog heading. Edit the changelog text, then commit the preparation on `main`.
+The script refuses a dirty tree and a version that is not newer than the current one. It stamps the version into the workspace manifest, the binary dependency, `Cargo.lock`, every version field in the MCP Registry manifest, the bundle manifest, and the default in the Dockerfile, then inserts the changelog heading, adds the compare link, and checks every stamped file. A stamp that missed a file stops the script before it finishes. Edit the changelog text, then commit the preparation.
 
 The version number is chosen by the Principal Architect. Do not invent one.
 
@@ -36,7 +36,7 @@ The version number is chosen by the Principal Architect. Do not invent one.
 tools/release.sh --package
 ```
 
-This runs the strict gate, builds the cargo-dist artifacts for the host, and signs `sha256.sum` with minisign when the key exists. It never uploads anything. The MCPB bundle is built with the `mcpb` tool from the Linux x86_64 binary, and the local binary is installed with `tools/reinstall.sh`.
+This runs the strict gate, reads the target list from `dist plan`, and builds every target this host can build. It then builds the global artifacts: the shell and PowerShell installers, `ownsearch.rb` for Homebrew, and the npm package. Everything lands in `dist/`: one archive for each target this host built, `source.tar.gz`, the installers, the formula, the npm package, and the MCPB bundle built from the Linux x86_64 archive. `sha256.sum` covers every archive, the installers, the formula, the npm package, the bundle, and any bill of materials in the directory. It is signed with minisign when `~/.minisign/minisign.key` exists and `minisign.pub` is in the repository. A run that skips a target is refused unless `OWNSEARCH_ALLOW_PARTIAL=1` is set, because the installers and the formula name every target. The host binary is installed into `~/.local/bin`, or into the directory in `OWNSEARCH_INSTALL_DIR`. Nothing is uploaded.
 
 ## Tag
 
@@ -44,7 +44,7 @@ This runs the strict gate, builds the cargo-dist artifacts for the host, and sig
 tools/release.sh --tag
 ```
 
-This runs the strict gate again and creates a signed tag locally. It fails when no GPG key is configured, because an unsigned release tag is refused. It never pushes. Push the tag only when the Principal Architect orders it. A `v*` tag starts the release workflow in `.github/workflows/release.yml`.
+This requires a clean tree, changelog entries under the current version heading, and a `dist/` packaged for that version. It runs the strict gate, refuses a tag that already exists, and creates `vX.Y.Z` locally: signed when `user.signingkey` is set, and annotated with a warning when it is not. It never pushes. Push the tag only when the Principal Architect orders it. A `v*` tag starts the release workflow in `.github/workflows/release.yml`.
 
 ## Edition policy
 
@@ -68,15 +68,15 @@ Every channel installs a versioned artifact: the archives and installers, the cr
 ## Publish, one registry at a time
 
 1. crates.io: `cargo publish -p ownsearch-core --locked`, then `cargo publish -p ownsearch --locked`.
-2. npm: `tools/publish-npm.sh` after `tools/npm-auth-setup.sh`. The script checks the package name and version, injects `mcpName`, publishes, and waits for the registry to answer with the version.
+2. npm: `gh release download vX.Y.Z --pattern 'ownsearch-npm-package.tar.gz' --dir dist`, then `mkdir -p target/distrib/ownsearch-npm-package`, then `tar -xzf dist/ownsearch-npm-package.tar.gz -C target/distrib/ownsearch-npm-package --strip-components=1`. Run `tools/npm-auth-setup.sh` once, then `tools/publish-npm.sh`. The script checks the package name and the version against the workspace, injects `mcpName`, publishes, and waits for the registry to answer. `tools/publish-npm.sh --dry-run` packs and prints the file list without publishing.
 3. MCP Registry: `mcp-publisher publish` from a schema-valid `server.json`.
-4. Homebrew: build the formula from the release artifacts, run `brew style`, `brew audit --strict`, and `brew test`, then update the tap.
-5. ghcr: build the image from the released tag and push both the version tag and `latest`.
+4. Homebrew: `gh release download vX.Y.Z --pattern 'ownsearch.rb' --dir dist`. Two fixes are needed before the audit: drop the `version` line, because the URL already carries the version, and give `test` a real assertion, because the generated one is empty. Copy the result to `Formula/ownsearch.rb` in `devops-infinity/homebrew-tap`, run `brew audit --strict devops-infinity/tap/ownsearch`, then commit and push the tap. The release workflow never pushes the tap.
+5. ghcr: `docker buildx build --platform linux/amd64 -t ghcr.io/devops-infinity/ownsearch:X.Y.Z -t ghcr.io/devops-infinity/ownsearch:latest --push .`. The image is amd64 only. The first push creates the package as `internal`, and the REST API has no endpoint that changes package visibility, so make it public once by hand: open `https://github.com/orgs/devops-infinity/packages/container/package/ownsearch/settings`, then `Change visibility` under Danger Zone, choose `Public`, and confirm the package name. Public is one way; a public package cannot be made private again.
 6. Post-release smoke: start the installed binary, call `ownsearch doctor`, call one tool over stdio, and check `ownsearch audit verify`. A failed smoke check is a rollback.
 
 Credentials live outside the repository. crates.io accepts an API token in `CARGO_REGISTRY_TOKEN`, or an OIDC trusted publisher set up once in the account settings for `ownsearch-core` and `ownsearch`. `tools/registry-auth.sh` reports which registry sessions are usable without printing a secret. Nothing is published from the local machine without the command being typed.
 
-The release workflow builds the five native targets. The two musl archives in `[workspace.metadata.dist]` are built locally with cargo-zigbuild and added to the release by hand.
+The release workflow builds all seven targets from `[workspace.metadata.dist]` on native runners, including the two musl archives. It runs the gate first, then attaches every archive, both installers, `ownsearch.rb`, `ownsearch-npm-package.tar.gz`, the MCPB bundle, one bill of materials per target, `sha256.sum` with its signature, and `minisign.pub`. A manual run takes the tag from the workflow input, so the built tree is the tag and not the default branch.
 
 ## Boundaries
 

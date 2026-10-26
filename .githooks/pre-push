@@ -2,12 +2,12 @@
 set -Eeuo pipefail
 
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO"
 source "$REPO/tools/lib.sh"
-require_bash 4.4
 
-if [[ -n "$(git status --porcelain)" ]]; then
-	die "push refused: the working tree is not clean"
+if [[ -n "$(git -C "$REPO" status --porcelain)" ]]; then
+	log_line FAILED "the working tree is not clean; the gate must run on the commits being pushed, so commit or stash first"
+	exit 1
 fi
 
-"$REPO/tools/verify.sh"
+log_line INFO "running the gate before push"
+exec "$REPO/tools/verify.sh"

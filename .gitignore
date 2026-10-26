@@ -8,3 +8,9 @@ calls*.jsonl
 instances.snapshot.json
 instances.events.jsonl
 .remember
+.mcp.json
+*.mcpb
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/

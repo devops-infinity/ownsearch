@@ -7,8 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release"
+        description: "Tag to release, for example v0.1.0"
         required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -21,6 +26,7 @@ jobs:
   gate:
     name: gate
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -58,60 +64,123 @@ jobs:
     name: build ${{ matrix.target }}
     needs: gate
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-26
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-26
           - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
           - target: x86_64-pc-windows-msvc
-            os: windows-2022
+            os: windows-2025
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: 1.99.1
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: release-${{ matrix.target }}
       - name: Install dist
-        run: cargo install cargo-dist@0.32.0 --locked
-      - name: Build local artifacts
-        run: dist build --artifacts=local --target=${{ matrix.target }}
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
+        with:
+          tool: cargo-dist@0.32.0
+      - name: Build the target
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p target/distrib target/dist-manifests
+          dist build --tag="$TAG" --artifacts=local --target="$TARGET" --no-local-paths --output-format=json > "target/dist-manifests/$TARGET.json"
+          cp "target/dist-manifests/$TARGET.json" "target/distrib/$TARGET-dist-manifest.json"
       - name: Bill of materials
         run: cargo run --quiet -p ownsearch -- sbom --out dist/sbom-${{ matrix.target }}.cdx.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Upload the target artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: artifacts-${{ matrix.target }}
-          path: dist/
+          name: dist-${{ matrix.target }}
+          path: |
+            target/distrib/
+            dist/
+          if-no-files-found: error
 
   publish:
     name: publish release
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+      - name: Download the target artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: dist
+          pattern: dist-*
           merge-multiple: true
-      - name: Install minisign
-        run: sudo apt-get update && sudo apt-get install -y minisign
-      - name: Sign checksums
+      - name: Install dist
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
+        with:
+          tool: cargo-dist@0.32.0
+      - name: Install the packaging tools
+        run: sudo apt-get update && sudo apt-get install -y minisign zip
+      - name: Build the installers
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag $TAG is not vX.Y.Z"; exit 1; }
+          dist build --tag="$TAG" --artifacts=global --no-local-paths
+          mkdir -p dist
+          find target/distrib -maxdepth 1 -type f -exec cp -p {} dist/ \;
+      - name: Build the MCPB bundle
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          TMP="$RUNNER_TEMP/mcpb"
+          rm -rf "$TMP"
+          mkdir -p "$TMP/server"
+          cp mcpb/manifest.json "$TMP/manifest.json"
+          tar -xzf "dist/ownsearch-x86_64-unknown-linux-gnu.tar.gz" -C "$TMP"
+          install -m 0755 "$TMP/ownsearch-x86_64-unknown-linux-gnu/ownsearch" "$TMP/server/ownsearch"
+          find "$TMP" -exec touch -t 198001010000 {} +
+          (cd "$TMP" && zip -qXr "$GITHUB_WORKSPACE/dist/ownsearch-$VERSION.mcpb" manifest.json server)
+          HASH="$(sha256sum "dist/ownsearch-$VERSION.mcpb" | awk '{print $1}')"
+          printf '%s  ownsearch-%s.mcpb\n' "$HASH" "$VERSION" > "dist/ownsearch-$VERSION.mcpb.sha256"
+      - name: Sign the checksums
         env:
           MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
         run: |
           if [ -z "${MINISIGN_KEY:-}" ]; then
-            echo "MINISIGN_KEY is required for a release" >&2
+            echo "::error::MINISIGN_KEY is not set; a release needs signed checksums"
             exit 1
           fi
           key="$(mktemp)"
@@ -120,21 +189,28 @@ jobs:
           printf '%s' "$MINISIGN_KEY" > "$key"
           (
             cd dist
-            find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.json' \) \
+            find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.mcpb' -o -name '*.rb' -o -name '*.sh' -o -name '*.ps1' -o -name '*.cdx.json' \) \
               -printf '%f\n' | sort | xargs -r sha256sum > sha256.sum
           )
           test -s dist/sha256.sum
           minisign -S -s "$key" -m dist/sha256.sum
+          if [ ! -s minisign.pub ]; then
+            echo "::error::minisign.pub is missing; commit it once with: minisign -G -p minisign.pub -s ~/.minisign/minisign.key"
+            exit 1
+          fi
+          cp minisign.pub dist/minisign.pub
+          minisign -V -m dist/sha256.sum -p minisign.pub
       - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
+          source tools/lib.sh
           case "$RELEASE_TAG" in
             v[0-9]*.[0-9]*.[0-9]*) ;;
             *) echo "unexpected release tag: $RELEASE_TAG" >&2; exit 1 ;;
           esac
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          version="$(workspace_version "$PWD")"
           if [ "v$version" != "$RELEASE_TAG" ]; then
             echo "the tag $RELEASE_TAG does not match the workspace version v$version" >&2
             exit 1
@@ -149,6 +225,6 @@ jobs:
       - name: Publish draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           gh release edit "$RELEASE_TAG" --draft=false

@@ -68,7 +68,7 @@ workspace_version() {
 	' "$manifest"
 }
 
-sha256_file() {
+sha256_of() {
 	if command -v sha256sum >/dev/null 2>&1; then
 		sha256sum "$1" | awk '{print $1}'
 	elif command -v shasum >/dev/null 2>&1; then
@@ -78,9 +78,103 @@ sha256_file() {
 	fi
 }
 
+sha256_line_of() {
+	local file="$1"
+	printf '%s  %s\n' "$(sha256_of "$file")" "$(basename "$file")"
+}
+
+stamp_version() {
+	local root="$1" from="$2" to="$3"
+	local manifest="$root/Cargo.toml"
+	[[ -f "$manifest" ]] || die "missing $manifest"
+	sed -i.bak "s/^version = \"$from\"$/version = \"$to\"/" "$manifest"
+	rm -f "$manifest.bak"
+	local dependency="$root/crates/ownsearch/Cargo.toml"
+	if [[ -f "$dependency" ]]; then
+		sed -i.bak -E "s|(ownsearch-core = \{ path = \"\.\./ownsearch-core\", version = \")[0-9][0-9.]*(\" \})|\1$to\2|" "$dependency"
+		rm -f "$dependency.bak"
+	fi
+}
+
+verify_version_stamps() {
+	local root="$1" want="$2" mismatch=0 file actual package
+	actual="$(workspace_version "$root")"
+	if [[ "$actual" != "$want" ]]; then
+		warn "Cargo.toml reports $actual"
+		mismatch=1
+	fi
+	for file in server.json mcpb/manifest.json; do
+		[[ -f "$root/$file" ]] || continue
+		actual="$(jq -r .version "$root/$file")"
+		if [[ "$actual" != "$want" ]]; then
+			warn "$file reports $actual"
+			mismatch=1
+		fi
+	done
+	if [[ -f "$root/Dockerfile" ]] && ! grep -qF "ARG OWNSEARCH_VERSION=$want" "$root/Dockerfile"; then
+		warn "Dockerfile does not default OWNSEARCH_VERSION to $want"
+		mismatch=1
+	fi
+	local dependency="$root/crates/ownsearch/Cargo.toml"
+	if [[ -f "$dependency" ]] && ! grep -qF "ownsearch-core = { path = \"../ownsearch-core\", version = \"$want\" }" "$dependency"; then
+		warn "crates/ownsearch/Cargo.toml does not require ownsearch-core $want"
+		mismatch=1
+	fi
+	if [[ -f "$root/Cargo.lock" ]]; then
+		for package in ownsearch ownsearch-core; do
+			if ! grep -A1 -F "name = \"$package\"" "$root/Cargo.lock" | grep -qF "version = \"$want\""; then
+				warn "Cargo.lock does not report $want for $package"
+				mismatch=1
+			fi
+		done
+	fi
+	[[ "$mismatch" -eq 0 ]] || die "the version stamp did not reach every file for $want"
+}
+
+insert_changelog_heading() {
+	local version="$1" date="$2" tmp heading
+	heading="## [$version] - $date"
+	tmp="$(mktemp "$(dirname -- CHANGELOG.md)/.stamp.XXXXXX")"
+	awk -v heading="$heading" '
+		!done && /^## \[Unreleased\]/ {
+			print "## [Unreleased]"
+			print ""
+			print heading
+			done=1
+			next
+		}
+		!done && /^## \[[0-9]/ { print heading; print ""; done=1 }
+		{ print }
+		END { if (!done) { print ""; print heading; print "" } }
+	' CHANGELOG.md >"$tmp" || {
+		rm -f "$tmp"
+		die "could not rewrite CHANGELOG.md"
+	}
+	mv "$tmp" CHANGELOG.md
+}
+
+add_changelog_link() {
+	local new="$1" previous="$2" url
+	url="https://github.com/devops-infinity/ownsearch/compare/v$previous...v$new"
+	if grep -qF "[$new]: $url" CHANGELOG.md; then
+		return 0
+	fi
+	printf '\n[%s]: %s\n' "$new" "$url" >>CHANGELOG.md
+}
+
+require_packaged_dist() {
+	local version="$1" dir="$2"
+	[[ -f "$dir/sha256.sum" ]] || die "missing $dir/sha256.sum; run tools/release.sh --package first"
+	[[ -f "$dir/ownsearch-$version.mcpb" ]] || die "missing $dir/ownsearch-$version.mcpb; the packaged files do not belong to $version"
+}
+
+host_target() {
+	rustc -vV | awk '/^host:/{print $2}'
+}
+
 check_shell_syntax() {
 	local file
 	for file in "$@"; do
-		bash -n "$file"
+		bash -n "$file" || die "syntax error in $file"
 	done
 }

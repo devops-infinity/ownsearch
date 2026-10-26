@@ -5,137 +5,338 @@ REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 source "$REPO/tools/lib.sh"
 require_bash 4.4
+shopt -s inherit_errexit
 
 MODE=""
 VERSION=""
 BUMP=""
+DRY_RUN=0
+MAKE_TAG=0
+DIST_DIR="$REPO/dist"
+STAGE=""
+TEMP_FILES=()
+cleanup() {
+	if [[ -n "$STAGE" ]]; then
+		rm -rf "$STAGE"
+	fi
+	if ((${#TEMP_FILES[@]})); then
+		rm -f -- "${TEMP_FILES[@]}"
+	fi
+}
+trap cleanup EXIT
 
 usage() {
-	printf 'usage: tools/release.sh --prepare (--patch|--minor|--major|--version X.Y.Z) | --package | --tag\n'
+	cat <<'USAGE'
+Usage: tools/release.sh --prepare (--patch | --minor | --major | --version X.Y.Z)
+       tools/release.sh --package [--dry-run]
+       tools/release.sh --tag [--dry-run]
+
+Everything runs on this machine. Nothing is committed, pushed, or published.
+
+  --prepare        set the next version in Cargo.toml, the ownsearch-core
+                   requirement, Cargo.lock, server.json, mcpb/manifest.json,
+                   and the Dockerfile, then add the CHANGELOG heading. Every
+                   stamped file is checked afterwards. The diff is left in the
+                   working tree for review.
+  --package        require a clean tree, run tools/verify.sh, build every
+                   cargo-dist target this host supports, write the archives,
+                   installers, Homebrew formula, and npm package under dist/,
+                   build the MCPB bundle, write sha256.sum over every artifact,
+                   and install the host binary into ~/.local/bin (override with
+                   OWNSEARCH_INSTALL_DIR). Run this on macOS to include the two
+                   Darwin targets, and on Windows for the Windows target; a
+                   target that needs another host is skipped. A set that skips
+                   a target is refused unless OWNSEARCH_ALLOW_PARTIAL=1 is set.
+                   Needs cargo-dist, cargo-zigbuild, zig, zip, and jq.
+  --tag            require a clean tree, the CHANGELOG entries, and a dist/
+                   packaged for the current version, run the strict gate, then
+                   create vX.Y.Z at HEAD (signed when user.signingkey is set);
+                   never pushed. The release workflow is the only publisher.
+  --patch          bump the patch number (with --prepare)
+  --minor          bump the minor number (with --prepare)
+  --major          bump the major number (with --prepare)
+  --version X.Y.Z  use this exact version instead of a computed one
+  --dry-run        print every action and change nothing
+  -h, --help       show this
+
+Release order on this machine:
+  1. tools/release.sh --prepare --patch, then edit CHANGELOG.md
+  2. commit the bump, then merge it into the main branch
+  3. tools/release.sh --package on macOS, so the two Darwin targets are built
+  4. tools/release.sh --tag, then push the tag; the release workflow builds,
+     signs, and publishes the release
+USAGE
 }
 
-while (($# > 0)); do
+while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--prepare)
 		MODE="prepare"
+		shift
 		;;
 	--package)
 		MODE="package"
-		;;
-	--tag)
-		MODE="tag"
+		shift
 		;;
 	--patch | --minor | --major)
 		BUMP="${1#--}"
+		shift
 		;;
 	--version)
-		shift
-		VERSION="${1:?--version needs a number}"
+		[[ $# -ge 2 ]] || die "--version needs X.Y.Z"
+		VERSION="$2"
+		shift 2
 		;;
-	--help | -h)
+	--tag)
+		MAKE_TAG=1
+		if [[ -z "$MODE" ]]; then
+			MODE="tag"
+		fi
+		shift
+		;;
+	--dry-run)
+		DRY_RUN=1
+		shift
+		;;
+	-h | --help)
 		usage
 		exit 0
 		;;
-	*) die "unknown argument: $1" ;;
+	*)
+		usage
+		die "unknown option: $1"
+		;;
 	esac
-	shift
 done
 
 [[ -n "$MODE" ]] || {
 	usage
-	exit 1
+	die "choose --prepare, --package, or --tag"
 }
-require_tool git "install git"
-[[ -z "$(git status --porcelain)" ]] || die "the working tree is not clean"
+if [[ "$MODE" == "package" && "$MAKE_TAG" -eq 1 ]]; then
+	die "--tag runs after --package; run --package, then --tag"
+fi
+require_tool cargo "install Rust from https://rustup.rs"
+require_tool jq "run: brew install jq"
 
 CURRENT="$(workspace_version "$REPO")"
-[[ -n "$CURRENT" ]] || die "cannot read the workspace version"
+[[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not read the workspace version, got: $CURRENT"
 
-next_version() {
-	if [[ -n "$VERSION" ]]; then
-		printf '%s' "$VERSION"
-		return
-	fi
-	local major minor patch
-	IFS=. read -r major minor patch <<<"$CURRENT"
-	case "$BUMP" in
+bump_version() {
+	local current="$1" kind="$2" major minor patch
+	IFS=. read -r major minor patch <<<"$current"
+	case "$kind" in
 	patch) patch=$((patch + 1)) ;;
-	minor)
-		minor=$((minor + 1))
-		patch=0
-		;;
-	major)
-		major=$((major + 1))
-		minor=0
-		patch=0
-		;;
+	minor) minor=$((minor + 1)) && patch=0 ;;
+	major) major=$((major + 1)) && minor=0 && patch=0 ;;
+	*) die "unknown bump: $kind" ;;
 	esac
-	printf '%s.%s.%s' "$major" "$minor" "$patch"
+	printf '%s.%s.%s\n' "$major" "$minor" "$patch"
 }
 
-stamp_version() {
-	local version="$1"
-	sed -i.bak -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"$version\"/" Cargo.toml
-	sed -i.bak -E "s|ownsearch-core = \{ path = \"../ownsearch-core\", version = \"[0-9]+\.[0-9]+\.[0-9]+\" \}|ownsearch-core = { path = \"../ownsearch-core\", version = \"$version\" }|" crates/ownsearch/Cargo.toml
-	sed -i.bak -E "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+\"/\"version\": \"$version\"/g" server.json
-	sed -i.bak -E "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+\"/\"version\": \"$version\"/g" mcpb/manifest.json
-	sed -i.bak -E "s/^ARG OWNSEARCH_VERSION=.*/ARG OWNSEARCH_VERSION=$version/" Dockerfile
-	rm -f Cargo.toml.bak crates/ownsearch/Cargo.toml.bak server.json.bak mcpb/manifest.json.bak Dockerfile.bak
-	cargo update --workspace --offline --quiet
+version_gt() {
+	local left="$1" right="$2"
+	[[ "$(printf '%s\n%s\n' "$left" "$right" | sort -V | tail -n 1)" == "$left" && "$left" != "$right" ]]
 }
 
-insert_changelog() {
+require_clean_tree() {
+	[[ -z "$(git status --porcelain)" ]] || die "the working tree is not clean; commit or stash first"
+}
+
+set_manifest_version() {
+	local file="$1" version="$2" tmp
+	[[ -f "$file" ]] || die "missing $file"
+	tmp="$(mktemp "$(dirname -- "$file")/.stamp.XXXXXX")"
+	TEMP_FILES+=("$tmp")
+	jq --arg version "$version" '.version = $version | (.packages[]?.version) = $version' "$file" >"$tmp"
+	mv "$tmp" "$file"
+}
+
+changelog_has_entries() {
 	local version="$1"
-	local date_today
-	date_today="$(date -u +%Y-%m-%d)"
-	if grep -q "^## \\[$version\\]" CHANGELOG.md; then
-		warn "CHANGELOG.md already holds a heading for $version"
-		return
+	awk -v needle="## [$version]" '
+		index($0, needle) == 1 { inside=1; next }
+		inside && /^## / { exit }
+		inside && /[^[:space:]]/ { found=1; exit }
+		END { exit(found ? 0 : 1) }
+	' CHANGELOG.md
+}
+
+write_checksums() {
+	local dir="$1" file
+	(
+		cd -- "$dir" || exit 1
+		: >sha256.sum
+		while IFS= read -r file; do
+			sha256_line_of "$file" >>sha256.sum
+		done < <(find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.mcpb' -o -name '*.rb' -o -name '*.sh' -o -name '*.ps1' -o -name '*.cdx.json' \) -print | sed 's|^\./||' | sort)
+	)
+	[[ -s "$dir/sha256.sum" ]] || die "no artifacts to checksum under $dir"
+}
+
+prepare() {
+	local new="$1" date
+	require_clean_tree
+	version_gt "$new" "$CURRENT" || die "$new is not newer than $CURRENT"
+	date="$(date +%F)"
+	log_line INFO "preparing $CURRENT -> $new"
+	if [[ "$DRY_RUN" -eq 1 ]]; then
+		log_line INFO "dry run: would set the version in Cargo.toml, the ownsearch-core requirement, Cargo.lock, server.json, mcpb/manifest.json, and the Dockerfile"
+		log_line INFO "dry run: would add the CHANGELOG heading ## [$new] - $date"
+		return 0
 	fi
-	local heading
-	heading="## [$version] - $date_today"
-	awk -v heading="$heading" '
-		BEGIN { inserted = 0 }
-		/^## \[Unreleased\]/ && !inserted {
-			print
-			print ""
-			print heading
-			print ""
-			inserted = 1
-			next
-		}
-		{ print }
-	' CHANGELOG.md >CHANGELOG.md.next
-	mv CHANGELOG.md.next CHANGELOG.md
+	stamp_version "$REPO" "$CURRENT" "$new"
+	cargo metadata --format-version 1 >/dev/null
+	set_manifest_version server.json "$new"
+	set_manifest_version mcpb/manifest.json "$new"
+	if [[ -f Dockerfile ]]; then
+		sed -i.bak "s/^ARG OWNSEARCH_VERSION=.*/ARG OWNSEARCH_VERSION=$new/" Dockerfile
+		rm -f Dockerfile.bak
+	fi
+	insert_changelog_heading "$new" "$date"
+	add_changelog_link "$new" "$CURRENT"
+	if ! (verify_version_stamps "$REPO" "$new"); then
+		log_line FAILED "the version stamp did not reach every file; undo with: git checkout -- ."
+		exit 1
+	fi
+	log_line SUCCESS "prepared $new"
+	log_line INFO "next: write the CHANGELOG entries, commit, and merge"
+}
+
+package() {
+	local host target archive stage install_dir bundle tmpstage manifests
+	local -a targets=() built=() skipped=()
+	require_clean_tree
+	changelog_has_entries "$CURRENT" || die "CHANGELOG.md has no entries under ## [$CURRENT]; write them before packaging"
+	host="$(host_target)"
+	if [[ "$DRY_RUN" -eq 1 ]]; then
+		log_line INFO "dry run: would run tools/verify.sh, build every cargo-dist target this host supports, and write the archives, installers, formula, and npm package under $DIST_DIR"
+		return 0
+	fi
+	OWNSEARCH_STRICT_GATE=1 "$REPO/tools/verify.sh"
+	require_tool dist "run: cargo install --locked cargo-dist --version 0.32.0"
+	require_tool cargo-zigbuild "run: cargo install --locked cargo-zigbuild"
+	require_tool zig "run: brew install zig"
+	require_tool zip "run: brew install zip"
+	while IFS= read -r target; do
+		[[ -n "$target" ]] && targets+=("$target")
+	done < <(dist plan --tag="v$CURRENT" --output-format=json | jq -r '.ci.github.artifacts_matrix.include[].targets[]' | sort -u)
+	[[ ${#targets[@]} -gt 0 ]] || die "dist plan returned no targets"
+	rm -rf -- "$DIST_DIR" target/distrib target/dist-manifests
+	mkdir -p "$DIST_DIR" target/distrib target/dist-manifests
+	manifests="$REPO/target/dist-manifests"
+	for target in "${targets[@]}"; do
+		if [[ "$target" == *-apple-darwin && "$host" != *-apple-darwin && -z "${SDKROOT:-}" ]]; then
+			skipped+=("$target")
+			log_line WARNING "$target needs macOS or an Apple SDK; build it on the Mac"
+			continue
+		fi
+		if [[ "$target" == *-windows-* && "$host" != *-windows-* ]]; then
+			skipped+=("$target")
+			log_line WARNING "$target needs a Windows host; build it on Windows"
+			continue
+		fi
+		if dist build --tag="v$CURRENT" --artifacts=local --target="$target" --no-local-paths --output-format=json >"$manifests/$target.json"; then
+			cp "$manifests/$target.json" "target/distrib/$target-dist-manifest.json"
+			built+=("$target")
+			log_line SUCCESS "built $target"
+		else
+			die "$target failed to build"
+		fi
+	done
+	[[ ${#built[@]} -gt 0 ]] || die "no target built"
+	dist build --tag="v$CURRENT" --artifacts=global --no-local-paths
+	find target/distrib -maxdepth 1 -type f -exec cp -p {} "$DIST_DIR"/ \;
+	if ((${#skipped[@]})); then
+		log_line WARNING "skipped targets: ${skipped[*]}"
+		log_line WARNING "the installers and formula still name every target; build the skipped ones on their own host before publishing"
+		if [[ "${OWNSEARCH_ALLOW_PARTIAL:-0}" != "1" ]]; then
+			die "built ${#built[@]} of ${#targets[@]} targets; run --package on macOS for the Darwin targets and on Windows for the Windows target, or set OWNSEARCH_ALLOW_PARTIAL=1 to publish this partial set on purpose"
+		fi
+	fi
+	archive="$DIST_DIR/ownsearch-x86_64-unknown-linux-gnu.tar.gz"
+	[[ -f "$archive" ]] || die "missing $archive; the MCPB bundle needs the Linux x86_64 build"
+	stage="$REPO/target/package-stage"
+	STAGE="$stage"
+	rm -rf "$stage"
+	mkdir -p "$stage/unpack" "$stage/bundle/server"
+	tar -xzf "$archive" -C "$stage/unpack"
+	install -m 0755 "$stage/unpack/ownsearch-x86_64-unknown-linux-gnu/ownsearch" "$stage/bundle/server/ownsearch"
+	cp mcpb/manifest.json "$stage/bundle/manifest.json"
+	find "$stage/bundle" -exec touch -t 198001010000 {} +
+	bundle="$DIST_DIR/ownsearch-$CURRENT.mcpb"
+	(cd "$stage/bundle" && zip -qXr "$bundle" manifest.json server)
+	sha256_line_of "$bundle" >"$bundle.sha256"
+	log_line SUCCESS "wrote $bundle"
+	write_checksums "$DIST_DIR"
+	if command -v minisign >/dev/null 2>&1 && [[ -f "${HOME}/.minisign/minisign.key" ]]; then
+		minisign -Sm "$DIST_DIR/sha256.sum" -s "${HOME}/.minisign/minisign.key" >/dev/null
+		[[ -f "$REPO/minisign.pub" ]] ||
+			die "minisign.pub is missing from the repository; create it once with: minisign -G -p minisign.pub -s ~/.minisign/minisign.key"
+		cp "$REPO/minisign.pub" "$DIST_DIR/minisign.pub"
+		minisign -Vm "$DIST_DIR/sha256.sum" -p "$REPO/minisign.pub" >/dev/null 2>&1 ||
+			die "the signature does not verify against $REPO/minisign.pub; check that the signing key matches the published key"
+		log_line SUCCESS "signed sha256.sum with minisign"
+	else
+		log_line WARNING "minisign or ~/.minisign/minisign.key is missing; sha256.sum is unsigned"
+	fi
+	archive="$DIST_DIR/ownsearch-$host.tar.gz"
+	if [[ "$host" != *windows* && -f "$archive" ]]; then
+		install_dir="${OWNSEARCH_INSTALL_DIR:-$HOME/.local/bin}"
+		tmpstage="$stage/install"
+		mkdir -p "$tmpstage"
+		tar -xzf "$archive" -C "$tmpstage"
+		mkdir -p "$install_dir"
+		install -m 0755 "$tmpstage/ownsearch-$host/ownsearch" "$install_dir/.ownsearch.new"
+		mv -f "$install_dir/.ownsearch.new" "$install_dir/ownsearch"
+		log_line SUCCESS "installed $("$install_dir/ownsearch" --version) to $install_dir/ownsearch"
+	else
+		log_line WARNING "no host archive for $host; the local binary was not replaced"
+	fi
+	[[ -f "$DIST_DIR/ownsearch.rb" ]] && log_line INFO "the Homebrew formula is $DIST_DIR/ownsearch.rb"
+	log_line INFO "next: run tools/release.sh --tag, then push the tag; the release workflow publishes"
+}
+
+tag_release() {
+	require_clean_tree
+	changelog_has_entries "$CURRENT" || die "CHANGELOG.md has no entries under ## [$CURRENT]; write them before tagging"
+	require_packaged_dist "$CURRENT" "$DIST_DIR"
+	if git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null; then
+		die "tag v$CURRENT already exists"
+	fi
+	if [[ "$DRY_RUN" -eq 1 ]]; then
+		log_line INFO "dry run: would run the strict gate and create v$CURRENT at HEAD"
+		return 0
+	fi
+	OWNSEARCH_STRICT_GATE=1 "$REPO/tools/verify.sh"
+	if [[ -n "$(git config user.signingkey || true)" ]]; then
+		git tag -s "v$CURRENT" -m "OwnSearch $CURRENT"
+	else
+		warn "no git signing key is configured; creating an annotated tag instead of a signed one"
+		git tag -a "v$CURRENT" -m "OwnSearch $CURRENT"
+	fi
+	log_line SUCCESS "created tag v$CURRENT (not pushed)"
+	log_line INFO "push the tag with: git push origin v$CURRENT; .github/workflows/release.yml is the only publisher"
 }
 
 case "$MODE" in
 prepare)
-	NEW="$(next_version)"
-	[[ "$NEW" != "$CURRENT" ]] || die "the new version is the current version"
-	stamp_version "$NEW"
-	insert_changelog "$NEW"
-	log_line SUCCESS "prepared version $NEW; edit CHANGELOG.md, then commit the change"
+	if [[ -n "$VERSION" ]]; then
+		NEXT="$VERSION"
+	elif [[ -n "$BUMP" ]]; then
+		NEXT="$(bump_version "$CURRENT" "$BUMP")"
+	else
+		die "--prepare needs --patch, --minor, --major, or --version"
+	fi
+	[[ "$NEXT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version must look like X.Y.Z, got: $NEXT"
+	prepare "$NEXT"
 	;;
 package)
-	require_tool dist "run: cargo install cargo-dist --locked"
-	OWNSEARCH_STRICT_GATE=1 "$REPO/tools/verify.sh"
-	dist build --artifacts=local
-	if command -v minisign >/dev/null 2>&1 && [[ -f "$HOME/.minisign/ownsearch.key" ]]; then
-		(
-			cd dist
-			shasum -a 256 ./*.tar.gz >sha256.sum 2>/dev/null || true
-			minisign -S -s "$HOME/.minisign/ownsearch.key" -m sha256.sum
-		)
-		log_line SUCCESS "signed sha256.sum"
-	else
-		warn "minisign key or tool is missing, so checksums were not signed"
-	fi
-	log_line SUCCESS "local packages built under dist/"
+	[[ -z "$VERSION" && -z "$BUMP" ]] || die "--package packs the version already in Cargo.toml; bump first with --prepare"
+	package
 	;;
 tag)
-	OWNSEARCH_STRICT_GATE=1 "$REPO/tools/verify.sh"
-	git tag -s "v$CURRENT" -m "OwnSearch $CURRENT" || die "a signed tag is required; configure a GPG key and retry"
-	log_line SUCCESS "created tag v$CURRENT locally; it is not pushed"
+	[[ -z "$VERSION" && -z "$BUMP" ]] || die "--tag uses the version already in Cargo.toml"
+	tag_release
 	;;
 esac
