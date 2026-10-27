@@ -10,7 +10,7 @@ You get an acknowledgement within three working days. A fix ships in the next re
 
 ## Supported versions
 
-Version 0.1.x receives security fixes. A release outside that line gets a fix only when the problem can be exploited without special conditions and the fix does not break compatibility.
+Version 0.2.x receives security fixes. A release outside that line gets a fix only when the problem can be exploited without special conditions and the fix does not break compatibility.
 
 ## What OwnSearch handles
 
@@ -20,6 +20,7 @@ Version 0.1.x receives security fixes. A release outside that line gets a fix on
 - An HTTP bearer token list, read from the environment or the OS keychain and required for any non-loopback bind. HTTP mode has no TLS listener, so put a TLS proxy in front of any non-loopback bind.
 - Text fetched from any HTTP or HTTPS URL: HTML is extracted, and a PDF answer is parsed inside the process with lopdf.
 - JavaScript pages rendered in headless Chromium, on unless `OWNSEARCH_BROWSER=false`. Each session uses a per-process profile under the state directory, and `OWNSEARCH_BROWSER_NO_SANDBOX` turns off the Chromium sandbox.
+- An optional CapSolver key (`OWNSEARCH_CAPSOLVER_KEY`): when set, the page URL and site key of a rendered challenge go to `api.capsolver.com`, and the key is held as a secret and never printed.
 - Search results, treated as untrusted data and sanitized before they reach a client.
 
 OwnSearch stores no credentials for the searched instances, sends no telemetry, and holds no user accounts.

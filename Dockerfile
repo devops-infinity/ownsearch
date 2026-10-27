@@ -35,7 +35,7 @@ ENV OWNSEARCH_STATE_DIR=/home/ownsearch/.local/state/ownsearch \
 
 EXPOSE 8774
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD host="${OWNSEARCH_BIND%:*}"; case "$host" in 0.0.0.0|::) host=127.0.0.1 ;; esac; curl -fsS "http://$host:${OWNSEARCH_BIND##*:}/readyz"
+    CMD host="${OWNSEARCH_BIND%:*}"; case "$host" in 0.0.0.0|::) host=127.0.0.1 ;; esac; curl -fsS -H "Authorization: Bearer ${OWNSEARCH_BEARER_TOKENS%%,*}" "http://$host:${OWNSEARCH_BIND##*:}/readyz"
 
 ENTRYPOINT ["ownsearch"]
 CMD ["serve", "--http"]

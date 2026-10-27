@@ -4,7 +4,7 @@ Self-hosted MCP and HTTP search over a scored fleet of public SearXNG instances.
 
 mcp-name: io.github.devops-infinity/ownsearch
 
-Status: pre-release, workspace version 0.1.0.
+Status: pre-release, workspace version 0.2.0.
 
 OwnSearch discovers public SearXNG instances from searx.space, probes them at a low rate, scores them, keeps the fleet in a local SQLite database, rotates the starting instance, retries a failing one, and answers from the next healthy instance. Each result carries the sources that supplied it, with the instance and, when known, the engine. It runs as a Model Context Protocol (MCP) server over stdio or Streamable HTTP, and the HTTP port also answers two REST calls.
 
@@ -49,7 +49,7 @@ Reference material: `docs/scanner-policy.md` for instance policy, `docs/operatio
 - Selects an active fleet with a size limit, a per-network limit, and hysteresis, so one bad scan does not remove a working instance.
 - Rotates the starting instance on every search, makes up to three attempts per instance on a network error or `5xx`, cools an instance down when it keeps failing, and fails over to the next instance until the search succeeds or the deadline passes.
 - Merges results from several instances, keeps every source observation, and marks partial coverage.
-- Never retries a `429`, never solves or submits a CAPTCHA, and never tries to look like a human browser.
+- Never retries a `429`, never runs a proof of work, and never tries to look like a human browser. With an operator-set `OWNSEARCH_CAPSOLVER_KEY`, a challenge that appears only in a rendered page can be solved by the CapSolver service for that one page.
 
 ## What is enabled by default
 
@@ -71,8 +71,8 @@ These capabilities are on by default. Each one is controlled by the setting name
 - It does not host or operate a SearXNG instance.
 - It does not call a paid search API.
 - It does not make your queries anonymous. The operator of each public instance sees them.
-- It does not run JavaScript on the search path. The only renderer is the fetch tool's optional headless browser, and it runs only on the page you name.
-- It does not bypass a bot check. Many public instances answer automated clients with `429`, a challenge page, or a CAPTCHA. OwnSearch records that and moves on.
+- It does not run JavaScript on an ordinary search answer. The headless browser runs for the fetch tool on the page you name, and, as a last resort, for a search page or a probe from an instance that denies every HTTP format.
+- It does not bypass a bot check. Many public instances answer automated clients with `429`, a challenge page, or a CAPTCHA. OwnSearch records that and moves on, unless `OWNSEARCH_CAPSOLVER_KEY` is set, which lets a challenge that appears only in a rendered page be solved by the CapSolver service.
 
 ## Requirements
 
@@ -171,7 +171,7 @@ Field presets control payload size. `minimal` keeps title, URL, rank, score, and
 - Probes run four at a time by default, with jitter. `OWNSEARCH_SCAN_CONCURRENCY` changes the count for any run, scheduled or on demand.
 - A `429` starts a cooldown and keeps the instance's status. A `401` or a challenge page quarantines it at once. A `403` counts as a failed scan: it reschedules the scan and moves the instance to probation or quarantine once the failure count passes its threshold. Repeated failures also lower its score.
 - The user agent names the product: `OwnSearch (MCP fleet scanner; +https://github.com/devops-infinity/ownsearch) v<version>`.
-- No proxy rotation, no browser automation against instances, no header spoofing.
+- No proxy rotation and no header spoofing. A browser touches an instance page only as a last-resort capability check after every HTTP format is denied, and never to get past a detected challenge.
 
 The full policy is in `docs/scanner-policy.md`.
 
