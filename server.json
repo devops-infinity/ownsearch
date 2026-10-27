@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.devops-infinity/ownsearch",
   "title": "OwnSearch",
-  "description": "Quality-ranked public SearXNG search for MCP clients, with local fleet state, instance scoring, and merged results that keep their source.",
+  "description": "Quality-ranked SearXNG search over MCP with local fleet state, scoring, and merged results.",
   "version": "0.1.0",
   "websiteUrl": "https://github.com/devops-infinity/ownsearch",
   "repository": {
