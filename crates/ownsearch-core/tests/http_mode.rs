@@ -589,7 +589,10 @@ async fn a_public_bind_without_a_token_is_refused_at_startup() {
         ],
     );
     let error = serve_http(settings).await.expect_err("public bind");
-    assert!(error.to_string().contains("OWNSEARCH_BEARER_TOKENS"));
+    assert!(
+        error.to_string().contains("OWNSEARCH_BEARER_TOKENS"),
+        "unexpected error: {error}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
