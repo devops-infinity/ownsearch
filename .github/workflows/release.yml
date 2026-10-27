@@ -220,8 +220,8 @@ jobs:
             exit 1
           fi
           awk -v heading="## [$version]" '
-            $0 ~ "^"heading { printing = 1 }
-            printing && /^## \[/ && $0 !~ "^"heading { exit }
+            index($0, heading) == 1 { printing = 1 }
+            printing && /^## \[/ && index($0, heading) != 1 { exit }
             printing { print }
           ' CHANGELOG.md > release-notes.md
           test -s release-notes.md
