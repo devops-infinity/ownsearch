@@ -13,8 +13,8 @@ This document states how OwnSearch treats public SearXNG instances. The code fol
 
 - Discovery: one fetch of `https://searx.space/data/instances.json` per refresh window. The window is `OWNSEARCH_DISCOVERY_REFRESH_SECS`, default 21600 seconds.
 - Per instance per scan: one TLS resolution, one TLS handshake, at most four HTTP requests (`/config`, the JSON search, at most one HTML search, and at most one exact-Google search), and two address resolutions per HTTP request, one in the public-address guard and one in the HTTP client.
-- Probes run serially by default, with jitter between instances. The jitter is random from zero to `OWNSEARCH_SCAN_JITTER_MS`, default 250 ms.
-- `OWNSEARCH_SCAN_CONCURRENCY` raises the probe concurrency to as many as 4 for any run, scheduled or on demand. Discovery and probing are never unbounded.
+- Probes run four at a time by default, with jitter between instances. The jitter is random from zero to `OWNSEARCH_SCAN_JITTER_MS`, default 250 ms.
+- `OWNSEARCH_SCAN_CONCURRENCY` sets the probe concurrency from 1 to 8 for any run, scheduled or on demand. Discovery and probing are never unbounded.
 - A search request uses at most `exhaustive_max` instances, default 16, and stops waiting at the search deadline, default 30 seconds. A bounded queue admits 8 searches at once, lets 64 wait, and refuses the rest with `ownsearch.rate_limited`.
 
 ## User agent

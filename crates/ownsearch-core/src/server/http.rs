@@ -41,6 +41,7 @@ const MAX_CONNECTIONS: usize = 256;
 const MAX_CONNECTIONS_PER_IP: usize = 16;
 const MAX_CONCURRENT_REQUESTS: usize = 128;
 const BODY_DEADLINE_SECS: u64 = 30;
+const REST_TIMEOUT_SECS: u64 = 120;
 const SHUTDOWN_GRACE_SECS: u64 = 10;
 const FAILED_AUTH_WINDOW_SECS: u64 = 60;
 const FAILED_AUTH_LIMIT: u32 = 5;
@@ -118,14 +119,26 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         ready: Arc::clone(&ready),
         cancel: cancel.clone(),
     };
+    let rest = Router::new()
+        .route(
+            "/v1/search",
+            post(rest_search).on(axum::routing::MethodFilter::OPTIONS, preflight),
+        )
+        .route(
+            "/v1/fetch",
+            post(rest_fetch).on(axum::routing::MethodFilter::OPTIONS, preflight),
+        )
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(REST_TIMEOUT_SECS),
+        ));
     let protected = Router::new()
         .route("/startupz", get(startupz))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_handler))
-        .route("/v1/search", post(rest_search))
-        .route("/v1/fetch", post(rest_fetch))
         .route_service("/", service.clone())
         .route_service("/mcp", service)
+        .merge(rest)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             record_http_metrics,
@@ -216,12 +229,18 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
     tokio::select! {
         result = &mut handle => http_result(result),
         () = shutdown_signal() => {
+            let _ = stop_tx.send(true);
             ready.store(false, Ordering::SeqCst);
             cancel.cancel();
+            let drained =
+                tokio::time::timeout(Duration::from_secs(SHUTDOWN_GRACE_SECS), &mut handle).await;
             shutdown_browser.heartbeat.stop();
-            let _ = shutdown_browser.browser.shutdown().await;
-            let _ = stop_tx.send(true);
-            match tokio::time::timeout(Duration::from_secs(SHUTDOWN_GRACE_SECS), &mut handle).await {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(SHUTDOWN_GRACE_SECS),
+                shutdown_browser.browser.shutdown(),
+            )
+            .await;
+            match drained {
                 Ok(result) => http_result(result),
                 Err(_) => {
                     tracing::warn!(
@@ -501,6 +520,24 @@ async fn rest_tool_call(
     body: Bytes,
 ) -> Response {
     let instance = request_id_of(headers);
+    let json_body = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+        });
+    if !json_body {
+        return problem(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "ownsearch.bad_request",
+            "the body must be sent as application/json",
+            "Send one JSON object with the tool arguments.",
+            &instance,
+        );
+    }
     let arguments = match serde_json::from_slice::<Value>(&body) {
         Ok(Value::Object(map)) => map,
         Ok(Value::Null) => Map::new(),
@@ -704,29 +741,60 @@ async fn metrics_handler(State(state): State<HttpState>) -> impl IntoResponse {
 
 async fn reject_origin(State(state): State<HttpState>, request: Request, next: Next) -> Response {
     let instance = request_id_of(request.headers());
-    if let Some(origin) = request.headers().get(axum::http::header::ORIGIN) {
-        let Ok(origin) = origin.to_str() else {
-            return rejection(
-                StatusCode::FORBIDDEN,
-                "ownsearch.auth_failed",
-                "the Origin header is not text",
-                &instance,
-            );
-        };
-        let allowed = state
-            .allowed_origins
-            .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(origin));
-        if !allowed {
-            return rejection(
-                StatusCode::FORBIDDEN,
-                "ownsearch.auth_failed",
-                "this Origin is not allowed; name it in OWNSEARCH_ALLOWED_ORIGINS",
-                &instance,
-            );
-        }
+    let Some(origin) = request.headers().get(axum::http::header::ORIGIN) else {
+        return next.run(request).await;
+    };
+    let Ok(origin) = origin.to_str() else {
+        return rejection(
+            StatusCode::FORBIDDEN,
+            "ownsearch.auth_failed",
+            "the Origin header is not text",
+            &instance,
+        );
+    };
+    let allowed = state
+        .allowed_origins
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(origin));
+    if !allowed {
+        return rejection(
+            StatusCode::FORBIDDEN,
+            "ownsearch.auth_failed",
+            "this Origin is not allowed; name it in OWNSEARCH_ALLOWED_ORIGINS",
+            &instance,
+        );
     }
-    next.run(request).await
+    let origin = origin.to_owned();
+    let mut response = next.run(request).await;
+    allow_cross_origin(&mut response, &origin);
+    response
+}
+
+fn allow_cross_origin(response: &mut Response, origin: &str) {
+    let Ok(value) = HeaderValue::from_str(origin) else {
+        return;
+    };
+    let headers = response.headers_mut();
+    headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+    headers.insert(axum::http::header::VARY, HeaderValue::from_static("origin"));
+}
+
+async fn preflight() -> Response {
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, DELETE, OPTIONS"),
+    );
+    headers.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("authorization, content-type, x-request-id"),
+    );
+    headers.insert(
+        axum::http::header::ACCESS_CONTROL_MAX_AGE,
+        HeaderValue::from_static("600"),
+    );
+    response
 }
 
 async fn gate_requests(State(state): State<HttpState>, request: Request, next: Next) -> Response {
@@ -820,21 +888,20 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
     if let Some(address) = address
         && locked_out(&state, address)
     {
-        return rejection(
+        let mut response = rejection(
             StatusCode::TOO_MANY_REQUESTS,
             "ownsearch.rate_limited",
             "too many failed authentication attempts",
             &instance,
         );
+        response
+            .headers_mut()
+            .insert(RETRY_AFTER, HeaderValue::from_static("1"));
+        return response;
     }
     let Some(presented) = bearer_token(&request) else {
         note_failure(&state, address);
-        return rejection(
-            StatusCode::UNAUTHORIZED,
-            "ownsearch.auth_failed",
-            "a bearer token is required",
-            &instance,
-        );
+        return unauthorized("a bearer token is required", &instance);
     };
     let matched = state
         .tokens
@@ -842,14 +909,23 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
         .any(|token| token_matches(presented, token.expose_secret()));
     if !matched {
         note_failure(&state, address);
-        return rejection(
-            StatusCode::UNAUTHORIZED,
-            "ownsearch.auth_failed",
-            "the bearer token is not valid",
-            &instance,
-        );
+        return unauthorized("the bearer token is not valid", &instance);
     }
     next.run(request).await
+}
+
+fn unauthorized(message: &'static str, instance: &str) -> Response {
+    let mut response = rejection(
+        StatusCode::UNAUTHORIZED,
+        "ownsearch.auth_failed",
+        message,
+        instance,
+    );
+    response.headers_mut().insert(
+        axum::http::header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("Bearer realm=\"ownsearch\""),
+    );
+    response
 }
 
 fn client_address(headers: &HeaderMap, peer: Option<std::net::IpAddr>) -> Option<std::net::IpAddr> {
@@ -897,8 +973,15 @@ fn note_failure(state: &HttpState, address: Option<std::net::IpAddr>) {
     };
     if failed.len() >= MAX_FAILED_AUTH_ENTRIES {
         failed.retain(|_, (_, _, last)| last.elapsed() < Duration::from_secs(LOCKOUT_SECS));
-        if failed.len() >= MAX_FAILED_AUTH_ENTRIES {
-            failed.clear();
+        while failed.len() >= MAX_FAILED_AUTH_ENTRIES {
+            let Some(oldest) = failed
+                .iter()
+                .min_by_key(|(_, (_, _, last))| *last)
+                .map(|(address, _)| *address)
+            else {
+                break;
+            };
+            failed.remove(&oldest);
         }
     }
     let now = Instant::now();
@@ -1050,24 +1133,7 @@ fn rejection(
     message: &'static str,
     instance: &str,
 ) -> Response {
-    let kind = code.strip_prefix("ownsearch.").unwrap_or(code);
-    let mut response = (
-        status,
-        Json(json!({
-            "type": format!("urn:ownsearch:{kind}"),
-            "title": status.canonical_reason().unwrap_or("Error"),
-            "status": status.as_u16(),
-            "detail": message,
-            "instance": instance,
-            "code": code,
-            "remedy": remedy_for(code),
-        })),
-    )
-        .into_response();
-    response.headers_mut().insert(
-        axum::http::header::CONTENT_TYPE,
-        HeaderValue::from_static("application/problem+json"),
-    );
+    let mut response = problem(status, code, message, remedy_for(code), instance);
     response
         .headers_mut()
         .insert("cache-control", HeaderValue::from_static("no-store"));

@@ -47,9 +47,5 @@ futures-util.workspace = true
 ego-tree.workspace = true
 
 [dev-dependencies]
-reqwest.workspace = true
-rusqlite.workspace = true
-insta.workspace = true
 wiremock.workspace = true
 proptest.workspace = true
-tower.workspace = true

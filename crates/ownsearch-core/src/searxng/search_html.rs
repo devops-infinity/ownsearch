@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use scraper::{Html, Selector};
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -25,17 +27,21 @@ pub struct HtmlSearch {
     pub drifted: bool,
 }
 
+static CONTAINER: LazyLock<Option<Selector>> =
+    LazyLock::new(|| selector("article.result, div.result, article.result-default"));
+static TITLE_LINK: LazyLock<Option<Selector>> =
+    LazyLock::new(|| selector("h3 a, a.url_wrapper, a"));
+static SNIPPET: LazyLock<Option<Selector>> =
+    LazyLock::new(|| selector("p.content, div.content, .content"));
+static ENGINE_SPANS: LazyLock<Option<Selector>> = LazyLock::new(|| selector(".engines span"));
+static ENGINE_SINGLE: LazyLock<Option<Selector>> = LazyLock::new(|| selector(".engine"));
+
 impl HtmlSearch {
     pub fn parse(markup: &str, base: &Url) -> Self {
         let document = Html::parse_document(markup);
-        let container = selector("article.result, div.result, article.result-default");
-        let title_link = selector("h3 a, a.url_wrapper, a");
-        let snippet = selector("p.content, div.content, .content");
-        let engine_spans = selector(".engines span");
-        let engine_single = selector(".engine");
         let mut results = Vec::new();
         let mut containers = 0;
-        let Some(container_selector) = container else {
+        let Some(container_selector) = &*CONTAINER else {
             return Self {
                 results,
                 containers,
@@ -43,12 +49,12 @@ impl HtmlSearch {
                 drifted: true,
             };
         };
-        for element in document.select(&container_selector) {
+        for element in document.select(container_selector) {
             containers += 1;
             if results.len() >= MAX_PARSED_RESULTS {
                 break;
             }
-            let anchor = title_link
+            let anchor = TITLE_LINK
                 .as_ref()
                 .and_then(|selector| element.select(selector).next());
             let href = anchor.and_then(|anchor| anchor.value().attr("href"));
@@ -64,13 +70,13 @@ impl HtmlSearch {
             if title.is_empty() {
                 continue;
             }
-            let snippet_text = snippet
+            let snippet_text = SNIPPET
                 .as_ref()
                 .and_then(|selector| element.select(selector).next())
                 .map(|node| sanitize(&node.text().collect::<String>()))
                 .filter(|text| !text.is_empty());
             let mut engine_names: Vec<String> = Vec::new();
-            if let Some(selector) = &engine_spans {
+            if let Some(selector) = ENGINE_SPANS.as_ref() {
                 for node in element.select(selector) {
                     let text = sanitize(&node.text().collect::<String>());
                     if !text.is_empty() && !engine_names.contains(&text) {
@@ -79,7 +85,7 @@ impl HtmlSearch {
                 }
             }
             if engine_names.is_empty()
-                && let Some(selector) = &engine_single
+                && let Some(selector) = ENGINE_SINGLE.as_ref()
                 && let Some(node) = element.select(selector).next()
             {
                 let text = sanitize(&node.text().collect::<String>());

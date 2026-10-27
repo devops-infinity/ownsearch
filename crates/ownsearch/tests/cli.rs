@@ -4,11 +4,11 @@
     clippy::panic,
     clippy::indexing_slicing
 )]
-mod support;
+mod common;
 
 use std::process::Command;
 
-use support::temp_dir;
+use common::temp_dir;
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_ownsearch")
@@ -258,6 +258,40 @@ fn a_bearer_token_with_a_comma_is_refused() {
     let text = String::from_utf8_lossy(&output.stderr);
     assert!(text.contains("comma"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_instance_can_be_added_by_url_and_the_add_is_idempotent() {
+    let dir = temp_dir("instance-add");
+    let run = || {
+        Command::new(binary())
+            .args(["instances", "add", "http://127.0.0.1:8888/", "--json"])
+            .envs(env_dir(&dir))
+            .output()
+            .expect("run")
+    };
+    let output = run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let row: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(
+        row.get("url").and_then(serde_json::Value::as_str),
+        Some("http://127.0.0.1:8888/")
+    );
+    assert_eq!(
+        row.get("status").and_then(serde_json::Value::as_str),
+        Some("candidate")
+    );
+    let again = run();
+    assert!(again.status.success());
+    let second: serde_json::Value = serde_json::from_slice(&again.stdout).expect("json");
+    assert_eq!(
+        second.get("instanceId").and_then(serde_json::Value::as_i64),
+        row.get("instanceId").and_then(serde_json::Value::as_i64)
+    );
 }
 
 #[test]

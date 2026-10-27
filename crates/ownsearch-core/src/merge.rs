@@ -91,9 +91,10 @@ const MAX_TITLE_CHARS: usize = 300;
 fn build_result(group: Vec<Observation>, snippet_chars: usize) -> MergedResult {
     let best_url = group
         .iter()
-        .map(|observation| observation.url.clone())
+        .map(|observation| observation.url.as_str())
         .min_by_key(|url| if url.starts_with("https://") { 0 } else { 1 })
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_owned();
     let title = group
         .iter()
         .map(|observation| {
@@ -107,11 +108,11 @@ fn build_result(group: Vec<Observation>, snippet_chars: usize) -> MergedResult {
         .unwrap_or_default();
     let snippet = group
         .iter()
-        .filter_map(|observation| observation.snippet.clone())
+        .filter_map(|observation| observation.snippet.as_deref())
         .max_by_key(|snippet| snippet.chars().count())
         .map(|snippet| {
             let (capped, cut) =
-                crate::sanitize::cap(&crate::sanitize::sanitize(&snippet), snippet_chars);
+                crate::sanitize::cap(&crate::sanitize::sanitize(snippet), snippet_chars);
             (capped, cut)
         });
     let mut engines: Vec<String> = Vec::new();

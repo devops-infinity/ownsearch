@@ -327,7 +327,7 @@ async fn run_scan_tick(context: &Arc<ToolContext>, shutdown: &CancellationToken)
     let limit = context.settings.fleet_max().max(1);
     let now = crate::time::rfc3339(crate::time::now_unix());
     let store = Arc::clone(&context.store);
-    let due = tokio::task::spawn_blocking(move || store.scan_targets(limit, &now)).await;
+    let due = tokio::task::spawn_blocking(move || store.scan_targets(limit, &now, false)).await;
     match due {
         Ok(Ok(targets)) if targets.is_empty() => return,
         Ok(Ok(_)) => {}

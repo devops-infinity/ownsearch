@@ -64,6 +64,24 @@ pub struct RenderConfig {
     pub capsolver_timeout_secs: u64,
 }
 
+impl std::fmt::Debug for RenderConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RenderConfig")
+            .field("enabled", &self.enabled)
+            .field("executable", &self.executable)
+            .field("idle_secs", &self.idle_secs)
+            .field("no_sandbox", &self.no_sandbox)
+            .field("allow_private", &self.allow_private)
+            .field("watchdog_secs", &self.watchdog_secs)
+            .field("max_lifetime_secs", &self.max_lifetime_secs)
+            .field("profile_root", &self.profile_root)
+            .field("capsolver_key", &self.capsolver_key.as_ref().map(|_| "set"))
+            .field("capsolver_timeout_secs", &self.capsolver_timeout_secs)
+            .finish()
+    }
+}
+
 impl Renderer {
     pub fn new(config: RenderConfig) -> Self {
         if !config.enabled {

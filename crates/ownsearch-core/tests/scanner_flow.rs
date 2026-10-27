@@ -111,14 +111,33 @@ async fn a_scan_probes_persists_and_records_status_changes() {
     .expect("scan");
     assert_eq!(output.probed, 1);
     assert!(!output.dry_run);
-    assert_eq!(output.status_changes.len(), 1);
+    assert_eq!(output.status_changes.len(), 0);
     let counts = ctx.store.counts().expect("counts");
     assert!(counts.probes >= 2, "probes {}", counts.probes);
     assert!(counts.events > 0);
     let row = ctx.store.get_instance(1).expect("read").expect("row");
-    assert_eq!(row.status.as_str(), "probation");
+    assert_eq!(row.status.as_str(), "candidate");
+    assert!(row.hard_gate_passed == Some(true));
     assert!(row.json_enabled == Some(true));
     assert!(row.score.is_some());
+    let second = run_scan(
+        &ctx,
+        &ScanOptions {
+            dry_run: false,
+            instance_id: None,
+            limit: 10,
+            force_discovery: false,
+            probe_search: true,
+            force: true,
+            probe_google: false,
+        },
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("second scan");
+    assert_eq!(second.status_changes.len(), 1);
+    let row = ctx.store.get_instance(1).expect("read").expect("row");
+    assert_eq!(row.status.as_str(), "active");
     let page = ctx
         .store
         .query_entity(

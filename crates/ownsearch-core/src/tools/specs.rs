@@ -76,7 +76,7 @@ pub const SPECS: &[ToolSpec] = &[
     ToolSpec {
         name: "ownsearch_db_crud",
         title: "Typed database change",
-        description: "Prepare and apply one typed lifecycle or policy change. Needs write mode, a reason, and a one-use confirmation token from a dry_run preview. It can retire, restore, or deny an instance, and it can delete a policy override. It never deletes an instance row.",
+        description: "Prepare and apply one typed lifecycle or policy change. Needs write mode, a reason, and a one-use confirmation token from a dry_run preview. It can add an instance from a URL, including a localhost or Docker instance, retire, restore, or deny an instance, and it can delete a policy override. It never deletes an instance row.",
         read_only: false,
         destructive: true,
         idempotent: false,
