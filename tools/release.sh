@@ -144,10 +144,12 @@ require_clean_tree() {
 }
 
 set_manifest_version() {
-	local file="$1" version="$2"
+	local file="$1" version="$2" tmp
 	[[ -f "$file" ]] || die "missing $file"
-	sed -i.bak -E "s/(\"version\": \")[0-9][0-9.]*(\")/\1$version\2/g" "$file"
-	rm -f "$file.bak"
+	tmp="$(mktemp "$(dirname -- "$file")/.stamp.XXXXXX")"
+	TEMP_FILES+=("$tmp")
+	jq --arg version "$version" '.version = $version | (.packages[]?.version) = $version' "$file" >"$tmp"
+	mv "$tmp" "$file"
 }
 
 changelog_has_entries() {
