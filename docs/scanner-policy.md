@@ -12,7 +12,7 @@ This document states how OwnSearch treats public SearXNG instances. The code fol
 ## Request budget
 
 - Discovery: one fetch of `https://searx.space/data/instances.json` per refresh window. The window is `OWNSEARCH_DISCOVERY_REFRESH_SECS`, default 21600 seconds.
-- Per instance per scan: one TLS resolution, one TLS handshake, at most four HTTP requests (`/config`, the JSON search, at most one HTML search, and at most one exact-Google search), and two address resolutions per HTTP request, one in the public-address guard and one in the HTTP client.
+- Per instance per scan: one TLS resolution, one TLS handshake, at most four HTTP requests (`/config`, the JSON search, at most one HTML search, and at most one exact-Google search), and two address resolutions per HTTP request, one in the public-address guard and one in the HTTP client, plus at most one headless-browser render of the search page when every HTTP format is denied and the browser is enabled.
 - Probes run four at a time by default, with jitter between instances. The jitter is random from zero to `OWNSEARCH_SCAN_JITTER_MS`, default 250 ms.
 - `OWNSEARCH_SCAN_CONCURRENCY` sets the probe concurrency from 1 to 8 for any run, scheduled or on demand. Discovery and probing are never unbounded.
 - A search request uses at most `exhaustive_max` instances, default 16, and stops waiting at the search deadline, default 30 seconds. A bounded queue admits 8 searches at once, lets 64 wait, and refuses the rest with `ownsearch.rate_limited`.
@@ -36,7 +36,7 @@ The agent names the product and a URL where an operator can read what it is. It 
 
 ## Challenge policy
 
-OwnSearch treats a challenge page as a refusal. It detects known markers (Anubis, "Verifying your browser", "Making sure you're not a bot", CAPTCHA forms, Cloudflare and DDoS-Guard pages), records the probe as blocked, and quarantines the instance. It never solves a challenge, never runs a proof of work, and never drives a browser.
+OwnSearch treats a challenge page found in a fetched or parsed answer as a refusal. It detects known markers (Anubis, "Verifying your browser", "Making sure you're not a bot", CAPTCHA forms, Cloudflare and DDoS-Guard pages), records the probe as blocked, quarantines the instance, and never runs a proof of work. A headless browser renders an instance page only as a last-resort capability check after every HTTP format is denied, never to get past a challenge that was already detected. When `OWNSEARCH_CAPSOLVER_KEY` is set, a challenge that appears only in the rendered page can be solved by the CapSolver service for that one page; without the key, no challenge is ever solved.
 
 ## Cooldown and quarantine
 

@@ -20,7 +20,7 @@ This document covers the OwnSearch server as shipped in this repository. It stat
 - The OS keychain, trusted for bearer token storage.
 - The local filesystem, trusted for the state directory and the ledger.
 
-The server crosses five boundaries: client to server over stdio, or over HTTP behind a bearer token; server to SearXNG instances over TLS; server to arbitrary public pages over TLS, sometimes through Chrome; server to the keychain; server to the state directory and the ledger.
+The server crosses six boundaries: client to server over stdio, or over HTTP behind a bearer token; server to SearXNG instances over TLS; server to arbitrary public pages over TLS, sometimes through Chrome; server to the CapSolver captcha service over TLS when an operator sets `OWNSEARCH_CAPSOLVER_KEY`; server to the keychain; server to the state directory and the ledger.
 
 ## Threats and controls
 
@@ -30,7 +30,7 @@ Results, snippets, titles, and page text can carry wording aimed at the model. A
 
 ### Unauthorized HTTP clients
 
-Control: the server refuses to serve a non-loopback bind when no bearer token is configured. A token shorter than 32 characters is refused. Tokens are compared by hashing both sides with SHA-256 and folding the 32 digest bytes with XOR, so the comparison does not leak a prefix. Every protected route, the health endpoint included, checks the bearer token, the Host header against the allowed list, and rejects a request that carries an Origin header; an allowed Origin gets an `Access-Control-Allow-Origin` echo and an answered preflight. A 401 carries a `WWW-Authenticate: Bearer` challenge. A peer that fails five authentications inside 60 seconds is locked out for 30 seconds with a `Retry-After` header, and the failure table evicts its oldest entry instead of clearing itself. A server that runs without a token logs a warning at startup. Residual risk: a loopback bind reached through a tunnel or a proxy is reachable by anyone the tunnel admits, and the loopback check cannot see the tunnel. A forwarded client address is accepted only from a loopback peer, so behind a same-host proxy every client shares that peer address and the per-IP caps do not separate them. That access control, the proxy, and TLS are deployment duties.
+Control: the server refuses to serve a non-loopback bind when no bearer token is configured. A token shorter than 32 characters is refused. Tokens are compared by hashing both sides with SHA-256 and folding the 32 digest bytes with XOR, so the comparison does not leak a prefix. Every protected route, the MCP stream, the `/v1` REST calls, `/startupz`, `/readyz`, and `/metrics` included, checks the bearer token, the Host header against the allowed list, and rejects a request that carries an Origin header; `GET /healthz` is the one unauthenticated route and answers only `{"status":"ok"}`, so a container liveness probe needs no token. An allowed Origin gets an `Access-Control-Allow-Origin` echo and an answered preflight. A 401 carries a `WWW-Authenticate: Bearer` challenge. A peer that fails five authentications inside 60 seconds is locked out for 30 seconds with a `Retry-After` header, and the failure table evicts its oldest entry instead of clearing itself. A server that runs without a token logs a warning at startup. Residual risk: a loopback bind reached through a tunnel or a proxy is reachable by anyone the tunnel admits, and the loopback check cannot see the tunnel. A forwarded client address is accepted only from a loopback peer, so behind a same-host proxy every client shares that peer address and the per-IP caps do not separate them. That access control, the proxy, and TLS are deployment duties.
 
 ### Request flooding
 
@@ -43,6 +43,10 @@ Control: a URL must use `http` or `https`. The host is resolved and every addres
 ### SSRF through the browser render
 
 Control: the render path does not trust the address check alone. It intercepts every request the page makes and continues only a public URL, it refuses the render when the final URL is not public, and it checks the peer address that Chrome connects to, with Chrome started without a proxy server. A blocked request fails the render. Residual risk: the peer check is detection after the response arrives, and the interception resolves a URL separately from Chrome's own resolution, so a page-scripted request can complete before the render is refused. Chrome itself is a large attack surface driven by untrusted HTML, and a browser compromise happens outside this process's controls. The image ships no browser for that reason.
+
+### Captcha solving through CapSolver
+
+Control: the solver runs only when `OWNSEARCH_CAPSOLVER_KEY` is set. It sends the page URL, the site key, and the paid-service key to `api.capsolver.com`, holds the key as a secret in memory, and redacts the key from any upstream error body before display. A scan or a search reaches it only when a challenge appears in a rendered page after the HTTP probes were denied. Residual risk: the page URL and the site key leave the machine to a third-party service, which is the operator's opt-in, and a solved challenge spends the operator's CapSolver balance.
 
 ### Oversized or malformed upstream data
 
