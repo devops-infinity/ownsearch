@@ -22,7 +22,7 @@ LABEL org.opencontainers.image.title="OwnSearch" \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --create-home ownsearch
+    && useradd --system --uid 10001 --create-home --no-log-init ownsearch
 
 COPY --from=builder /tmp/ownsearch /usr/local/bin/ownsearch
 
@@ -35,7 +35,7 @@ ENV OWNSEARCH_STATE_DIR=/home/ownsearch/.local/state/ownsearch \
 
 EXPOSE 8774
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD host="${OWNSEARCH_BIND%:*}"; case "$host" in 0.0.0.0|::) host=127.0.0.1 ;; esac; curl -fsS "http://$host:${OWNSEARCH_BIND##*:}/healthz"
+    CMD host="${OWNSEARCH_BIND%:*}"; case "$host" in 0.0.0.0|::) host=127.0.0.1 ;; esac; curl -fsS "http://$host:${OWNSEARCH_BIND##*:}/readyz"
 
 ENTRYPOINT ["ownsearch"]
 CMD ["serve", "--http"]
