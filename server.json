@@ -3,7 +3,7 @@
   "name": "io.github.devops-infinity/ownsearch",
   "title": "OwnSearch",
   "description": "Quality-ranked SearXNG search over MCP with local fleet state, scoring, and merged results.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "websiteUrl": "https://github.com/devops-infinity/ownsearch",
   "repository": {
     "url": "https://github.com/devops-infinity/ownsearch",
@@ -13,7 +13,7 @@
     {
       "registryType": "cargo",
       "identifier": "ownsearch",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "runtimeHint": "binary",
       "transport": {
         "type": "stdio"
@@ -34,7 +34,7 @@
     {
       "registryType": "npm",
       "identifier": "@devops-infinity/ownsearch",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "transport": {
         "type": "stdio"
       }
