@@ -252,6 +252,18 @@ pub(crate) enum InstancesAction {
         #[arg(long, help = "Print the new row as JSON")]
         json: bool,
     },
+    #[command(about = "Retire an instance so it leaves the fleet and the scanner")]
+    Retire {
+        #[arg(help = "Instance identifier")]
+        instance_id: i64,
+        #[arg(long, help = "Reason recorded with the change")]
+        reason: Option<String>,
+    },
+    #[command(about = "Restore a retired or missing instance to candidate")]
+    Restore {
+        #[arg(help = "Instance identifier")]
+        instance_id: i64,
+    },
 }
 
 #[derive(Debug, Args)]
