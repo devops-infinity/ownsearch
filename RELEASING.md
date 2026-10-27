@@ -77,7 +77,7 @@ Every channel installs a versioned artifact: the archives and installers, the cr
 
 Credentials live outside the repository. crates.io accepts an API token in `CARGO_REGISTRY_TOKEN`, or an OIDC trusted publisher set up once in the account settings for `ownsearch-core` and `ownsearch`. `tools/registry-auth.sh` reports which registry sessions are usable without printing a secret. Nothing is published from the local machine without the command being typed.
 
-The release workflow builds all seven targets from `[workspace.metadata.dist]` on native runners, including the two musl archives. It runs the gate first, then attaches every archive, both installers, `ownsearch.rb`, `ownsearch-npm-package.tar.gz`, the MCPB bundle, one bill of materials per target, `sha256.sum` with its signature, and `minisign.pub`. A manual run takes the tag from the workflow input, so the built tree is the tag and not the default branch.
+The release workflow builds all seven targets from `[workspace.metadata.dist]` on native runners, including the two musl archives. It attaches every archive, both installers, `ownsearch.rb`, `ownsearch-npm-package.tar.gz`, the MCPB bundle, `sha256.sum` with its signature, and `minisign.pub`. The gate runs on the machine through `tools/release.sh --tag`, which refuses to create a tag it cannot pass. A manual run takes the tag from the workflow input, so the built tree is the tag and not the default branch.
 
 ## Boundaries
 

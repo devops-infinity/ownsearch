@@ -78,7 +78,7 @@ Control: every error carries a stable code, a short message, and a remedy. An up
 
 ### Supply chain
 
-Control: the lockfile is committed and every gate runs with `--locked`. `cargo audit`, `cargo deny check` against a license allowlist, and `cargo machete` run in the gate and in the release workflow. `unsafe_code = "forbid"` is set for the workspace. Gitleaks scans the tree and the commit history. Each release carries one CycloneDX bill of materials per target, `sha256.sum` signed with minisign, and `minisign.pub` beside it. Every workflow action is pinned to a full commit SHA. Residual risk: a dependency can turn hostile inside a version that was already reviewed, and a pinned digest blocks that only until the next bump.
+Control: the lockfile is committed and every gate runs with `--locked`. `cargo audit`, `cargo deny check` against a license allowlist, and `cargo machete` run in the gate that `tools/verify.sh` provides. `unsafe_code = "forbid"` is set for the workspace. Gitleaks scans the tree and the commit history. Each release carries `sha256.sum` signed with minisign, and `minisign.pub` beside it. Every workflow action is pinned to a full commit SHA. Residual risk: a dependency can turn hostile inside a version that was already reviewed, and a pinned digest blocks that only until the next bump.
 
 ### Container deployment
 

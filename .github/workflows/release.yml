@@ -23,48 +23,10 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  gate:
-    name: gate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: 1.99.1
-          components: clippy, rustfmt, llvm-tools-preview
-      - name: Install gate tools
-        run: |
-          cargo install cargo-audit@0.22.2 --locked
-          cargo install cargo-deny@0.20.2 --locked
-          cargo install cargo-machete@0.9.2 --locked
-          cargo install cargo-llvm-cov@0.9.1 --locked
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Check
-        run: cargo check --workspace --all-targets --all-features --locked
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - name: Tests
-        run: cargo test --workspace --all-features --locked
-      - name: Docs
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
-      - name: Doc tests
-        run: cargo test --workspace --all-features --locked --doc
-      - name: Advisories
-        run: cargo audit --deny warnings
-      - name: Dependency policy
-        run: cargo deny check
-      - name: Unused dependencies
-        run: cargo machete
-      - name: Coverage
-        run: cargo llvm-cov --workspace --all-features --locked --fail-under-lines 80
-
   build:
     name: build ${{ matrix.target }}
-    needs: gate
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -119,24 +81,18 @@ jobs:
           mkdir -p target/distrib target/dist-manifests
           dist build --tag="$TAG" --artifacts=local --target="$TARGET" --no-local-paths --output-format=json > "target/dist-manifests/$TARGET.json"
           cp "target/dist-manifests/$TARGET.json" "target/distrib/$TARGET-dist-manifest.json"
-      - name: Bill of materials
-        run: |
-          mkdir -p dist
-          cargo run --quiet --locked -p ownsearch -- sbom --out dist/sbom-${{ matrix.target }}.cdx.json
       - name: Upload the target artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.target }}
-          path: |
-            target/distrib/
-            dist/
+          path: target/distrib/
           if-no-files-found: error
 
   publish:
     name: publish release
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
@@ -145,15 +101,16 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
-      - name: Download the target artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: dist-*
-          merge-multiple: true
       - name: Install dist
         uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
         with:
           tool: cargo-dist@0.32.0
+      - name: Download the target artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: target/distrib
+          merge-multiple: true
       - name: Install the packaging tools
         run: sudo apt-get update && sudo apt-get install -y minisign zip
       - name: Build the installers
@@ -193,7 +150,7 @@ jobs:
           printf '%s' "$MINISIGN_KEY" > "$key"
           (
             cd dist
-            find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.mcpb' -o -name '*.rb' -o -name '*.sh' -o -name '*.ps1' -o -name '*.cdx.json' \) \
+            find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.mcpb' -o -name '*.rb' -o -name '*.sh' -o -name '*.ps1' \) \
               -printf '%f\n' | sort | xargs -r sha256sum > sha256.sum
           )
           test -s dist/sha256.sum
@@ -204,7 +161,7 @@ jobs:
           fi
           cp minisign.pub dist/minisign.pub
           minisign -V -m dist/sha256.sum -p minisign.pub
-      - name: Create draft release
+      - name: Create or update the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -225,10 +182,10 @@ jobs:
             printing { print }
           ' CHANGELOG.md > release-notes.md
           test -s release-notes.md
-          gh release create "$RELEASE_TAG" --draft --title "OwnSearch $RELEASE_TAG" --notes-file release-notes.md dist/*
-      - name: Publish draft
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          gh release edit "$RELEASE_TAG" --draft=false
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" --draft --title "OwnSearch $RELEASE_TAG" --notes-file release-notes.md --repo "$GITHUB_REPOSITORY"
+            gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY"
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --repo "$GITHUB_REPOSITORY"
