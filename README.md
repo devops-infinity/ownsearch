@@ -2,6 +2,8 @@
 
 Self-hosted MCP and HTTP search over a scored fleet of public SearXNG instances.
 
+mcp-name: io.github.devops-infinity/ownsearch
+
 Status: pre-release, workspace version 0.1.0.
 
 OwnSearch discovers public SearXNG instances from searx.space, probes them at a low rate, scores them, keeps the fleet in a local SQLite database, rotates the starting instance, retries a failing one, and answers from the next healthy instance. Each result carries the sources that supplied it, with the instance and, when known, the engine. It runs as a Model Context Protocol (MCP) server over stdio or Streamable HTTP, and the HTTP port also answers two REST calls.
