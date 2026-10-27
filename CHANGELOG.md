@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-27
+
+### Fixed
+
+- A keychain failure at construction or at read no longer stops the server. It logs a warning and reads no token, and the non-loopback bind guard still refuses to serve without a bearer token.
+- The startup test prints the error it receives when the public bind check fails.
+
 ## [0.1.1] - 2026-10-27
 
 ### Fixed
@@ -139,3 +146,5 @@ All notable changes to this project are recorded here. The format follows [Keep 
 [0.1.0]: https://github.com/devops-infinity/ownsearch/releases/tag/v0.1.0
 
 [0.1.1]: https://github.com/devops-infinity/ownsearch/compare/v0.1.0...v0.1.1
+
+[0.1.2]: https://github.com/devops-infinity/ownsearch/compare/v0.1.1...v0.1.2
