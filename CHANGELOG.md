@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-27
+
+### Fixed
+
+- The server starts on a machine with no keychain service instead of refusing to serve, which unblocked headless servers and the release gate.
+- The MCP registry and bundle descriptions fit the 100 character registry limit.
+- The release script stamps the hoisted `ownsearch-core` version.
+
 ## [0.1.0] - 2026-10-27
 
 ### Added
@@ -129,3 +137,5 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 [Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/devops-infinity/ownsearch/releases/tag/v0.1.0
+
+[0.1.1]: https://github.com/devops-infinity/ownsearch/compare/v0.1.0...v0.1.1
