@@ -137,26 +137,22 @@ require_binary() {
 @test "the version stamp reaches the manifest and the requirement" {
 	local tree
 	tree="$(mktemp -d)"
-	mkdir -p "$tree/crates/ownsearch"
-	printf '[workspace.package]\nversion = "1.2.3"\n' >"$tree/Cargo.toml"
-	printf '[dependencies]\nownsearch-core = { path = "../ownsearch-core", version = "1.2.0" }\n' >"$tree/crates/ownsearch/Cargo.toml"
+	printf '[workspace.package]\nversion = "1.2.3"\n\n[workspace.dependencies]\nownsearch-core = { path = "crates/ownsearch-core", version = "1.2.0" }\n' >"$tree/Cargo.toml"
 	source "$REPO/tools/lib.sh"
 	stamp_version "$tree" 1.2.3 1.3.0
 	grep -q '^version = "1.3.0"$' "$tree/Cargo.toml"
-	grep -qF 'ownsearch-core = { path = "../ownsearch-core", version = "1.3.0" }' "$tree/crates/ownsearch/Cargo.toml"
+	grep -qF 'ownsearch-core = { path = "crates/ownsearch-core", version = "1.3.0" }' "$tree/Cargo.toml"
 	rm -rf "$tree"
 }
 
 @test "the version check refuses a stale requirement" {
 	local tree
 	tree="$(mktemp -d)"
-	mkdir -p "$tree/crates/ownsearch"
-	printf '[workspace.package]\nversion = "1.3.0"\n' >"$tree/Cargo.toml"
-	printf '[dependencies]\nownsearch-core = { path = "../ownsearch-core", version = "1.2.0" }\n' >"$tree/crates/ownsearch/Cargo.toml"
+	printf '[workspace.package]\nversion = "1.3.0"\n\n[workspace.dependencies]\nownsearch-core = { path = "crates/ownsearch-core", version = "1.2.0" }\n' >"$tree/Cargo.toml"
 	source "$REPO/tools/lib.sh"
 	run verify_version_stamps "$tree" 1.3.0
 	[ "$status" -ne 0 ]
-	[[ "$output" == *"crates/ownsearch/Cargo.toml"* ]]
+	[[ "$output" == *"Cargo.toml does not require ownsearch-core"* ]]
 	rm -rf "$tree"
 }
 
