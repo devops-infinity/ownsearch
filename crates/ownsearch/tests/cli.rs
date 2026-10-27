@@ -177,6 +177,24 @@ fn the_instance_commands_report_and_change_state() {
     assert!(!show_missing.status.success());
     let pin_missing = run(&["instances", "pin", "99"]);
     assert!(!pin_missing.status.success());
+    let add = run(&["instances", "add", "http://127.0.0.1:8888/", "--json"]);
+    assert!(add.status.success());
+    let retire = run(&["instances", "retire", "1", "--reason", "tidy up"]);
+    assert!(retire.status.success());
+    let shown = run(&["instances", "show", "1", "--json"]);
+    let row: serde_json::Value = serde_json::from_slice(&shown.stdout).expect("json");
+    assert_eq!(
+        row.get("status").and_then(serde_json::Value::as_str),
+        Some("retired")
+    );
+    let restore = run(&["instances", "restore", "1"]);
+    assert!(restore.status.success());
+    let shown = run(&["instances", "show", "1", "--json"]);
+    let row: serde_json::Value = serde_json::from_slice(&shown.stdout).expect("json");
+    assert_eq!(
+        row.get("status").and_then(serde_json::Value::as_str),
+        Some("candidate")
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

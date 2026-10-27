@@ -375,12 +375,58 @@ Tables: `schema_migrations`, `application_metadata`, `discovery_sources`, `disco
 - `ownsearch db counts [--json]`
 - `ownsearch instances list [--status S] [--limit N] [--json]`
 - `ownsearch instances show [ID] [--url URL] [--json]`
-- `ownsearch instances pin ID`, `unpin ID`, `deny ID [--reason TEXT]`, `reset-status ID`
 - `ownsearch instances add URL [--pin] [--json]`
+- `ownsearch instances pin ID`, `unpin ID`, `deny ID [--reason TEXT]`, `reset-status ID`
+- `ownsearch instances retire ID [--reason TEXT]`, `restore ID`
 
 ### Your own instance
 
 `ownsearch instances add http://localhost:8888/ --pin` stores a SearXNG instance you run yourself, whether it listens on a localhost port, a Docker network address, or any other private address. The instance starts as a candidate. A scan probes it like any other instance, and two passing probes promote it to active, after which searches use it. A loopback or private host skips the TLS and certificate gate, because those checks describe a public host. The address rule still applies: set `OWNSEARCH_ALLOW_PRIVATE_INSTANCES=true`, and keep the instance on a network you control, since the same setting lets a hostile discovery document point the scanner at a local service.
+
+### Instance CRUD examples
+
+Create an instance:
+
+```bash
+ownsearch instances add http://127.0.0.1:8080/ --pin
+```
+
+Read it back:
+
+```bash
+ownsearch instances list --limit 10
+ownsearch instances show 1
+ownsearch instances show --url http://127.0.0.1:8080/
+```
+
+Update its policy:
+
+```bash
+ownsearch instances pin 1
+ownsearch instances unpin 1
+ownsearch instances deny 1 --reason "host is gone"
+ownsearch instances reset-status 1
+```
+
+Delete it from the fleet, which retires rather than removes the row:
+
+```bash
+ownsearch instances retire 1 --reason "replaced by another host"
+```
+
+Bring it back:
+
+```bash
+ownsearch instances restore 1
+```
+
+Apply the change to the fleet with a scan:
+
+```bash
+ownsearch scan --instance 1 --force
+```
+
+An instance is never deleted, so its probe history and events stay readable. `retire` is the delete step of the lifecycle, and `restore` returns a retired or missing instance to candidate. The same operations exist over MCP through `ownsearch_db_crud`, with the preview and one-use token flow.
 
 ## AI-assisted database changes
 

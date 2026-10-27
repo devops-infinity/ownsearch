@@ -132,6 +132,42 @@ pub(crate) fn run(args: InstancesArgs) -> anyhow::Result<()> {
             println!("instance {instance_id} is candidate again with no policy override");
             Ok(())
         }
+        InstancesAction::Retire {
+            instance_id,
+            reason,
+        } => {
+            ensure_row(&store, instance_id)?;
+            let reason = reason.unwrap_or_else(|| "operator retired".to_owned());
+            let (reason, _) = ownsearch_core::cap(&ownsearch_core::sanitize(&reason), 120);
+            store.set_status(
+                instance_id,
+                InstanceStatus::Retired,
+                &[format!("operator.retire:{reason}")],
+            )?;
+            println!("instance {instance_id} is retired");
+            Ok(())
+        }
+        InstancesAction::Restore { instance_id } => {
+            let row = store
+                .get_instance(instance_id)?
+                .ok_or_else(|| anyhow::anyhow!("instance {instance_id} does not exist"))?;
+            if !matches!(
+                row.status,
+                InstanceStatus::Retired | InstanceStatus::Missing
+            ) {
+                anyhow::bail!(
+                    "restore applies to a retired or missing instance, not {}",
+                    row.status.as_str()
+                );
+            }
+            store.set_status(
+                instance_id,
+                InstanceStatus::Candidate,
+                &["operator.restore".to_owned()],
+            )?;
+            println!("instance {instance_id} is candidate again");
+            Ok(())
+        }
         InstancesAction::Add {
             url,
             pin,
