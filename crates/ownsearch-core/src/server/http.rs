@@ -86,9 +86,17 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .unwrap_or_default();
     let host_policy = settings.allowed_hosts().is_none();
     let mcp_handler = OwnsearchHandler::new(settings)?;
-    mcp_handler.context().ensure_bootstrap()?;
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let context = mcp_handler.context();
+    {
+        let bootstrap = Arc::clone(&context);
+        tokio::task::spawn_blocking(move || bootstrap.ensure_bootstrap())
+            .await
+            .map_err(|error| Error::Io {
+                context: "waiting for a storage task",
+                source: std::io::Error::other(error),
+            })??;
+    }
     let shutdown_browser = Arc::clone(&context);
     let cancel = mcp_handler.cancellation_token();
     crate::browser::reap_orphans(&context.settings.state_dir().join("browser"));

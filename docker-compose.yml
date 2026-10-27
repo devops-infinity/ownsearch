@@ -17,10 +17,15 @@ services:
       - ownsearch-state:/home/ownsearch/.local/state/ownsearch
       - ownsearch-ledger:/home/ownsearch/.local/share/ownsearch/ledger
     shm_size: "1gb"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8774/healthz"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8774/readyz"]
       interval: 30s
       timeout: 3s
       start_period: 5s
@@ -28,4 +33,6 @@ services:
 
 volumes:
   ownsearch-state:
+    name: ownsearch-state
   ownsearch-ledger:
+    name: ownsearch-ledger

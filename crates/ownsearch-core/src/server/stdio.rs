@@ -9,9 +9,17 @@ use crate::error::{Error, Result};
 
 pub async fn serve_stdio(settings: Settings) -> Result<()> {
     let mcp_handler = OwnsearchHandler::new(settings)?;
-    mcp_handler.context().ensure_bootstrap()?;
     let cancellation = mcp_handler.cancellation_token();
     let context = mcp_handler.context();
+    {
+        let bootstrap = Arc::clone(&context);
+        tokio::task::spawn_blocking(move || bootstrap.ensure_bootstrap())
+            .await
+            .map_err(|error| Error::Io {
+                context: "waiting for a storage task",
+                source: std::io::Error::other(error),
+            })??;
+    }
     crate::browser::reap_orphans(&context.settings.state_dir().join("browser"));
     let _hang_watchdog = super::start_hang_watchdog(&context, cancellation.clone());
     super::spawn_cleanup(Arc::clone(&context), cancellation.clone());

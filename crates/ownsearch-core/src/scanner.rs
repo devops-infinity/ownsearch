@@ -118,8 +118,12 @@ pub async fn refresh_discovery(
         });
     }
     let _gate = DISCOVERY_GATE.lock().await;
+    let last_run = {
+        let store = Arc::clone(&ctx.store);
+        blocking_store(move || store.last_run_at(SOURCE_ID_SEARX_SPACE)).await?
+    };
     if !force
-        && let Some(last) = ctx.store.last_run_at(SOURCE_ID_SEARX_SPACE)?
+        && let Some(last) = last_run
         && now_unix().saturating_sub(last)
             < i64::try_from(ctx.settings.discovery_refresh_secs()).unwrap_or(i64::MAX)
     {
@@ -128,23 +132,36 @@ pub async fn refresh_discovery(
             ..DiscoveryOutcome::default()
         });
     }
-    ctx.store.ensure_source(
-        SOURCE_ID_SEARX_SPACE,
-        "searx.space",
-        ctx.settings.discovery_url(),
-    )?;
-    let run_id = ctx.store.begin_run(SOURCE_ID_SEARX_SPACE, crate::VERSION)?;
+    {
+        let store = Arc::clone(&ctx.store);
+        let endpoint = ctx.settings.discovery_url().to_owned();
+        blocking_store(move || {
+            store.ensure_source(SOURCE_ID_SEARX_SPACE, "searx.space", &endpoint)
+        })
+        .await?;
+    }
+    let run_id = {
+        let store = Arc::clone(&ctx.store);
+        blocking_store(move || store.begin_run(SOURCE_ID_SEARX_SPACE, crate::VERSION)).await?
+    };
     let url = Url::parse(ctx.settings.discovery_url())
         .map_err(|error| Error::Config(format!("discovery_url: {error}")))?;
     let fetched = match ctx.client.get(&url, "application/json", cancellation).await {
         Ok(fetched) => fetched,
         Err(error) => {
-            ctx.store
-                .record_run_failure(&run_id, error.code(), &error.to_string())?;
-            ctx.store.finish_run(&run_id, "error", (0, 0, 0))?;
+            let message = error.to_string();
+            let code = error.code().to_owned();
+            let store = Arc::clone(&ctx.store);
+            let run = run_id.clone();
+            let recorded = message.clone();
+            blocking_store(move || {
+                store.record_run_failure(&run, &code, &recorded)?;
+                store.finish_run(&run, "error", (0, 0, 0))
+            })
+            .await?;
             return Ok(DiscoveryOutcome {
                 run_id: Some(run_id),
-                error: Some(error.to_string()),
+                error: Some(message),
                 ..DiscoveryOutcome::default()
             });
         }
@@ -155,9 +172,14 @@ pub async fn refresh_discovery(
             fetched.status,
             fetched.content_type.as_deref().unwrap_or("no content type")
         );
-        ctx.store
-            .record_run_failure(&run_id, "ownsearch.upstream_failed", &message)?;
-        ctx.store.finish_run(&run_id, "error", (0, 0, 0))?;
+        let store = Arc::clone(&ctx.store);
+        let run = run_id.clone();
+        let recorded = message.clone();
+        blocking_store(move || {
+            store.record_run_failure(&run, "ownsearch.upstream_failed", &recorded)?;
+            store.finish_run(&run, "error", (0, 0, 0))
+        })
+        .await?;
         return Ok(DiscoveryOutcome {
             run_id: Some(run_id),
             error: Some(message),
@@ -167,12 +189,19 @@ pub async fn refresh_discovery(
     let document = match DiscoveryDocument::parse(&fetched.body) {
         Ok(document) => document,
         Err(error) => {
-            ctx.store
-                .record_run_failure(&run_id, error.code(), &error.to_string())?;
-            ctx.store.finish_run(&run_id, "error", (0, 0, 0))?;
+            let message = error.to_string();
+            let code = error.code().to_owned();
+            let store = Arc::clone(&ctx.store);
+            let run = run_id.clone();
+            let recorded = message.clone();
+            blocking_store(move || {
+                store.record_run_failure(&run, &code, &recorded)?;
+                store.finish_run(&run, "error", (0, 0, 0))
+            })
+            .await?;
             return Ok(DiscoveryOutcome {
                 run_id: Some(run_id),
-                error: Some(error.to_string()),
+                error: Some(message),
                 ..DiscoveryOutcome::default()
             });
         }
@@ -181,58 +210,83 @@ pub async fn refresh_discovery(
         use sha2::{Digest, Sha256};
         Sha256::digest(&fetched.body).to_vec()
     };
-    ctx.store
-        .record_run_source(&run_id, document.snapshot_at(), &digest)?;
+    {
+        let store = Arc::clone(&ctx.store);
+        let run = run_id.clone();
+        let published_at = document.snapshot_at();
+        let source_digest = digest.clone();
+        blocking_store(move || store.record_run_source(&run, published_at, &source_digest)).await?;
+    }
     let now = now_unix();
     let stamp = rfc3339(now);
     let loaded = public_records(ctx, document.to_discovered(now)).await;
     let source_len = loaded.source_len;
     let resolved = loaded.complete;
     let discovered = loaded.kept;
-    let (added, changed, present) =
-        ctx.store
-            .import_discovered(&discovered, SOURCE_ID_SEARX_SPACE, Some(&run_id), &stamp)?;
-    let known = usize::try_from(ctx.store.instance_count()?).unwrap_or(0);
-    let plausible = resolved
-        && source_len >= 20
-        && (known == 0 || source_len.saturating_mul(2) >= known)
-        && source_len <= MAX_DISCOVERY_RECORDS;
-    let missing = if plausible {
-        ctx.store.mark_missing(&present, &run_id, &stamp)?
-    } else {
-        tracing::warn!(
-            discovered = discovered.len(),
-            known,
-            "the discovery document is too small to trust; no instance was marked missing"
-        );
-        0
+    let discovered_len = discovered.len();
+    let (added, changed, missing) = {
+        let store = Arc::clone(&ctx.store);
+        let run = run_id.clone();
+        let run_stamp = stamp.clone();
+        blocking_store(move || {
+            let (added, changed, present) = store.import_discovered(
+                &discovered,
+                SOURCE_ID_SEARX_SPACE,
+                Some(&run),
+                &run_stamp,
+            )?;
+            let known = usize::try_from(store.instance_count()?).unwrap_or(0);
+            let plausible = resolved
+                && source_len >= 20
+                && (known == 0 || source_len.saturating_mul(2) >= known)
+                && source_len <= MAX_DISCOVERY_RECORDS;
+            let missing = if plausible {
+                store.mark_missing(&present, &run, &run_stamp)?
+            } else {
+                tracing::warn!(
+                    discovered = discovered_len,
+                    known,
+                    "the discovery document is too small to trust; no instance was marked missing"
+                );
+                0
+            };
+            store.finish_run(
+                &run,
+                "success",
+                (u32_len(discovered_len), u32_len(changed), missing),
+            )?;
+            Ok((added, changed, missing))
+        })
+        .await?
     };
-    ctx.store.finish_run(
-        &run_id,
-        "success",
-        (u32_len(discovered.len()), u32_len(changed), missing),
-    )?;
-    if let Err(error) = ctx.store.write_snapshot(&ctx.settings.snapshot_path()) {
-        tracing::warn!(%error, "the discovery snapshot was not written");
-    }
-    if let Err(error) = crate::fsutil::append_line(
-        &ctx.settings.events_path(),
-        &json!({
+    {
+        let store = Arc::clone(&ctx.store);
+        let snapshot_path = ctx.settings.snapshot_path();
+        let events_path = ctx.settings.events_path();
+        let line = json!({
             "event": "discovery_run",
             "runId": run_id,
             "at": stamp,
-            "discovered": discovered.len(),
+            "discovered": discovered_len,
             "added": added,
             "changed": changed,
             "missing": missing,
         })
-        .to_string(),
-    ) {
-        tracing::warn!(%error, "the discovery event was not appended");
+        .to_string();
+        blocking_store(move || {
+            if let Err(error) = store.write_snapshot(&snapshot_path) {
+                tracing::warn!(%error, "the discovery snapshot was not written");
+            }
+            if let Err(error) = crate::fsutil::append_line(&events_path, &line) {
+                tracing::warn!(%error, "the discovery event was not appended");
+            }
+            Ok(())
+        })
+        .await?;
     }
     Ok(DiscoveryOutcome {
         run_id: Some(run_id),
-        discovered: discovered.len(),
+        discovered: discovered_len,
         added,
         changed,
         missing: usize::try_from(missing).unwrap_or(0),
@@ -243,6 +297,19 @@ pub async fn refresh_discovery(
 
 fn u32_len(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+async fn blocking_store<T, F>(work: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| Error::Io {
+            context: "waiting for a storage task",
+            source: std::io::Error::other(error),
+        })?
 }
 
 #[derive(Default)]
@@ -358,7 +425,8 @@ pub async fn run_scan(
         return Ok(output);
     }
     if !ctx.settings.offline() {
-        ctx.ensure_bootstrap()?;
+        let context = Arc::clone(ctx);
+        blocking_store(move || context.ensure_bootstrap()).await?;
     }
     let discovery = refresh_discovery(ctx, options.force_discovery, cancellation).await?;
     let mut warnings: Vec<String> = Vec::new();
@@ -369,10 +437,18 @@ pub async fn run_scan(
         warnings.push("discovery state is fresh; the existing fleet was used".to_owned());
     }
     let targets = match options.instance_id {
-        Some(instance_id) => vec![explicit_target(ctx, instance_id, options.force)?],
-        None => ctx
-            .store
-            .scan_targets(options.limit, &now_rfc3339(), options.force)?,
+        Some(instance_id) => {
+            let context = Arc::clone(ctx);
+            let force = options.force;
+            vec![blocking_store(move || explicit_target(&context, instance_id, force)).await?]
+        }
+        None => {
+            let store = Arc::clone(&ctx.store);
+            let now = now_rfc3339();
+            let limit = options.limit;
+            let force = options.force;
+            blocking_store(move || store.scan_targets(limit, &now, force)).await?
+        }
     };
     let mut probes: Vec<InstanceProbe> = Vec::new();
     let deadline = tokio::time::Instant::now()
@@ -458,15 +534,27 @@ pub async fn run_scan(
     let fleet = if options.dry_run {
         dry_run_fleet(&probes, ctx)
     } else {
-        let selection = select_and_rank(ctx)?;
-        if !probes.is_empty()
-            && let Ok(snapshot) = ctx.store.export_snapshot()
-            && let Err(error) = ctx.store.record_fleet_snapshot("scan", &snapshot)
-        {
-            tracing::warn!(%error, "the fleet snapshot was not recorded");
+        let selection = {
+            let context = Arc::clone(ctx);
+            blocking_store(move || select_and_rank(&context)).await?
+        };
+        if !probes.is_empty() {
+            let store = Arc::clone(&ctx.store);
+            let recorded = blocking_store(move || {
+                let snapshot = store.export_snapshot()?;
+                store.record_fleet_snapshot("scan", &snapshot)
+            })
+            .await;
+            if let Err(error) = recorded {
+                tracing::warn!(%error, "the fleet snapshot was not recorded");
+            }
         }
-        if let Err(error) = ctx.store.write_snapshot(&ctx.settings.snapshot_path()) {
-            warnings.push(format!("the state snapshot was not rewritten: {error}"));
+        {
+            let store = Arc::clone(&ctx.store);
+            let snapshot_path = ctx.settings.snapshot_path();
+            if let Err(error) = blocking_store(move || store.write_snapshot(&snapshot_path)).await {
+                warnings.push(format!("the state snapshot was not rewritten: {error}"));
+            }
         }
         let cleaner = Arc::clone(ctx);
         let cleaned = tokio::task::spawn_blocking(move || {
@@ -521,11 +609,17 @@ async fn dry_run_scan(
         warnings.push("discovery state is fresh; the existing fleet was used".to_owned());
     }
     let targets = match options.instance_id {
-        Some(instance_id) => vec![explicit_target(ctx, instance_id, options.force)?],
+        Some(instance_id) => {
+            let context = Arc::clone(ctx);
+            let force = options.force;
+            vec![blocking_store(move || explicit_target(&context, instance_id, force)).await?]
+        }
         None => {
-            let stored = ctx
-                .store
-                .scan_targets(options.limit, &now_rfc3339(), options.force)?;
+            let store = Arc::clone(&ctx.store);
+            let now = now_rfc3339();
+            let limit = options.limit;
+            let force = options.force;
+            let stored = blocking_store(move || store.scan_targets(limit, &now, force)).await?;
             if stored.is_empty() {
                 if ctx.settings.offline() {
                     warnings.push(
@@ -630,7 +724,10 @@ async fn discovery_preview(
         });
     }
     if !force
-        && let Some(last) = ctx.store.last_run_at(SOURCE_ID_SEARX_SPACE)?
+        && let Some(last) = {
+            let store = Arc::clone(&ctx.store);
+            blocking_store(move || store.last_run_at(SOURCE_ID_SEARX_SPACE)).await?
+        }
         && now_unix().saturating_sub(last)
             < i64::try_from(ctx.settings.discovery_refresh_secs()).unwrap_or(i64::MAX)
     {
@@ -660,7 +757,10 @@ async fn discovery_preview(
     let discovered = public_records(ctx, document.to_discovered(now_unix()))
         .await
         .kept;
-    let known = ctx.store.known_urls()?;
+    let known = {
+        let store = Arc::clone(&ctx.store);
+        blocking_store(move || store.known_urls()).await?
+    };
     let urls: std::collections::HashSet<String> =
         discovered.iter().map(|item| item.url.clone()).collect();
     let known_set: std::collections::HashSet<&String> = known.iter().collect();
@@ -953,11 +1053,14 @@ async fn probe_one_inner(
                 .unwrap_or(false)
         })
         .unwrap_or(false);
-    let metrics = ctx
-        .store
-        .discovery_metrics(target.instance_id)
-        .ok()
-        .flatten();
+    let metrics = {
+        let store = Arc::clone(&ctx.store);
+        let instance_id = target.instance_id;
+        blocking_store(move || Ok(store.discovery_metrics(instance_id).ok().flatten()))
+            .await
+            .ok()
+            .flatten()
+    };
     let evidence = build_evidence(ProbeEvidence {
         metrics: metrics.as_ref(),
         tls: &tls,
