@@ -1380,16 +1380,20 @@ fn base_dir(
 }
 
 pub fn keychain_get() -> Result<Option<SecretString>> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-        .map_err(|error| Error::Config(format!("keychain entry: {error}")))?;
+    let entry = match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        Ok(entry) => entry,
+        Err(error) => {
+            tracing::warn!(%error, "the keychain is not available; no stored token was read");
+            return Ok(None);
+        }
+    };
     match entry.get_password() {
         Ok(secret) => Ok(Some(SecretString::from(secret))),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error @ (keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_))) => {
-            tracing::debug!(%error, "the keychain is not available; no stored token was read");
+        Err(error) => {
+            tracing::warn!(%error, "the keychain could not be read; no stored token was used");
             Ok(None)
         }
-        Err(error) => Err(Error::Config(format!("keychain read: {error}"))),
     }
 }
 
