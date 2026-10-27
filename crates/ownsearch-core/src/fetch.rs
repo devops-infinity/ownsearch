@@ -119,7 +119,7 @@ pub async fn fetch(
     let final_url = Url::parse(&fetched.final_url).unwrap_or_else(|_| url.clone());
     let redirects = fetched.redirects.clone();
     if is_pdf {
-        let text = pdf_text(fetched.body.clone(), deadline).await?;
+        let text = pdf_text(fetched.body, deadline).await?;
         let (content, truncated) = cap(&extract::from_pdf_text(&text), request.max_chars);
         let output = FetchOutput {
             url: url.to_string(),
@@ -324,15 +324,17 @@ async fn crawl(
         if !fetched.is_success() {
             continue;
         }
+        let page_content_is_html = fetched.is_html();
         let page_body = if fetched.is_pdf() {
-            match pdf_text(fetched.body.clone(), deadline).await {
+            let body = fetched.body;
+            match pdf_text(body, deadline).await {
                 Ok(text) => text,
                 Err(_) => continue,
             }
         } else {
             fetched.text()
         };
-        let page_is_html = fetched.is_html() || looks_like_html(&page_body);
+        let page_is_html = page_content_is_html || looks_like_html(&page_body);
         let (title, content) = match (request.format, page_is_html) {
             (FetchFormat::Html, true) => (
                 extract::title_from_html(&page_body),

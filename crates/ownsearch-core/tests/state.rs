@@ -352,7 +352,9 @@ fn deleting_an_override_restores_the_instance_policy_flags() {
         .expect("row");
     assert!(restored.scan_enabled);
     assert!(!restored.html_fallback_allowed);
-    let targets = store.scan_targets(500, &now_rfc3339()).expect("targets");
+    let targets = store
+        .scan_targets(500, &now_rfc3339(), false)
+        .expect("targets");
     assert!(
         targets
             .iter()

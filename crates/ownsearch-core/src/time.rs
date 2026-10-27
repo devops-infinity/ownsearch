@@ -32,7 +32,7 @@ pub fn now_rfc3339() -> String {
 }
 
 pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let shifted_days = days + 719_468;
+    let shifted_days = days.saturating_add(719_468);
     let era = shifted_days.div_euclid(146_097);
     let day_of_era = shifted_days.rem_euclid(146_097);
     let year_of_era =

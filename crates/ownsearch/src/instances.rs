@@ -132,6 +132,24 @@ pub(crate) fn run(args: InstancesArgs) -> anyhow::Result<()> {
             println!("instance {instance_id} is candidate again with no policy override");
             Ok(())
         }
+        InstancesAction::Add {
+            url,
+            pin,
+            json: as_json,
+        } => {
+            let instance_id = store
+                .add_manual_instance(&url, pin, &ownsearch_core::now_rfc3339())
+                .with_context(|| format!("adding {url}"))?;
+            let row = store
+                .get_instance(instance_id)?
+                .ok_or_else(|| anyhow::anyhow!("the added instance could not be read back"))?;
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&instance_to_json(&row))?);
+            } else {
+                println!("{} {} {}", row.instance_id, row.status.as_str(), row.url);
+            }
+            Ok(())
+        }
     }
 }
 

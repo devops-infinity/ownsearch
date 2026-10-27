@@ -1,11 +1,25 @@
+use std::sync::LazyLock;
+
 use crate::sanitize::sanitize;
 use ego_tree::NodeRef;
 use scraper::Html;
+use scraper::Selector;
 use scraper::node::Node;
 
 const MAX_TREE_DEPTH: usize = 512;
 const MAX_CANDIDATE_ROOTS: usize = 256;
 const CONTENT_SCAN_STEPS: usize = 2_000_000;
+
+static TITLE_SELECTOR: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("title").ok());
+static LINK_SELECTOR: LazyLock<Option<Selector>> =
+    LazyLock::new(|| Selector::parse("a[href]").ok());
+static MAIN_SELECTOR: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("main").ok());
+static ARTICLE_SELECTOR: LazyLock<Option<Selector>> =
+    LazyLock::new(|| Selector::parse("article").ok());
+static ROLE_MAIN_SELECTOR: LazyLock<Option<Selector>> =
+    LazyLock::new(|| Selector::parse("[role=main]").ok());
+static BODY_CANDIDATE_SELECTOR: LazyLock<Option<Selector>> =
+    LazyLock::new(|| Selector::parse("body div, body section, body article").ok());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Extracted {
@@ -42,9 +56,8 @@ pub(crate) fn title_from_html(html: &str) -> Option<String> {
 }
 
 pub(crate) fn title_of(document: &Html) -> Option<String> {
-    let selector = scraper::Selector::parse("title").ok()?;
     document
-        .select(&selector)
+        .select(TITLE_SELECTOR.as_ref()?)
         .next()
         .map(|element| sanitize(&element.text().collect::<String>()))
         .filter(|text| !text.is_empty())
@@ -52,12 +65,12 @@ pub(crate) fn title_of(document: &Html) -> Option<String> {
 
 pub(crate) fn links(html: &str, base: &url::Url) -> Vec<url::Url> {
     let document = Html::parse_document(html);
-    let Ok(selector) = scraper::Selector::parse("a[href]") else {
+    let Some(selector) = LINK_SELECTOR.as_ref() else {
         return Vec::new();
     };
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<url::Url> = Vec::new();
-    for element in document.select(&selector) {
+    for element in document.select(selector) {
         let Some(href) = element.value().attr("href") else {
             continue;
         };
@@ -166,19 +179,19 @@ fn prune_boilerplate(document: &mut Html) {
 }
 
 fn content_root(document: &Html) -> NodeRef<'_, Node> {
-    for candidate in ["main", "article", "[role=main]"] {
-        if let Ok(selector) = scraper::Selector::parse(candidate)
-            && let Some(element) = document.select(&selector).next()
+    for selector in [&*MAIN_SELECTOR, &*ARTICLE_SELECTOR, &*ROLE_MAIN_SELECTOR] {
+        if let Some(selector) = selector
+            && let Some(element) = document.select(selector).next()
         {
             return *element;
         }
     }
-    let Ok(selector) = scraper::Selector::parse("body div, body section, body article") else {
+    let Some(selector) = BODY_CANDIDATE_SELECTOR.as_ref() else {
         return document.tree.root();
     };
     let mut best: Option<(i64, NodeRef<'_, Node>)> = None;
     let mut steps = CONTENT_SCAN_STEPS;
-    'candidates: for element in document.select(&selector).take(MAX_CANDIDATE_ROOTS) {
+    'candidates: for element in document.select(selector).take(MAX_CANDIDATE_ROOTS) {
         let mut text_chars = 0i64;
         let mut link_chars = 0i64;
         let mut paragraphs = 0i64;

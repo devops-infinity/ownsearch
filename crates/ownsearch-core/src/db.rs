@@ -320,7 +320,7 @@ impl Store {
             .map_err(|_| Error::State("the writer connection lock was poisoned".into()))
     }
 
-    pub fn write_atomic<T>(&self, work: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    pub(crate) fn write_atomic<T>(&self, work: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let mut connection = self.writer_conn()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let value = work(&transaction)?;
@@ -464,12 +464,22 @@ impl Store {
     }
 
     pub fn ensure_source(&self, source_id: &str, name: &str, endpoint: &str) -> Result<()> {
+        self.ensure_source_with_kind(source_id, "searx_space", name, endpoint)
+    }
+
+    fn ensure_source_with_kind(
+        &self,
+        source_id: &str,
+        kind: &str,
+        name: &str,
+        endpoint: &str,
+    ) -> Result<()> {
         let connection = self.writer_conn()?;
         connection.execute(
             "INSERT INTO discovery_sources (source_id, kind, name, endpoint, created_at)
-             VALUES (?1, 'searx_space', ?2, ?3, ?4)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(source_id) DO UPDATE SET name = excluded.name, endpoint = excluded.endpoint",
-            params![source_id, name, endpoint, now_rfc3339()],
+            params![source_id, kind, name, endpoint, now_rfc3339()],
         )?;
         Ok(())
     }
@@ -572,6 +582,53 @@ impl Store {
             }
             Ok((added, changed, present))
         })
+    }
+
+    pub fn add_manual_instance(&self, url: &str, pinned: bool, now: &str) -> Result<i64> {
+        let normalized = crate::types::normalize_url(url)?;
+        let record = crate::instances::DiscoveredInstance {
+            url: normalized.clone(),
+            kind: crate::types::InstanceType::Normal,
+            rank: None,
+            version: None,
+            tls_grade: None,
+            tls_protocol: None,
+            certificate_not_after: None,
+            certificate_days_remaining: None,
+            http_grade: None,
+            csp_grade: None,
+            html_grade: None,
+            analytics: false,
+            ipv6: false,
+            uptime_month: None,
+            uptime_year: None,
+            search_success: None,
+            search_median_secs: None,
+            initial_success: None,
+            initial_secs: None,
+            google_success: None,
+            google_secs: None,
+            working_engines: Vec::new(),
+            exact_google_capability: false,
+            google_cse_capability: false,
+            asn_cidr: None,
+        };
+        self.ensure_source_with_kind("manual", "manual", "manual entry", "manual")?;
+        self.import_discovered(std::slice::from_ref(&record), "manual", None, now)?;
+        let instance_id = self
+            .find_instance_by_url(&normalized)?
+            .ok_or_else(|| Error::State("the manual instance was not stored".into()))?
+            .instance_id;
+        if pinned {
+            self.apply_policy_change(
+                instance_id,
+                None,
+                None,
+                Some(&json!({"pinned": true})),
+                &["operator.pinned".to_owned()],
+            )?;
+        }
+        Ok(instance_id)
     }
 
     fn upsert_instance_on(
@@ -687,9 +744,11 @@ impl Store {
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         drop(statement);
+        let present_urls: std::collections::HashSet<&str> =
+            present.iter().map(String::as_str).collect();
         let mut changed = 0;
         for (instance_id, url, status) in rows {
-            if present.iter().any(|item| item == &url) {
+            if present_urls.contains(url.as_str()) {
                 continue;
             }
             transaction.execute(
@@ -1185,9 +1244,13 @@ impl Store {
         Ok(self.list_instances(&filter)?.into_iter().next())
     }
 
-    pub fn scan_targets(&self, limit: usize, now: &str) -> Result<Vec<ScanTarget>> {
+    pub fn scan_targets(&self, limit: usize, now: &str, force: bool) -> Result<Vec<ScanTarget>> {
         let reader = self.reader_conn()?;
-        let schedule_clause = "AND (i.next_scan_at IS NULL OR i.next_scan_at <= ?2)";
+        let schedule_clause = if force {
+            ""
+        } else {
+            "AND (i.next_scan_at IS NULL OR i.next_scan_at <= ?2)"
+        };
         let sql = format!(
             "SELECT i.instance_id, i.normalized_url, i.lifecycle_status, i.instance_kind,
                     i.is_html_fallback_allowed, i.consecutive_successes, i.consecutive_failures
@@ -1211,12 +1274,21 @@ impl Store {
         let mut statement = reader.prepare(&sql)?;
         let rows =
             statement.query_map(params![i64::try_from(limit).unwrap_or(200), now], |row| {
-                let status: String = row.get(2)?;
+                let status_text: String = row.get(2)?;
                 let kind: String = row.get(3)?;
+                let status = InstanceStatus::parse(&status_text).ok_or_else(|| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::other(format!(
+                            "unknown lifecycle status {status_text:?}"
+                        ))),
+                    )
+                })?;
                 Ok(ScanTarget {
                     instance_id: row.get(0)?,
                     url: row.get(1)?,
-                    status: InstanceStatus::parse(&status).unwrap_or(InstanceStatus::Candidate),
+                    status,
                     kind: InstanceType::parse(&kind),
                     html_fallback_allowed: row.get::<_, i64>(4)? != 0,
                     consecutive_successes: row.get(5)?,
@@ -1594,8 +1666,9 @@ impl Store {
         let mut connection = self.writer_conn()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = crate::time::now_unix();
-        let cutoff =
-            |days: i64| crate::time::rfc3339(now.saturating_sub(days.saturating_mul(86_400)));
+        let cutoff = |days: i64| {
+            crate::time::rfc3339(now.saturating_sub(days.max(0).saturating_mul(86_400)))
+        };
         let probe_cutoff = cutoff(window.probe_days);
         let events = transaction.execute(
             "DELETE FROM instance_events WHERE occurred_at < ?1",
@@ -1843,6 +1916,20 @@ impl Store {
             params![instance_id],
             |row| row.get(0),
         )?;
+        if let Some(status) = status
+            && status == InstanceStatus::Active
+        {
+            let hard_gate: Option<i64> = transaction.query_row(
+                "SELECT hard_gate_passed FROM instances WHERE instance_id = ?1",
+                params![instance_id],
+                |row| row.get(0),
+            )?;
+            if !matches!(hard_gate, Some(value) if value != 0) {
+                return Err(Error::PolicyRefused(
+                    "an instance cannot be made active until it passes the hard gate".into(),
+                ));
+            }
+        }
         if let Some(status) = status {
             transaction.execute(
                 "UPDATE instances SET lifecycle_status = ?2, updated_at = ?3 WHERE instance_id = ?1",
@@ -1887,6 +1974,19 @@ impl Store {
             }
         }
         if let Some(fields) = override_fields {
+            let Some(fields) = fields.as_object() else {
+                return Err(Error::InvalidArgs(
+                    "the override fields must be a JSON object".into(),
+                ));
+            };
+            if let Some(unknown) = fields
+                .keys()
+                .find(|key| !crate::crud::OVERRIDE_FIELDS.contains(&key.as_str()))
+            {
+                return Err(Error::InvalidArgs(format!(
+                    "unknown override field {unknown}"
+                )));
+            }
             let scan_enabled = fields.get("scanEnabled").and_then(Value::as_bool);
             let html_allowed = fields.get("htmlFallbackAllowed").and_then(Value::as_bool);
             let pinned = fields.get("pinned").and_then(Value::as_bool);

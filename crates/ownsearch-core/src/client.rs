@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, LOCATION};
@@ -9,6 +11,27 @@ use crate::config::Settings;
 use crate::error::{Error, Result};
 
 const MAX_REDIRECTS: u8 = 3;
+const PINNED_CLIENTS: usize = 256;
+
+fn configure(
+    timeout: Duration,
+    connect_timeout: Duration,
+    user_agent: &str,
+    proxy: Option<reqwest::Proxy>,
+) -> reqwest::ClientBuilder {
+    let builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(connect_timeout)
+        .redirect(Policy::none())
+        .pool_max_idle_per_host(8)
+        .pool_idle_timeout(Duration::from_secs(30))
+        .user_agent(user_agent)
+        .https_only(false);
+    match proxy {
+        Some(proxy) => builder.proxy(proxy),
+        None => builder.no_proxy(),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Fetched {
@@ -60,9 +83,12 @@ impl Fetched {
 #[derive(Clone, Debug)]
 pub struct FleetClient {
     http: reqwest::Client,
+    pinned: Arc<Mutex<HashMap<String, reqwest::Client>>>,
     user_agent: String,
     max_bytes: usize,
     timeout: Duration,
+    connect_timeout: Duration,
+    proxy: Option<reqwest::Proxy>,
     allow_private: bool,
 }
 
@@ -77,30 +103,52 @@ impl FleetClient {
 
     fn build(settings: &Settings, timeout_secs: u64) -> Result<Self> {
         install_crypto_provider();
-        let mut builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
-            .connect_timeout(Duration::from_secs(settings.connect_timeout_secs()))
-            .redirect(Policy::none())
-            .pool_max_idle_per_host(8)
-            .pool_idle_timeout(Duration::from_secs(30))
-            .user_agent(settings.user_agent())
-            .https_only(false);
-        builder = match settings.proxy() {
-            Some(proxy) => builder.proxy(reqwest::Proxy::all(proxy).map_err(|error| {
+        let timeout = Duration::from_secs(timeout_secs);
+        let connect_timeout = Duration::from_secs(settings.connect_timeout_secs());
+        let proxy = match settings.proxy() {
+            Some(proxy) => Some(reqwest::Proxy::all(proxy).map_err(|error| {
                 Error::Config(format!("OWNSEARCH_PROXY does not parse: {error}"))
             })?),
-            None => builder.no_proxy(),
+            None => None,
         };
-        let http = builder
+        let user_agent = settings.user_agent();
+        let http = configure(timeout, connect_timeout, &user_agent, proxy.clone())
             .build()
             .map_err(|error| Error::network("building the HTTP client", error))?;
         Ok(Self {
             http,
-            user_agent: settings.user_agent(),
+            pinned: Arc::new(Mutex::new(HashMap::new())),
+            user_agent,
             max_bytes: settings.max_upstream_bytes(),
-            timeout: Duration::from_secs(timeout_secs),
+            timeout,
+            connect_timeout,
+            proxy,
             allow_private: settings.allow_private_instances(),
         })
+    }
+
+    fn pinned_client(&self, host: &str, address: std::net::SocketAddr) -> Result<reqwest::Client> {
+        if let Ok(cache) = self.pinned.lock()
+            && let Some(client) = cache.get(host)
+        {
+            return Ok(client.clone());
+        }
+        let client = configure(
+            self.timeout,
+            self.connect_timeout,
+            &self.user_agent,
+            self.proxy.clone(),
+        )
+        .resolve(host, address)
+        .build()
+        .map_err(|error| Error::network("building a pinned HTTP client", error))?;
+        if let Ok(mut cache) = self.pinned.lock() {
+            if cache.len() >= PINNED_CLIENTS {
+                cache.clear();
+            }
+            cache.insert(host.to_owned(), client.clone());
+        }
+        Ok(client)
     }
 
     pub fn user_agent(&self) -> &str {
@@ -118,18 +166,26 @@ impl FleetClient {
         let mut hops = 0u8;
         let mut redirects: Vec<String> = Vec::new();
         loop {
-            if !self.allow_private && !crate::network_guard::url_is_public(&current).await {
-                return Err(Error::PolicyRefused(
-                    "the url resolves to a non-public address".into(),
-                ));
-            }
+            let client = if self.allow_private {
+                self.http.clone()
+            } else {
+                let Some(address) = crate::network_guard::resolved_public_address(&current).await
+                else {
+                    return Err(Error::PolicyRefused(
+                        "the url resolves to a non-public address".into(),
+                    ));
+                };
+                match current.host() {
+                    Some(url::Host::Domain(host)) => self.pinned_client(host, address)?,
+                    _ => self.http.clone(),
+                }
+            };
             if current.scheme() == "http" && !host_is_loopback(&current) {
                 return Err(Error::PolicyRefused(
                     "plain http is only allowed for a loopback test server".into(),
                 ));
             }
-            let request = self
-                .http
+            let request = client
                 .get(current.clone())
                 .timeout(self.timeout)
                 .header(ACCEPT, accept)

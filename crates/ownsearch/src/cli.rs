@@ -160,7 +160,10 @@ pub(crate) struct ScanArgs {
     pub(crate) no_search_probe: bool,
     #[arg(long, help = "Skip the exact-Google probe")]
     pub(crate) no_google_probe: bool,
-    #[arg(long, help = "Probe an instance before its scheduled scan time")]
+    #[arg(
+        long,
+        help = "Probe every instance now, before its scheduled scan time"
+    )]
     pub(crate) force: bool,
     #[arg(long, help = "Print the report as JSON")]
     pub(crate) json: bool,
@@ -239,6 +242,15 @@ pub(crate) enum InstancesAction {
     ResetStatus {
         #[arg(help = "Instance identifier")]
         instance_id: i64,
+    },
+    #[command(about = "Add an instance by URL, including a localhost or Docker instance")]
+    Add {
+        #[arg(help = "Instance URL, for example http://localhost:8888/")]
+        url: String,
+        #[arg(long, help = "Pin the instance so it stays eligible")]
+        pin: bool,
+        #[arg(long, help = "Print the new row as JSON")]
+        json: bool,
     },
 }
 

@@ -401,9 +401,9 @@ impl Settings {
                     .scan_concurrency
                     .or(env_parse(&env, "OWNSEARCH_SCAN_CONCURRENCY")?)
                     .or(profile.scan_concurrency)
-                    .unwrap_or(1),
+                    .unwrap_or(4),
                 1,
-                4,
+                8,
                 "scan_concurrency",
             )?,
             scan_jitter_ms: env_parse::<u64>(&env, "OWNSEARCH_SCAN_JITTER_MS")?
@@ -997,7 +997,7 @@ impl Settings {
                 "search_queue_wait_secs".to_owned(),
                 self.search_queue_wait_secs.to_string(),
             ),
-            ("preset".to_owned(), format!("{:?}", self.preset)),
+            ("preset".to_owned(), self.preset.as_str().to_owned()),
             ("cache_ttl_secs".to_owned(), self.cache_ttl_secs.to_string()),
             ("ai_db_mode".to_owned(), self.ai_db_mode.as_str().to_owned()),
             (

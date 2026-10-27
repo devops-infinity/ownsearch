@@ -30,7 +30,8 @@ USER ownsearch
 ENV OWNSEARCH_STATE_DIR=/home/ownsearch/.local/state/ownsearch \
     OWNSEARCH_LEDGER_DIR=/home/ownsearch/.local/share/ownsearch/ledger \
     OWNSEARCH_BIND=0.0.0.0:8774 \
-    OWNSEARCH_BROWSER=false
+    OWNSEARCH_BROWSER=false \
+    OWNSEARCH_LOG_FORMAT=json
 
 EXPOSE 8774
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \

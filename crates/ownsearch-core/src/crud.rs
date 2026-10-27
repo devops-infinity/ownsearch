@@ -19,7 +19,8 @@ const INSTANCE_FIELDS: [&str; 6] = [
     "pinned",
     "denied",
 ];
-const OVERRIDE_FIELDS: [&str; 4] = ["scanEnabled", "htmlFallbackAllowed", "pinned", "denied"];
+pub(crate) const OVERRIDE_FIELDS: [&str; 4] =
+    ["scanEnabled", "htmlFallbackAllowed", "pinned", "denied"];
 
 #[derive(Debug, Clone)]
 pub struct CrudRequest {
@@ -59,6 +60,18 @@ pub struct CrudService {
     snapshot_path: std::path::PathBuf,
     store: Arc<Store>,
     state: Mutex<CrudState>,
+}
+
+impl std::fmt::Debug for CrudService {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CrudService")
+            .field("mode", &self.mode)
+            .field("max_changes", &self.max_changes)
+            .field("confirm_ttl", &self.confirm_ttl)
+            .field("min_interval", &self.min_interval)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CrudService {
@@ -124,7 +137,10 @@ impl CrudService {
             drop(state);
             let _ = self.store.append_event(&EventRecord {
                 kind: "ai_crud_refused".to_owned(),
-                instance_id: Some(validated.instance_id),
+                instance_id: validated
+                    .create_url
+                    .is_none()
+                    .then_some(validated.instance_id),
                 run_id: None,
                 probe_id: None,
                 old_value: None,
@@ -153,7 +169,6 @@ impl CrudService {
             drop(state);
             return Err(Error::ConfirmationExpired);
         }
-        let instance_id = validated.instance_id;
         let entity = validated.entity;
         let operation = validated.operation;
         let fields = pending.fields.clone();
@@ -164,7 +179,14 @@ impl CrudService {
         }
         state.last_apply = Some(Instant::now());
         drop(state);
-        self.apply(instance_id, entity, operation, &fields, &reason)?;
+        let instance_id = self.apply(
+            validated.instance_id,
+            validated.create_url.as_deref(),
+            entity,
+            operation,
+            &fields,
+            &reason,
+        )?;
         let record = self.store.get_instance(instance_id)?;
         if let Err(error) = self.store.append_event(&EventRecord {
             kind: "ai_crud_apply".to_owned(),
@@ -227,7 +249,10 @@ impl CrudService {
         );
         if let Err(error) = self.store.append_event(&EventRecord {
             kind: "ai_crud_preview".to_owned(),
-            instance_id: Some(validated.instance_id),
+            instance_id: validated
+                .create_url
+                .is_none()
+                .then_some(validated.instance_id),
             run_id: None,
             probe_id: None,
             old_value: None,
@@ -272,28 +297,44 @@ impl CrudService {
     }
 
     fn validate(&self, request: &CrudRequest) -> Result<Validated> {
-        let instance_id = match (request.instance_id, &request.url) {
-            (Some(id), _) => id,
-            (None, Some(url)) => self
-                .store
-                .find_instance_by_url(url)?
-                .map(|row| row.instance_id)
-                .ok_or_else(|| Error::InvalidArgs(format!("no instance matches {url}")))?,
-            (None, None) => {
-                return Err(Error::InvalidArgs(
-                    "name the instance with instance_id or url".into(),
-                ));
+        let creating = matches!(
+            (request.entity, request.operation),
+            (CrudEntity::Instance, CrudOperation::Create)
+        );
+        let (instance_id, create_url) = if creating {
+            let url = request
+                .url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| Error::InvalidArgs("give the url of the instance to add".into()))?;
+            crate::types::normalize_url(url)?;
+            (0, Some(url.to_owned()))
+        } else {
+            let instance_id = match (request.instance_id, &request.url) {
+                (Some(id), _) => id,
+                (None, Some(url)) => self
+                    .store
+                    .find_instance_by_url(url)?
+                    .map(|row| row.instance_id)
+                    .ok_or_else(|| Error::InvalidArgs(format!("no instance matches {url}")))?,
+                (None, None) => {
+                    return Err(Error::InvalidArgs(
+                        "name the instance with instance_id or url".into(),
+                    ));
+                }
+            };
+            if self.store.get_instance(instance_id)?.is_none() {
+                return Err(Error::InvalidArgs(format!(
+                    "instance {instance_id} does not exist"
+                )));
             }
+            (instance_id, None)
         };
-        if self.store.get_instance(instance_id)?.is_none() {
-            return Err(Error::InvalidArgs(format!(
-                "instance {instance_id} does not exist"
-            )));
-        }
         match (request.entity, request.operation) {
             (CrudEntity::PolicyOverride, CrudOperation::Create | CrudOperation::Update)
             | (CrudEntity::PolicyOverride, CrudOperation::Delete)
-            | (CrudEntity::Instance, CrudOperation::Update)
+            | (CrudEntity::Instance, CrudOperation::Create | CrudOperation::Update)
             | (CrudEntity::Instance, CrudOperation::Retire | CrudOperation::Restore) => {}
             (entity, operation) => {
                 return Err(Error::PolicyRefused(format!(
@@ -325,10 +366,11 @@ impl CrudService {
                 self.max_changes
             )));
         }
-        let needs_fields = matches!(
-            request.operation,
-            CrudOperation::Create | CrudOperation::Update
-        );
+        let needs_fields = match (request.entity, request.operation) {
+            (CrudEntity::Instance, CrudOperation::Create) => false,
+            (_, CrudOperation::Create | CrudOperation::Update) => true,
+            _ => false,
+        };
         if needs_fields && fields.is_empty() {
             return Err(Error::InvalidArgs(
                 "name at least one field to change".into(),
@@ -343,6 +385,7 @@ impl CrudService {
             .ok_or_else(|| Error::InvalidArgs("give a reason of at least 3 characters".into()))?;
         Ok(Validated {
             instance_id,
+            create_url,
             entity: request.entity,
             operation: request.operation,
             fields: Value::Object(fields),
@@ -351,16 +394,21 @@ impl CrudService {
     }
 
     fn preview(&self, validated: &Validated) -> Result<Preview> {
-        let instance = self
-            .store
-            .get_instance(validated.instance_id)?
-            .ok_or_else(|| Error::InvalidArgs("instance missing".into()))?;
-        let before = match validated.entity {
-            CrudEntity::Instance => crate::db::instance_to_json(&instance),
-            CrudEntity::PolicyOverride => self
+        let creating = validated.create_url.is_some();
+        let before = if creating {
+            Value::Null
+        } else {
+            let instance = self
                 .store
-                .get_override(validated.instance_id)?
-                .unwrap_or(Value::Null),
+                .get_instance(validated.instance_id)?
+                .ok_or_else(|| Error::InvalidArgs("instance missing".into()))?;
+            match validated.entity {
+                CrudEntity::Instance => crate::db::instance_to_json(&instance),
+                CrudEntity::PolicyOverride => self
+                    .store
+                    .get_override(validated.instance_id)?
+                    .unwrap_or(Value::Null),
+            }
         };
         let after = match validated.operation {
             CrudOperation::Delete => Value::Null,
@@ -380,7 +428,10 @@ impl CrudService {
             }
             CrudOperation::Create | CrudOperation::Update => {
                 let mut preview = if before.is_null() {
-                    json!({"instanceId": validated.instance_id})
+                    match &validated.create_url {
+                        Some(url) => json!({"url": url}),
+                        None => json!({"instanceId": validated.instance_id}),
+                    }
                 } else {
                     before.clone()
                 };
@@ -394,14 +445,20 @@ impl CrudService {
                 preview
             }
         };
-        if validated.entity == CrudEntity::Instance
+        if !creating
+            && validated.entity == CrudEntity::Instance
             && let Some(status) = validated.fields.get("status").and_then(Value::as_str)
             && status == "active"
-            && instance.hard_gate_passed != Some(true)
         {
-            return Err(Error::PolicyRefused(
-                "status active needs a passing hard gate; run a scan first".into(),
-            ));
+            let instance = self
+                .store
+                .get_instance(validated.instance_id)?
+                .ok_or_else(|| Error::InvalidArgs("instance missing".into()))?;
+            if instance.hard_gate_passed != Some(true) {
+                return Err(Error::PolicyRefused(
+                    "status active needs a passing hard gate; run a scan first".into(),
+                ));
+            }
         }
         Ok(Preview {
             before: Some(before),
@@ -412,12 +469,14 @@ impl CrudService {
     fn apply(
         &self,
         instance_id: i64,
+        create_url: Option<&str>,
         entity: CrudEntity,
         operation: CrudOperation,
         fields: &Value,
         reason: &str,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let reasons = vec![format!("ai.reason:{}", crate::sanitize::cap(reason, 80).0)];
+        let mut instance_id = instance_id;
         match operation {
             CrudOperation::Delete => {
                 self.store.delete_override(instance_id)?;
@@ -444,6 +503,11 @@ impl CrudService {
                     .set_status(instance_id, InstanceStatus::Candidate, &reasons)?;
             }
             CrudOperation::Create | CrudOperation::Update => {
+                if let Some(url) = create_url {
+                    instance_id =
+                        self.store
+                            .add_manual_instance(url, false, &crate::time::now_rfc3339())?;
+                }
                 let status = match fields.get("status").and_then(Value::as_str) {
                     Some(raw) => {
                         let status = InstanceStatus::parse(raw)
@@ -489,12 +553,13 @@ impl CrudService {
                 )?;
             }
         }
-        Ok(())
+        Ok(instance_id)
     }
 }
 
 struct Validated {
     instance_id: i64,
+    create_url: Option<String>,
     entity: CrudEntity,
     operation: CrudOperation,
     fields: Value,
@@ -529,6 +594,7 @@ fn validate_value(key: &str, value: &Value) -> Result<()> {
 fn fingerprint(validated: &Validated) -> String {
     let payload = json!({
         "instanceId": validated.instance_id,
+        "createUrl": validated.create_url,
         "entity": validated.entity.as_str(),
         "operation": validated.operation.as_str(),
         "fields": validated.fields,
@@ -754,6 +820,61 @@ mod tests {
         service.begin(apply).expect("restore");
         let row = store.get_instance(1).expect("read").expect("row");
         assert_eq!(row.status, InstanceStatus::Candidate);
+    }
+
+    #[test]
+    fn an_instance_can_be_added_from_a_url_after_a_preview() {
+        let store = store_with_one();
+        let service = CrudService::new(
+            &settings(AiDbMode::ReadWrite, "create-instance"),
+            Arc::clone(&store),
+        );
+        let mut create = request(true, BTreeMap::new());
+        create.operation = CrudOperation::Create;
+        create.entity = CrudEntity::Instance;
+        create.instance_id = None;
+        create.url = Some("http://localhost:8888/".to_owned());
+        let preview = service.begin(create).expect("preview create");
+        assert!(!preview.applied);
+        let after = preview.after.expect("preview body");
+        assert_eq!(
+            after.get("url").and_then(Value::as_str),
+            Some("http://localhost:8888/")
+        );
+        let token = preview.confirmation_token.expect("token");
+        let mut apply = request(false, BTreeMap::new());
+        apply.operation = CrudOperation::Create;
+        apply.entity = CrudEntity::Instance;
+        apply.instance_id = None;
+        apply.url = Some("http://localhost:8888/".to_owned());
+        apply.confirmation_token = Some(token);
+        let applied = service.begin(apply).expect("apply create");
+        assert!(applied.applied);
+        let record = applied.record.expect("record");
+        assert_eq!(
+            record.get("url").and_then(Value::as_str),
+            Some("http://localhost:8888/")
+        );
+        let rows = store
+            .list_instances(&crate::db::InstanceFilter {
+                limit: 50,
+                ..crate::db::InstanceFilter::default()
+            })
+            .expect("list");
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn creating_an_instance_without_a_url_is_refused() {
+        let store = store_with_one();
+        let service = CrudService::new(&settings(AiDbMode::ReadWrite, "create-no-url"), store);
+        let mut create = request(true, BTreeMap::new());
+        create.operation = CrudOperation::Create;
+        create.entity = CrudEntity::Instance;
+        create.instance_id = None;
+        create.url = None;
+        let error = service.begin(create).expect_err("no url");
+        assert!(error.to_string().contains("url"));
     }
 
     #[test]

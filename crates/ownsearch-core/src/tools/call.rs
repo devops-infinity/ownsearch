@@ -65,6 +65,7 @@ pub async fn call(
                 tracing::error!(
                     tool = %tool_name,
                     code = error.code(),
+                    error = %error,
                     causes = ?error.causes(),
                     "tool call failed"
                 );

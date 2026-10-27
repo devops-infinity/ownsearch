@@ -102,6 +102,51 @@ pub(crate) async fn url_is_public(url: &url::Url) -> bool {
     }
 }
 
+pub(crate) fn host_is_local(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(address)) => !is_public(IpAddr::V4(address)),
+        Some(url::Host::Ipv6(address)) => !is_public(IpAddr::V6(address)),
+        Some(url::Host::Domain(host)) => {
+            let host = host.to_ascii_lowercase();
+            host == "localhost"
+                || host.ends_with(".localhost")
+                || host.ends_with(".local")
+                || host.ends_with(".internal")
+        }
+        None => false,
+    }
+}
+
+pub(crate) async fn resolved_public_address(url: &url::Url) -> Option<std::net::SocketAddr> {
+    let port = url.port_or_known_default().unwrap_or(443);
+    match url.host()? {
+        url::Host::Ipv4(address) => is_public(IpAddr::V4(address))
+            .then(|| std::net::SocketAddr::new(IpAddr::V4(address), port)),
+        url::Host::Ipv6(address) => is_public(IpAddr::V6(address))
+            .then(|| std::net::SocketAddr::new(IpAddr::V6(address), port)),
+        url::Host::Domain(host) => {
+            let lookup = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::net::lookup_host((host, port)),
+            )
+            .await;
+            let Ok(Ok(addresses)) = lookup else {
+                return None;
+            };
+            let mut chosen = None;
+            for address in addresses {
+                if !is_public(address.ip()) {
+                    return None;
+                }
+                if chosen.is_none() {
+                    chosen = Some(address);
+                }
+            }
+            chosen
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +224,18 @@ mod tests {
         }
         let url = url::Url::parse("https://1.1.1.1/").expect("url");
         assert!(url_is_public(&url).await);
+    }
+
+    #[tokio::test]
+    async fn a_public_url_resolves_to_a_pinned_address() {
+        let url = url::Url::parse("https://1.1.1.1/x").expect("url");
+        let pinned = resolved_public_address(&url).await.expect("pinned");
+        assert_eq!(pinned.ip().to_string(), "1.1.1.1");
+        assert_eq!(pinned.port(), 443);
+        let private = url::Url::parse("https://127.0.0.1:8443/").expect("url");
+        assert!(resolved_public_address(&private).await.is_none());
+        let local = url::Url::parse("https://localhost:8443/").expect("url");
+        assert!(resolved_public_address(&local).await.is_none());
     }
 
     #[test]

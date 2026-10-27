@@ -166,7 +166,7 @@ Field presets control payload size. `minimal` keeps title, URL, rank, score, and
 - A pinned instance stays in the selection even when its score would drop it. A pin overrides the score order, the hysteresis, the per-network cap, and a Google requirement, and it lets a candidate or missing record enter the fleet. A failed hard gate still excludes it.
 - A discovery record whose host resolves to a loopback, private, link-local, documentation, or reserved address is skipped, and an explicit scan of a denied, disabled, retired, or cooling instance is refused.
 - One probe per kind per instance per run.
-- Probes run one at a time by default, with jitter. `OWNSEARCH_SCAN_CONCURRENCY` may raise the count for any run, scheduled or on demand.
+- Probes run four at a time by default, with jitter. `OWNSEARCH_SCAN_CONCURRENCY` changes the count for any run, scheduled or on demand.
 - A `429` starts a cooldown and keeps the instance's status. A `401` or a challenge page quarantines it at once. A `403` counts as a failed scan: it reschedules the scan and moves the instance to probation or quarantine once the failure count passes its threshold. Repeated failures also lower its score.
 - The user agent names the product: `OwnSearch (MCP fleet scanner; +https://github.com/devops-infinity/ownsearch) v<version>`.
 - No proxy rotation, no browser automation against instances, no header spoofing.
@@ -222,7 +222,7 @@ Most environment variables have a matching profile key: drop the `OWNSEARCH_` pr
 - `OWNSEARCH_DISCOVERY_URL`: discovery source. Default `https://searx.space/data/instances.json`.
 - `OWNSEARCH_DISCOVERY_REFRESH_SECS`: refresh window. Default 21600.
 - `OWNSEARCH_OFFLINE`: skip discovery and use local state only. Default false.
-- `OWNSEARCH_SCAN_CONCURRENCY`: parallel probes, 1 to 4. Default 1.
+- `OWNSEARCH_SCAN_CONCURRENCY`: parallel probes, 1 to 8. Default 4.
 - `OWNSEARCH_SCAN_JITTER_MS`: random delay between probes, up to this many milliseconds. Default 250.
 - `OWNSEARCH_PROBE_TIMEOUT_SECS`: per-request timeout for each probe step. Default 15; one probe stops after five times this value.
 - `OWNSEARCH_SCAN_DEADLINE_SECS`: whole-scan deadline. Default 600, from 30 to 7200. The scan stops with a warning when it passes.
@@ -376,6 +376,11 @@ Tables: `schema_migrations`, `application_metadata`, `discovery_sources`, `disco
 - `ownsearch instances list [--status S] [--limit N] [--json]`
 - `ownsearch instances show [ID] [--url URL] [--json]`
 - `ownsearch instances pin ID`, `unpin ID`, `deny ID [--reason TEXT]`, `reset-status ID`
+- `ownsearch instances add URL [--pin] [--json]`
+
+### Your own instance
+
+`ownsearch instances add http://localhost:8888/ --pin` stores a SearXNG instance you run yourself, whether it listens on a localhost port, a Docker network address, or any other private address. The instance starts as a candidate. A scan probes it like any other instance, and two passing probes promote it to active, after which searches use it. A loopback or private host skips the TLS and certificate gate, because those checks describe a public host. The address rule still applies: set `OWNSEARCH_ALLOW_PRIVATE_INSTANCES=true`, and keep the instance on a network you control, since the same setting lets a hostile discovery document point the scanner at a local service.
 
 ## AI-assisted database changes
 
@@ -383,6 +388,7 @@ Write mode is on by default. Every change still needs a preview, then a separate
 
 1. The client calls `ownsearch_db_crud` with `dry_run: true`. OwnSearch validates the entity, the field allowlist, the value types, and the lifecycle transition, then returns a before-and-after preview and a one-use token with a lifetime. The minimum interval between applies is enforced when the token is used.
 2. The client calls again with `dry_run: false` and the token. OwnSearch applies exactly the previewed change in one transaction, appends a lifecycle event, regenerates the snapshot, and returns the committed record.
+3. To add an instance, call the same tool with `operation: create`, `entity: instance`, and `url` set to the instance address. The preview and token flow is identical, and the instance is stored exactly as `ownsearch instances add` stores it.
 3. An expired token, a changed preview, a replayed token, a raw SQL field, an unknown field, or read-only mode all return a stable error with a remedy, and every refusal is written to the event history.
 
 The tool can create or remove a policy override, update lifecycle and policy fields, retire an instance, or restore a retired or missing instance. It cannot delete an instance row, rewrite probes, or forge events. Setting `status` to `active` requires a passing hard gate.

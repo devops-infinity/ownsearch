@@ -41,7 +41,8 @@ mod tools;
 mod types;
 mod watchdog;
 
-pub use browser::Renderer;
+pub use browser::{RenderConfig, Renderer};
+pub use cache::ResponseCache;
 pub use cleanup::{CleanupReport, clean};
 pub use client::{FleetClient, install_crypto_provider};
 pub use config::{
@@ -51,22 +52,23 @@ pub use config::{
 pub use context::ToolContext;
 pub use crud::{CrudRequest, CrudService};
 pub use db::{
-    CapabilityRecord, EventRecord, InstanceFilter, InstanceRow, KeepWindow, ProbeRecord,
-    ScanUpdate, StatusCounts, Store, TlsRecord, instance_to_json,
+    CapabilityRecord, EventRecord, FleetRow, InstanceFilter, InstanceRow, KeepWindow, ProbeRecord,
+    ScanTarget, ScanUpdate, StatusCounts, Store, TlsRecord, instance_to_json,
 };
 pub use error::{Error, Result};
-pub use fetch::{FetchRequest, fetch as fetch_page};
+pub use fetch::{FetchOutcome, FetchRequest, fetch as fetch_page};
 pub use fsutil::write_atomic;
 pub use instances::{BootstrapSnapshot, DiscoveredInstance};
 pub use ledger::{CallRecord, Ledger, existing_key, load_or_create_key, rotate, verify};
-pub use merge::{Observation, merge};
+pub use merge::{MergeOutput, MergedResult, Observation, merge};
 pub use response::ScanOutput;
 pub use sanitize::{cap, sanitize};
 pub use scanner::{ScanOptions, refresh_discovery, run_scan};
-pub use search::{SearchRequest, search};
+pub use search::{SearchOutcome, SearchRequest, search};
 pub use searxng::{ProbeReport, SearchQuery, config_client, search_html, search_json};
 pub use server::{OwnsearchHandler, serve_http, serve_stdio};
 pub use time::{now_rfc3339, now_unix, parse_rfc3339, rfc3339};
+pub use tls_probe::TlsProber;
 pub use tools::call as call_tool;
 pub use tools::definitions as tool_definitions;
 pub use tools::specs::{SPECS, ToolSpec};

@@ -120,13 +120,13 @@ pub struct ToolContext {
     pub settings: Settings,
     pub store: Arc<Store>,
     pub client: FleetClient,
-    pub probe_client: FleetClient,
-    pub tls: TlsProber,
-    pub browser: crate::browser::Renderer,
-    pub heartbeat: std::sync::Arc<crate::watchdog::Heartbeat>,
-    pub ledger: std::sync::Arc<Ledger>,
-    pub cache: ResponseCache,
-    pub crud: crate::crud::CrudService,
+    pub(crate) probe_client: FleetClient,
+    pub(crate) tls: TlsProber,
+    pub(crate) browser: crate::browser::Renderer,
+    pub(crate) heartbeat: std::sync::Arc<crate::watchdog::Heartbeat>,
+    pub(crate) ledger: std::sync::Arc<Ledger>,
+    pub(crate) cache: ResponseCache,
+    pub(crate) crud: crate::crud::CrudService,
     pub(crate) metrics: Arc<Metrics>,
     round_robin: std::sync::atomic::AtomicUsize,
     args_key: [u8; 32],
@@ -250,7 +250,7 @@ impl ToolContext {
         let waiting = self.search_queue.fetch_add(1, Ordering::SeqCst) + 1;
         if waiting > self.settings.search_queue_limit() {
             self.search_queue.fetch_sub(1, Ordering::SeqCst);
-            return Err(Error::RateLimited {
+            return Err(Error::Busy {
                 message: format!(
                     "{} searches are already waiting; the queue limit is {}",
                     waiting.saturating_sub(1),
@@ -268,7 +268,7 @@ impl ToolContext {
         match permit {
             Ok(Ok(permit)) => Ok(permit),
             Ok(Err(_)) => Err(Error::State("the search queue closed".into())),
-            Err(_) => Err(Error::RateLimited {
+            Err(_) => Err(Error::Busy {
                 message: format!(
                     "no search slot freed within {} seconds",
                     self.settings.search_queue_wait_secs()

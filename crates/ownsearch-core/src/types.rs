@@ -13,6 +13,16 @@ pub enum Preset {
     Full,
 }
 
+impl Preset {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Minimal => "minimal",
+            Self::Standard => "standard",
+            Self::Full => "full",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
@@ -412,24 +422,6 @@ pub(crate) fn instance_slug(raw: &str) -> String {
         "instance".to_owned()
     } else {
         slug
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-
-pub(crate) struct NormalizedUrl(String);
-
-impl TryFrom<&str> for NormalizedUrl {
-    type Error = Error;
-
-    fn try_from(raw: &str) -> Result<Self, Self::Error> {
-        normalize_url(raw).map(Self)
-    }
-}
-
-impl From<NormalizedUrl> for String {
-    fn from(value: NormalizedUrl) -> Self {
-        value.0
     }
 }
 

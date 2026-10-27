@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
@@ -10,6 +9,7 @@ use crate::types::{InstanceType, normalize_url};
 pub(crate) const BOOTSTRAP_JSON: &str = include_str!("instances.bootstrap.json");
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct BootstrapSnapshot {
     pub schema_version: u32,
     pub captured_at: String,
@@ -18,6 +18,7 @@ pub struct BootstrapSnapshot {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct BootstrapSource {
     pub name: String,
     pub url: String,
@@ -71,6 +72,7 @@ pub(crate) struct BootstrapTls {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct Uptime {
     #[serde(default)]
     pub day: Option<f64>,
@@ -83,6 +85,7 @@ pub(crate) struct Uptime {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct Timing {
     #[serde(default)]
     pub initial_success_percent: Option<f64>,
@@ -125,6 +128,7 @@ pub(crate) struct DiscoveryMetadata {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DiscoveryInstance {
     #[serde(default)]
     pub main: Option<bool>,
@@ -150,6 +154,7 @@ pub(crate) struct DiscoveryInstance {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DiscoveryHttp {
     #[serde(default)]
     pub status_code: Option<u16>,
@@ -170,6 +175,7 @@ pub(crate) struct DiscoveryTls {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DiscoveryCertificate {
     #[serde(rename = "notAfter", default)]
     pub not_after: Option<String>,
@@ -184,6 +190,7 @@ pub(crate) struct DiscoveryCertificate {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DiscoveryName {
     #[serde(rename = "commonName", default)]
     pub common_name: Option<String>,
@@ -192,6 +199,7 @@ pub(crate) struct DiscoveryName {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DiscoveryTiming {
     #[serde(default)]
     pub initial: Option<DiscoveryStage>,
@@ -204,6 +212,7 @@ pub(crate) struct DiscoveryTiming {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DiscoveryStage {
     #[serde(rename = "success_percentage", default)]
     pub success_percentage: Option<f64>,
@@ -214,6 +223,7 @@ pub(crate) struct DiscoveryStage {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DiscoveryValue {
     #[serde(default)]
     pub value: Option<f64>,
@@ -224,6 +234,7 @@ pub(crate) struct DiscoveryValue {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DiscoverySearch {
     #[serde(rename = "success_percentage", default)]
     pub success_percentage: Option<f64>,
@@ -238,6 +249,7 @@ pub(crate) struct DiscoverySearch {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DiscoveryUptime {
     #[serde(rename = "uptimeDay", default)]
     pub day: Option<f64>,
@@ -250,6 +262,7 @@ pub(crate) struct DiscoveryUptime {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DiscoveryNetwork {
     #[serde(default)]
     pub ipv6: Option<bool>,
@@ -264,6 +277,7 @@ pub(crate) struct DiscoveryNetwork {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DiscoveryIp {
     #[serde(default)]
     pub field_type: Option<String>,

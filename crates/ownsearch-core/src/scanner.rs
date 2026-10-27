@@ -28,6 +28,7 @@ const SUCCESS_NEXT_SCAN_SECS: i64 = 3_600;
 const FAILURE_NEXT_SCAN_SECS: i64 = 900;
 const PROBE_STEP_COUNT: u64 = 5;
 const QUARANTINE_NEXT_SCAN_SECS: i64 = 21_600;
+const SCAN_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 const RESOLVE_CONCURRENCY: usize = 8;
 const RESOLVE_PASS_SECS: u64 = 60;
 
@@ -260,43 +261,68 @@ struct ScanGuard {
 }
 
 impl ScanGuard {
-    fn claim(ctx: &ToolContext) -> Result<Self> {
+    async fn claim(ctx: &ToolContext, force: bool) -> Result<Self> {
         let database = ctx.settings.database_path();
         let gap = std::time::Duration::from_secs(ctx.settings.scan_min_interval_secs());
-        let mut states = SCAN_STATES
-            .lock()
-            .map_err(|_| Error::State("the scan guard lock was poisoned".into()))?;
-        let state = states.entry(database.clone()).or_default();
-        if state.running {
-            return Err(Error::PolicyRefused(
-                "another scan is already running on this state database; wait for it to finish"
-                    .into(),
-            ));
-        }
-        if !gap.is_zero()
-            && let Some(finished) = state.finished_at
-            && finished.elapsed() < gap
         {
-            return Err(Error::PolicyRefused(format!(
-                "a scan finished less than {} seconds ago; wait before scanning again",
-                gap.as_secs()
-            )));
-        }
-        let lock = match crate::fsutil::try_file_lock(&ctx.settings.state_dir().join("scan")) {
-            Ok(Some(file)) => file,
-            Ok(None) => {
+            let mut states = SCAN_STATES
+                .lock()
+                .map_err(|_| Error::State("the scan guard lock was poisoned".into()))?;
+            let state = states.entry(database.clone()).or_default();
+            if state.running {
                 return Err(Error::PolicyRefused(
-                    "another session is scanning this state database; wait for it to finish".into(),
+                    "another scan is already running on this state database; wait for it to finish"
+                        .into(),
                 ));
             }
-            Err(error) => return Err(error),
-        };
-        state.running = true;
+            if !force
+                && !gap.is_zero()
+                && let Some(finished) = state.finished_at
+                && finished.elapsed() < gap
+            {
+                return Err(Error::PolicyRefused(format!(
+                    "a scan finished less than {} seconds ago; wait before scanning again",
+                    gap.as_secs()
+                )));
+            }
+        }
+        let lock = Self::wait_for_lock(ctx, force).await?;
+        {
+            let mut states = SCAN_STATES
+                .lock()
+                .map_err(|_| Error::State("the scan guard lock was poisoned".into()))?;
+            states.entry(database.clone()).or_default().running = true;
+        }
         Ok(Self {
             database,
             _lock: Some(lock),
             completed: false,
         })
+    }
+
+    async fn wait_for_lock(ctx: &ToolContext, force: bool) -> Result<std::fs::File> {
+        let path = ctx.settings.state_dir().join("scan");
+        let wait = if force {
+            SCAN_LOCK_WAIT
+        } else {
+            std::time::Duration::from_secs(5)
+        };
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            match crate::fsutil::try_file_lock(&path) {
+                Ok(Some(file)) => return Ok(file),
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                Ok(None) => {
+                    return Err(Error::PolicyRefused(
+                        "another session is scanning this state database; wait for it to finish"
+                            .into(),
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 }
 
@@ -325,13 +351,15 @@ pub async fn run_scan(
     cancellation: &CancellationToken,
 ) -> Result<ScanOutput> {
     let started = std::time::Instant::now();
-    let mut guard = ScanGuard::claim(ctx)?;
+    let mut guard = ScanGuard::claim(ctx, options.force).await?;
     if options.dry_run {
         let output = dry_run_scan(ctx, options, cancellation, started).await?;
         guard.mark_completed();
         return Ok(output);
     }
-    ctx.ensure_bootstrap()?;
+    if !ctx.settings.offline() {
+        ctx.ensure_bootstrap()?;
+    }
     let discovery = refresh_discovery(ctx, options.force_discovery, cancellation).await?;
     let mut warnings: Vec<String> = Vec::new();
     if let Some(error) = &discovery.error {
@@ -342,7 +370,9 @@ pub async fn run_scan(
     }
     let targets = match options.instance_id {
         Some(instance_id) => vec![explicit_target(ctx, instance_id, options.force)?],
-        None => ctx.store.scan_targets(options.limit, &now_rfc3339())?,
+        None => ctx
+            .store
+            .scan_targets(options.limit, &now_rfc3339(), options.force)?,
     };
     let mut probes: Vec<InstanceProbe> = Vec::new();
     let deadline = tokio::time::Instant::now()
@@ -375,7 +405,7 @@ pub async fn run_scan(
     } else {
         let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let mut set: JoinSet<InstanceProbe> = JoinSet::new();
-        for target in targets.clone() {
+        for target in targets {
             let permit = match permits.clone().acquire_owned().await {
                 Ok(permit) => permit,
                 Err(_) => break,
@@ -493,13 +523,23 @@ async fn dry_run_scan(
     let targets = match options.instance_id {
         Some(instance_id) => vec![explicit_target(ctx, instance_id, options.force)?],
         None => {
-            let stored = ctx.store.scan_targets(options.limit, &now_rfc3339())?;
+            let stored = ctx
+                .store
+                .scan_targets(options.limit, &now_rfc3339(), options.force)?;
             if stored.is_empty() {
-                warnings.push(
-                    "the state database holds no instances yet; the embedded bootstrap was previewed"
-                        .to_owned(),
-                );
-                bootstrap_targets(options.limit)?
+                if ctx.settings.offline() {
+                    warnings.push(
+                        "offline mode: the state database holds no instances, so nothing was previewed"
+                            .to_owned(),
+                    );
+                    Vec::new()
+                } else {
+                    warnings.push(
+                        "the state database holds no instances yet; the embedded bootstrap was previewed"
+                            .to_owned(),
+                    );
+                    bootstrap_targets(options.limit)?
+                }
             } else {
                 stored
             }
@@ -929,6 +969,8 @@ async fn probe_one_inner(
         parser_drift,
         successes: target.consecutive_successes,
         failures: target.consecutive_failures,
+        trusted_local: ctx.settings.allow_private_instances()
+            && crate::network_guard::host_is_local(&base),
     });
     let assessment = assess(
         &evidence,
@@ -1098,6 +1140,7 @@ struct ProbeEvidence<'a> {
     parser_drift: bool,
     successes: i64,
     failures: i64,
+    trusted_local: bool,
 }
 
 fn evidence_value(outcome: ProbeOutcome) -> Option<bool> {
@@ -1120,11 +1163,13 @@ fn build_evidence(input: ProbeEvidence<'_>) -> Evidence {
         parser_drift,
         successes,
         failures,
+        trusted_local,
     } = input;
     let version = config
         .and_then(|document| document.version.clone())
         .or_else(|| metrics.and_then(|item| item.version.clone()));
     Evidence {
+        trusted_local,
         tls_ok: tls.is_ok(),
         certificate_days: tls
             .days_remaining

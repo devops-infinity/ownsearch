@@ -5,12 +5,19 @@ import re
 today = datetime.date.today()
 text = pathlib.Path("deny.toml").read_text()
 stale = []
+undated = []
 identifiers = set()
-for match in re.finditer(r'id = "(RUSTSEC-[^"]+)".*?by (\d{4}-\d{2}-\d{2})', text, re.S):
-    ident, stamp = match.group(1), match.group(2)
+for match in re.finditer(r'\{\s*id = "(RUSTSEC-[^"]+)"(.*?)\}', text, re.S):
+    ident, body = match.group(1), match.group(2)
     identifiers.add(ident)
-    if datetime.date.fromisoformat(stamp) < today:
+    stamp = re.search(r"by (\d{4}-\d{2}-\d{2})", body)
+    if stamp is None:
+        undated.append(ident)
+        continue
+    if datetime.date.fromisoformat(stamp.group(1)) < today:
         stale.append(ident)
+if undated:
+    raise SystemExit("no recheck date in the reason: " + ", ".join(undated))
 if stale:
     raise SystemExit("past the recheck date: " + ", ".join(stale))
 

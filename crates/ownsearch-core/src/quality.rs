@@ -10,6 +10,7 @@ pub(crate) struct Policy {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Evidence {
+    pub trusted_local: bool,
     pub tls_ok: bool,
     pub certificate_days: Option<i64>,
     pub analytics: bool,
@@ -44,19 +45,21 @@ pub(crate) struct Assessment {
 pub(crate) fn assess(evidence: &Evidence, policy: Policy) -> Assessment {
     let mut reasons: Vec<String> = Vec::new();
     let mut passed = true;
-    if !evidence.tls_ok {
-        passed = false;
-        reasons.push("gate.tls_invalid".to_owned());
-    }
-    match evidence.certificate_days {
-        Some(days) if days >= policy.cert_min_days => {}
-        Some(_) => {
+    if !evidence.trusted_local {
+        if !evidence.tls_ok {
             passed = false;
-            reasons.push("gate.cert_expiring".to_owned());
+            reasons.push("gate.tls_invalid".to_owned());
         }
-        None => {
-            passed = false;
-            reasons.push("gate.cert_unknown".to_owned());
+        match evidence.certificate_days {
+            Some(days) if days >= policy.cert_min_days => {}
+            Some(_) => {
+                passed = false;
+                reasons.push("gate.cert_expiring".to_owned());
+            }
+            None => {
+                passed = false;
+                reasons.push("gate.cert_unknown".to_owned());
+            }
         }
     }
     if evidence.analytics {
@@ -372,6 +375,7 @@ mod tests {
 
     fn strong() -> Evidence {
         Evidence {
+            trusted_local: false,
             tls_ok: true,
             certificate_days: Some(80),
             analytics: false,

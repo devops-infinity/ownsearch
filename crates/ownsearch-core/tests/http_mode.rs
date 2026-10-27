@@ -122,6 +122,13 @@ async fn a_protected_route_refuses_a_missing_token() {
         .await
         .expect("request");
     assert_eq!(response.status().as_u16(), 401);
+    assert_eq!(
+        response
+            .headers()
+            .get("www-authenticate")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer realm=\"ownsearch\"")
+    );
     let body: Value = response.json().await.expect("body");
     assert_eq!(
         body.get("code").and_then(Value::as_str),
@@ -475,6 +482,61 @@ async fn a_disallowed_origin_is_refused() {
         .await
         .expect("request");
     assert_ne!(allowed.status().as_u16(), 403);
+    assert_eq!(
+        allowed
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("https://allowed.example")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_allowed_origin_gets_an_answered_preflight() {
+    let server = start(
+        "http-preflight",
+        &[("OWNSEARCH_ALLOWED_ORIGINS", "https://allowed.example")],
+    )
+    .await;
+    let response = server
+        .client
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/v1/search", server.base),
+        )
+        .header("origin", "https://allowed.example")
+        .header("access-control-request-method", "POST")
+        .send()
+        .await
+        .expect("request");
+    let status = response.status().as_u16();
+    let methods = response
+        .headers()
+        .get("access-control-allow-methods")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    assert_eq!(status, 204);
+    assert_eq!(methods.as_deref(), Some("GET, POST, DELETE, OPTIONS"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rest_call_without_a_json_content_type_is_refused() {
+    let server = start("http-media", &[("OWNSEARCH_BEARER_TOKENS", &token())]).await;
+    let response = server
+        .client
+        .post(format!("{}/v1/search", server.base))
+        .header("authorization", format!("Bearer {}", token()))
+        .header("content-type", "text/plain")
+        .body("{}")
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(response.status().as_u16(), 415);
+    let body: Value = response.json().await.expect("body");
+    assert_eq!(
+        body.get("code").and_then(Value::as_str),
+        Some("ownsearch.bad_request")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

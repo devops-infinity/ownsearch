@@ -17,6 +17,8 @@ pub enum Error {
     Upstream { status: u16, message: String },
     #[error("upstream rate limit: {message}")]
     RateLimited { message: String },
+    #[error("the service is busy: {message}")]
+    Busy { message: String },
     #[error("upstream answer could not be parsed as {format}")]
     ParserFailed {
         format: &'static str,
@@ -95,6 +97,7 @@ impl Error {
                 _ => "ownsearch.upstream_failed",
             },
             Self::RateLimited { .. } => "ownsearch.rate_limited",
+            Self::Busy { .. } => "ownsearch.busy",
             Self::ParserFailed { .. } => "ownsearch.parser_failed",
             Self::Network { .. } => "ownsearch.upstream_failed",
             Self::State(_) | Self::Database { .. } => "ownsearch.state_error",
@@ -135,6 +138,9 @@ impl Error {
             },
             Self::RateLimited { .. } => {
                 "Wait for the instance rate window to pass; OwnSearch never retries a 429 in the same run."
+            }
+            Self::Busy { .. } => {
+                "Retry shortly; the local state database or the search queue is saturated."
             }
             Self::ParserFailed { .. } => {
                 "The answer was read but not understood. Scan again to refresh capability state, and report the instance."
@@ -185,6 +191,9 @@ impl Error {
             Self::Io { context, .. } => format!("input or output failure while {context}"),
             Self::Json { context, .. } => format!("internal data failure while {context}"),
             Self::Ledger(_) => "the call ledger could not be read or written".to_owned(),
+            Self::State(_) | Self::StateCorrupted(_) => {
+                "the local state could not be used".to_owned()
+            }
             other => redact_url_queries(&other.to_string()),
         }
     }
@@ -235,7 +244,7 @@ impl From<rusqlite::Error> for Error {
         use rusqlite::ErrorCode;
         match source {
             rusqlite::Error::SqliteFailure(failure, _) => match failure.code {
-                ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked => Self::RateLimited {
+                ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked => Self::Busy {
                     message: "the state database is busy; retry the call".into(),
                 },
                 ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase => {
@@ -324,6 +333,9 @@ mod tests {
             Error::RateLimited {
                 message: "429".to_owned(),
             },
+            Error::Busy {
+                message: "queue".to_owned(),
+            },
             Error::Timeout { deadline_ms: 12000 },
             Error::NoFleet,
         ];
@@ -332,6 +344,15 @@ mod tests {
             assert!(body.get("code").and_then(Value::as_str).is_some());
             assert!(body.get("remedy").and_then(Value::as_str).is_some());
         }
+    }
+
+    #[test]
+    fn a_busy_error_does_not_borrow_the_upstream_rate_limit_words() {
+        let error = Error::Busy {
+            message: "queue".to_owned(),
+        };
+        assert_eq!(error.code(), "ownsearch.busy");
+        assert!(!error.remedy().contains("instance"));
     }
 
     #[test]

@@ -754,7 +754,7 @@ async fn a_full_queue_refuses_a_search_instead_of_stacking_work() {
             result
                 .as_ref()
                 .err()
-                .is_some_and(|error| error.code() == "ownsearch.rate_limited")
+                .is_some_and(|error| error.code() == "ownsearch.busy")
         })
         .count();
     assert!(
