@@ -16,9 +16,7 @@
     "entry_point": "ownsearch",
     "mcp_config": {
       "command": "${__dirname}/ownsearch",
-      "args": [
-        "serve"
-      ],
+      "args": ["serve"],
       "env": {
         "OWNSEARCH_STATE_DIR": "${user_config.state_dir}"
       }
@@ -35,9 +33,6 @@
   },
   "tools_generated": false,
   "compatibility": {
-    "platforms": [
-      "darwin",
-      "linux"
-    ]
+    "platforms": ["darwin", "linux"]
   }
 }
