@@ -88,12 +88,8 @@ stamp_version() {
 	local manifest="$root/Cargo.toml"
 	[[ -f "$manifest" ]] || die "missing $manifest"
 	sed -i.bak "s/^version = \"$from\"$/version = \"$to\"/" "$manifest"
+	sed -i.bak -E "s|^(ownsearch-core = \{ path = \"crates/ownsearch-core\", version = \")[0-9][0-9.]*(\" \})$|\1$to\2|" "$manifest"
 	rm -f "$manifest.bak"
-	local dependency="$root/crates/ownsearch/Cargo.toml"
-	if [[ -f "$dependency" ]]; then
-		sed -i.bak -E "s|(ownsearch-core = \{ path = \"\.\./ownsearch-core\", version = \")[0-9][0-9.]*(\" \})|\1$to\2|" "$dependency"
-		rm -f "$dependency.bak"
-	fi
 }
 
 verify_version_stamps() {
@@ -115,9 +111,8 @@ verify_version_stamps() {
 		warn "Dockerfile does not default OWNSEARCH_VERSION to $want"
 		mismatch=1
 	fi
-	local dependency="$root/crates/ownsearch/Cargo.toml"
-	if [[ -f "$dependency" ]] && ! grep -qF "ownsearch-core = { path = \"../ownsearch-core\", version = \"$want\" }" "$dependency"; then
-		warn "crates/ownsearch/Cargo.toml does not require ownsearch-core $want"
+	if ! grep -qF "ownsearch-core = { path = \"crates/ownsearch-core\", version = \"$want\" }" "$root/Cargo.toml"; then
+		warn "Cargo.toml does not require ownsearch-core $want"
 		mismatch=1
 	fi
 	if [[ -f "$root/Cargo.lock" ]]; then
