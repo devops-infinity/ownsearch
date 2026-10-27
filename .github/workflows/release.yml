@@ -120,7 +120,9 @@ jobs:
           dist build --tag="$TAG" --artifacts=local --target="$TARGET" --no-local-paths --output-format=json > "target/dist-manifests/$TARGET.json"
           cp "target/dist-manifests/$TARGET.json" "target/distrib/$TARGET-dist-manifest.json"
       - name: Bill of materials
-        run: cargo run --quiet --locked -p ownsearch -- sbom --out dist/sbom-${{ matrix.target }}.cdx.json
+        run: |
+          mkdir -p dist
+          cargo run --quiet --locked -p ownsearch -- sbom --out dist/sbom-${{ matrix.target }}.cdx.json
       - name: Upload the target artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
