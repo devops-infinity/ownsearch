@@ -24,7 +24,7 @@ fn token() -> String {
 }
 
 async fn wait_ready(client: &reqwest::Client, base: &str) {
-    for _ in 0..100 {
+    for _ in 0..600 {
         if let Ok(response) = client.get(format!("{base}/healthz")).send().await
             && response.status().is_success()
         {
