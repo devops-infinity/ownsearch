@@ -4,6 +4,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-27
+
 ### Added
 
 - MCP server over stdio and Streamable HTTP, serving the 2026-07-28 and 2025-11-25 protocol versions.
@@ -124,3 +126,6 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 - PDF text is read with `lopdf`, so the tree no longer pulls the unmaintained `pdf-extract` dependency.
 - Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.
+
+[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/devops-infinity/ownsearch/releases/tag/v0.1.0
