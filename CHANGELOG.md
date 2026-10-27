@@ -4,6 +4,18 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-27
+
+### Fixed
+
+- The scanner and both server transports no longer call the state database on the async runtime. Every store call runs on the blocking pool, so a busy database can no longer park a worker thread.
+- The Dockerfile and compose healthchecks call `/readyz`, which reads the state database, instead of `/healthz`, which always answers.
+
+### Changed
+
+- rmcp 3.7.0 to 3.8.0, plus brotli, openssl-probe, and rustix patch updates.
+- The compose service runs with a read-only root filesystem, a `/tmp` tmpfs, all capabilities dropped, fixed volume names, and a container user created with `--no-log-init`.
+
 ## [0.1.2] - 2026-10-27
 
 ### Fixed
@@ -148,3 +160,5 @@ All notable changes to this project are recorded here. The format follows [Keep 
 [0.1.1]: https://github.com/devops-infinity/ownsearch/compare/v0.1.0...v0.1.1
 
 [0.1.2]: https://github.com/devops-infinity/ownsearch/compare/v0.1.1...v0.1.2
+
+[0.2.0]: https://github.com/devops-infinity/ownsearch/compare/v0.1.2...v0.2.0
