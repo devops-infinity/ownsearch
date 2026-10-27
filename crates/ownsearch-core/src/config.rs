@@ -1385,6 +1385,10 @@ pub fn keychain_get() -> Result<Option<SecretString>> {
     match entry.get_password() {
         Ok(secret) => Ok(Some(SecretString::from(secret))),
         Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error @ (keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_))) => {
+            tracing::debug!(%error, "the keychain is not available; no stored token was read");
+            Ok(None)
+        }
         Err(error) => Err(Error::Config(format!("keychain read: {error}"))),
     }
 }
