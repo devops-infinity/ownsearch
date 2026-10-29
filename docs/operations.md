@@ -11,7 +11,7 @@
 
 - `/metrics` reports calls, errors, in-flight requests, and per-tool counts. Watch the error rate and the search queue refusals.
 - Logs go to stderr as JSON in the container and text on a terminal. Internal failures log at `error`; client-correctable refusals log at `warn`.
-- `ownsearch session` reports the ledger head, cache state, and fleet size without a network call.
+- The `ownsearch_session` MCP tool reports the ledger head, cache state, and fleet size without a network call.
 
 ## Self-healing
 
@@ -23,10 +23,10 @@
 ## Triage and remediation
 
 1. Run `tools/smoke.sh http://127.0.0.1:8774`. A failure there is the first fact.
-2. `ownsearch doctor` prints every resolved setting and its source.
+2. `ownsearch doctor` prints every resolved setting and whether the state database and ledger are healthy.
 3. `ownsearch instances list --status active` shows the fleet; `ownsearch db counts` shows row growth.
-4. A corrupt store: `ownsearch db verify`, then restore the newest verified backup from the backups folder, then start again.
-5. A bad release: reinstall the previous tag with `tools/reinstall.sh --dir`, or repin the container image to the previous tag, then run the smoke script.
+4. A corrupt store: `ownsearch db verify`, then `ownsearch db restore --from <backup>` with the newest verified backup from the backups folder, then start again.
+5. A bad release: `git switch --detach vX.Y.Z`, run `tools/reinstall.sh`, then `git switch -` back; or repin the container image to the previous tag. Run the smoke script after either.
 
 ## Baselines
 

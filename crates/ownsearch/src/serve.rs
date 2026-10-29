@@ -3,9 +3,9 @@ use ownsearch_core::{Settings, serve_http, serve_stdio};
 
 use crate::cli::ServeArgs;
 
-pub(crate) fn run(args: ServeArgs) -> anyhow::Result<()> {
+pub(crate) fn run(args: ServeArgs, common: &crate::cli::CommonArgs) -> anyhow::Result<()> {
     let bind_given = args.bind.is_some();
-    let settings = Settings::load(args.overrides()).context("resolving settings")?;
+    let settings = Settings::load(args.overrides(common)).context("resolving settings")?;
     let http = settings.http();
     if bind_is_ignored(bind_given, http) {
         tracing::warn!(

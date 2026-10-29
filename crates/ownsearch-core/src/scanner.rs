@@ -338,10 +338,10 @@ impl ScanGuard {
                 .map_err(|_| Error::State("the scan guard lock was poisoned".into()))?;
             let state = states.entry(database.clone()).or_default();
             if state.running {
-                return Err(Error::PolicyRefused(
-                    "another scan is already running on this state database; wait for it to finish"
-                        .into(),
-                ));
+                return Err(Error::PolicyRefused(format!(
+                    "another scan is already running on this state database; it stops at the {} second scan deadline, and `ownsearch scan --force` waits up to 120 seconds for its lock",
+                    ctx.settings.scan_deadline_secs()
+                )));
             }
             if !force
                 && !gap.is_zero()
@@ -349,8 +349,11 @@ impl ScanGuard {
                 && finished.elapsed() < gap
             {
                 return Err(Error::PolicyRefused(format!(
-                    "a scan finished less than {} seconds ago; wait before scanning again",
-                    gap.as_secs()
+                    "a scan finished less than {} seconds ago; wait {} more seconds, or pass force to scan now",
+                    gap.as_secs(),
+                    gap.saturating_sub(finished.elapsed())
+                        .as_secs()
+                        .saturating_add(1)
                 )));
             }
         }
@@ -523,6 +526,22 @@ pub async fn run_scan(
                 }
             }
         }
+    }
+    if cancellation.is_cancelled() {
+        warnings.push("the scan was cancelled; nothing was written".to_owned());
+        return Ok(ScanOutput {
+            dry_run: options.dry_run,
+            run_id: discovery.run_id,
+            discovered: discovery.discovered,
+            added: discovery.added,
+            changed: discovery.changed,
+            missing: discovery.missing,
+            probed: probes.len(),
+            status_changes: Vec::new(),
+            fleet: Vec::new(),
+            warnings,
+            elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        });
     }
     let status_changes: Vec<StatusChange> = probes
         .iter()
@@ -894,6 +913,16 @@ fn explicit_target(ctx: &ToolContext, instance_id: i64, force: bool) -> Result<S
     if !row.scan_enabled {
         return Err(Error::PolicyRefused(format!(
             "instance {instance_id} has scanning disabled; run `ownsearch instances restore {instance_id}` to re-enable it"
+        )));
+    }
+    if row.kind == crate::types::InstanceType::Tor {
+        return Err(Error::PolicyRefused(format!(
+            "instance {instance_id} is a Tor instance, which is never probed; run `ownsearch instances set-type {instance_id} normal` to change what this row is"
+        )));
+    }
+    if row.status == crate::types::InstanceStatus::Excluded {
+        return Err(Error::PolicyRefused(format!(
+            "instance {instance_id} is excluded, so it is never probed; run `ownsearch instances restore {instance_id}` after setting a normal type"
         )));
     }
     if row.status == crate::types::InstanceStatus::Retired {
@@ -1670,6 +1699,7 @@ fn insert_report_probe_html(
 }
 
 fn select_and_rank(ctx: &ToolContext) -> Result<FleetSelection> {
+    let now = now_rfc3339();
     let rows = ctx
         .store
         .list_instances_unbounded(&crate::db::InstanceFilter::default())?;
@@ -1679,13 +1709,20 @@ fn select_and_rank(ctx: &ToolContext) -> Result<FleetSelection> {
             row.hard_gate_passed == Some(true)
                 && row.kind != crate::types::InstanceType::Tor
                 && !row.denied
+                && row.scan_enabled
+                && row
+                    .cooldown_until
+                    .as_deref()
+                    .is_none_or(|until| until <= now.as_str())
                 && (matches!(
                     row.status,
                     InstanceStatus::Active | InstanceStatus::Probation
                 ) || (row.pinned
                     && matches!(
                         row.status,
-                        InstanceStatus::Candidate | InstanceStatus::Missing
+                        InstanceStatus::Candidate
+                            | InstanceStatus::Missing
+                            | InstanceStatus::Unlisted
                     )))
         })
         .map(|row| FleetCandidate {
@@ -1694,6 +1731,7 @@ fn select_and_rank(ctx: &ToolContext) -> Result<FleetSelection> {
             network_group: row.network_group.clone(),
             google_exact: row.google_exact,
             pinned: row.pinned,
+            active: row.status == InstanceStatus::Active,
         })
         .collect();
     let selection = select_fleet(
@@ -1721,6 +1759,7 @@ fn dry_run_fleet(probes: &[InstanceProbe], ctx: &ToolContext) -> Vec<i64> {
                 .map(config_client::ConfigDocument::exact_google)
                 .unwrap_or(false),
             pinned: false,
+            active: probe.next_status == InstanceStatus::Active,
         })
         .collect();
     select_fleet(

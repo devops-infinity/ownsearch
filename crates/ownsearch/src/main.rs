@@ -14,6 +14,7 @@ mod output;
 mod sbom;
 mod scan;
 mod serve;
+mod update;
 
 fn main() -> ExitCode {
     init_tracing();
@@ -36,14 +37,16 @@ fn main() -> ExitCode {
 }
 
 fn run(parsed: cli::Cli) -> anyhow::Result<()> {
+    let common = parsed.common;
     match parsed.command {
-        cli::Command::Serve(args) => serve::run(args),
-        cli::Command::Doctor(args) => doctor::run(args),
-        cli::Command::Scan(args) => scan::run(args),
-        cli::Command::Instances(args) => instances::run(args),
-        cli::Command::Db(args) => db::run(args),
-        cli::Command::Config(args) => config::run(args),
-        cli::Command::Audit(args) => audit::run(args),
+        cli::Command::Serve(args) => serve::run(args, &common),
+        cli::Command::Doctor(args) => doctor::run(args, &common),
+        cli::Command::Scan(args) => scan::run(args, &common),
+        cli::Command::Instances(args) => instances::run(args, &common),
+        cli::Command::Db(args) => db::run(args, &common),
+        cli::Command::Config(args) => config::run(args, &common),
+        cli::Command::Audit(args) => audit::run(args, &common),
+        cli::Command::Update(args) => update::run(args),
         cli::Command::Sbom(args) => sbom::run(&args),
         cli::Command::Completions { shell } => {
             let mut command = cli::Cli::command();

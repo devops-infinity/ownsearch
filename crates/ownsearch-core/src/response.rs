@@ -137,6 +137,12 @@ pub(crate) struct InstanceInfo {
     pub categories: Vec<String>,
     #[serde(default)]
     pub reasons: Vec<String>,
+    pub denied: bool,
+    pub scan_enabled: bool,
+    pub pinned: bool,
+    pub serving: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serving_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -176,6 +182,12 @@ pub(crate) struct HealthItem {
     pub consecutive_failures: i64,
     #[serde(default)]
     pub consecutive_successes: i64,
+    pub denied: bool,
+    pub scan_enabled: bool,
+    pub pinned: bool,
+    pub serving: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serving_reason: Option<String>,
     #[serde(default)]
     pub reasons: Vec<String>,
     #[serde(default)]

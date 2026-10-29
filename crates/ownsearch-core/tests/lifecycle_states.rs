@@ -18,12 +18,7 @@ const ACTIONS: [OperatorAction; 5] = [
     OperatorAction::Reset,
 ];
 
-fn seed(
-    status: InstanceStatus,
-    denied: bool,
-    scan_enabled: bool,
-    kind: InstanceType,
-) -> (Store, i64) {
+fn seed(status: InstanceStatus, scan_enabled: bool, kind: InstanceType) -> (Store, i64) {
     let store = Store::open_in_memory().expect("store");
     let instance_id = store
         .add_manual_instance("https://example.org/", false, &now_rfc3339())
@@ -48,11 +43,11 @@ fn seed(
             tls_id: None,
         })
         .expect("seed status");
-    if denied || !scan_enabled {
+    if !scan_enabled {
         store
             .upsert_override(
                 instance_id,
-                &serde_json::json!({"denied": denied, "scanEnabled": scan_enabled}),
+                &serde_json::json!({"scanEnabled": false}),
                 &["test.policy".to_owned()],
             )
             .expect("override");
@@ -103,7 +98,16 @@ fn every_operator_action_leaves_a_state_a_person_can_leave() {
             for denied in [false, true] {
                 for scan_enabled in [false, true] {
                     for action in ACTIONS {
-                        let (store, instance_id) = seed(status, denied, scan_enabled, kind);
+                        let (store, instance_id) = seed(status, scan_enabled, kind);
+                        if denied {
+                            store
+                                .apply_operator_action(
+                                    instance_id,
+                                    OperatorAction::Deny,
+                                    &["test.deny".to_owned()],
+                                )
+                                .expect("deny");
+                        }
                         let outcome = store.apply_operator_action(
                             instance_id,
                             action,
@@ -115,7 +119,7 @@ fn every_operator_action_leaves_a_state_a_person_can_leave() {
                             let error = outcome
                                 .expect_err("a Tor row must refuse to be restored into service");
                             assert!(
-                                error.to_string().contains("type to normal"),
+                                error.to_string().contains("set-type"),
                                 "the refusal must name the type change: {error}"
                             );
                             continue;
@@ -195,7 +199,7 @@ fn every_operator_action_leaves_a_state_a_person_can_leave() {
 
 #[test]
 fn a_tor_row_leaves_excluded_only_through_a_type_change() {
-    let (store, instance_id) = seed(InstanceStatus::Candidate, false, true, InstanceType::Tor);
+    let (store, instance_id) = seed(InstanceStatus::Candidate, true, InstanceType::Tor);
     assert_eq!(
         store
             .get_instance(instance_id)
@@ -248,7 +252,7 @@ fn a_hand_added_instance_goes_unlisted_and_returns_when_announced_again() {
 
 #[test]
 fn the_fleet_excludes_an_active_instance_that_failed_its_gate() {
-    let (store, instance_id) = seed(InstanceStatus::Active, false, true, InstanceType::Normal);
+    let (store, instance_id) = seed(InstanceStatus::Active, true, InstanceType::Normal);
     assert_eq!(store.fleet(10, &now_rfc3339()).expect("fleet").len(), 1);
     store
         .apply_scan_update(&ScanUpdate {
@@ -278,7 +282,7 @@ fn the_fleet_excludes_an_active_instance_that_failed_its_gate() {
 
 #[test]
 fn making_an_instance_active_requires_a_passing_gate() {
-    let (store, instance_id) = seed(InstanceStatus::Candidate, false, true, InstanceType::Normal);
+    let (store, instance_id) = seed(InstanceStatus::Candidate, true, InstanceType::Normal);
     store
         .apply_scan_update(&ScanUpdate {
             instance_id,
@@ -341,7 +345,7 @@ fn making_an_instance_active_requires_a_passing_gate() {
 
 #[test]
 fn denying_and_allowing_round_trips_without_losing_the_scan_slot() {
-    let (store, instance_id) = seed(InstanceStatus::Active, false, true, InstanceType::Normal);
+    let (store, instance_id) = seed(InstanceStatus::Active, true, InstanceType::Normal);
     store
         .apply_operator_action(instance_id, OperatorAction::Deny, &["test.deny".to_owned()])
         .expect("deny");
@@ -359,7 +363,7 @@ fn denying_and_allowing_round_trips_without_losing_the_scan_slot() {
 
 #[test]
 fn restoring_a_candidate_twice_is_a_no_op_not_a_refusal() {
-    let (store, instance_id) = seed(InstanceStatus::Candidate, false, true, InstanceType::Normal);
+    let (store, instance_id) = seed(InstanceStatus::Candidate, true, InstanceType::Normal);
     let first = store
         .apply_operator_action(instance_id, OperatorAction::Restore, &["test".to_owned()])
         .expect("restore");

@@ -10,7 +10,7 @@ You get an acknowledgement within three working days. A fix ships in the next re
 
 ## Supported versions
 
-Version 0.2.x receives security fixes. A release outside that line gets a fix only when the problem can be exploited without special conditions and the fix does not break compatibility.
+Version 0.3.x receives security fixes. A release outside that line gets a fix only when the problem can be exploited without special conditions and the fix does not break compatibility.
 
 ## What OwnSearch handles
 

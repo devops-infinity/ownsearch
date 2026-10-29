@@ -69,6 +69,8 @@ pub enum Error {
     Timeout { deadline_ms: u64 },
     #[error("the search found no usable instance")]
     NoFleet,
+    #[error("update: {0}")]
+    Update(String),
 }
 
 impl Error {
@@ -112,6 +114,7 @@ impl Error {
             Self::Cancelled => "ownsearch.cancelled",
             Self::Timeout { .. } => "ownsearch.timeout",
             Self::NoFleet => "ownsearch.no_fleet",
+            Self::Update(_) => "ownsearch.update_failed",
         }
     }
 
@@ -121,7 +124,7 @@ impl Error {
                 "Fix the argument named in the message and call the tool again."
             }
             Self::Config(_) => {
-                "Run `ownsearch doctor` to see every resolved setting and its source."
+                "Fix the setting named in the message; `ownsearch doctor` prints every resolved value."
             }
             Self::PolicyRefused(_) => {
                 "Honor the operator policy named in the message; OwnSearch will not bypass it."
@@ -158,9 +161,10 @@ impl Error {
             Self::StateNewer { .. } => {
                 "This state database was written by a newer OwnSearch; run the newer release against it, or point OWNSEARCH_STATE_DIR at a different directory."
             }
-            Self::Ledger(_) | Self::Io { .. } => {
-                "Check the state and ledger directory permissions and free space."
+            Self::Ledger(_) => {
+                "Run `ownsearch audit verify` to see which row failed. Restore args.key when you have it, or archive the chain with `ownsearch audit rotate --force` and let the next call start a fresh one."
             }
+            Self::Io { .. } => "Check the state and ledger directory permissions and free space.",
             Self::Json { .. } => "Retry; if it repeats, run `ownsearch db verify`.",
             Self::UnknownTool { .. } => {
                 "Call tools/list and use only the names it returns for this configuration."
@@ -177,6 +181,9 @@ impl Error {
             }
             Self::NoFleet => {
                 "Call the ownsearch_scan tool, or run `ownsearch scan`, to refresh the fleet. If every instance is cooling down, `ownsearch instances list` shows the status and an operator can clear it with `ownsearch scan --force --instance <id>`."
+            }
+            Self::Update(_) => {
+                "Follow the command named in the message: the install channel owns this update. For the install script, rerun `ownsearch update`."
             }
         }
     }

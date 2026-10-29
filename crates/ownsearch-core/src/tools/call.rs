@@ -270,28 +270,37 @@ fn instance_info(ctx: &Arc<ToolContext>, args: InstanceInfoArgs) -> Result<ToolO
     } else {
         std::collections::HashMap::new()
     };
+    let now = crate::time::now_rfc3339();
     let instances: Vec<InstanceInfo> = rows
         .iter()
-        .map(|row| InstanceInfo {
-            instance_id: row.instance_id,
-            slug: row.slug.clone(),
-            url: row.url.clone(),
-            kind: row.kind.as_str().to_owned(),
-            status: row.status.as_str().to_owned(),
-            version: row.version.clone(),
-            score: row.score,
-            rank: row.rank,
-            hard_gate_passed: row.hard_gate_passed.unwrap_or(false),
-            json_enabled: row.json_enabled,
-            html_enabled: row.html_enabled,
-            google_exact: row.google_exact,
-            google_cse: row.google_cse,
-            engines: engines.get(&row.instance_id).cloned().unwrap_or_default(),
-            categories: categories
-                .get(&row.instance_id)
-                .cloned()
-                .unwrap_or_default(),
-            reasons: row.reasons.clone(),
+        .map(|row| {
+            let (serving, serving_reason) = crate::db::serving_state(row, &now);
+            InstanceInfo {
+                instance_id: row.instance_id,
+                slug: row.slug.clone(),
+                url: row.url.clone(),
+                kind: row.kind.as_str().to_owned(),
+                status: row.status.as_str().to_owned(),
+                version: row.version.clone(),
+                score: row.score,
+                rank: row.rank,
+                hard_gate_passed: row.hard_gate_passed.unwrap_or(false),
+                json_enabled: row.json_enabled,
+                html_enabled: row.html_enabled,
+                google_exact: row.google_exact,
+                google_cse: row.google_cse,
+                engines: engines.get(&row.instance_id).cloned().unwrap_or_default(),
+                categories: categories
+                    .get(&row.instance_id)
+                    .cloned()
+                    .unwrap_or_default(),
+                reasons: row.reasons.clone(),
+                denied: row.denied,
+                scan_enabled: row.scan_enabled,
+                pinned: row.pinned,
+                serving,
+                serving_reason,
+            }
         })
         .collect();
     let count = instances.len();
@@ -322,10 +331,12 @@ fn instance_health(ctx: &Arc<ToolContext>, args: InstanceHealthArgs) -> Result<T
         std::collections::HashMap::new()
     };
     let metrics = ctx.store.discovery_metrics_for(&ids).unwrap_or_default();
+    let now = crate::time::now_rfc3339();
     let instances: Vec<HealthItem> = rows
         .iter()
         .map(|row| {
             let metrics = metrics.get(&row.instance_id);
+            let (serving, serving_reason) = crate::db::serving_state(row, &now);
             HealthItem {
                 instance_id: row.instance_id,
                 slug: row.slug.clone(),
@@ -346,6 +357,11 @@ fn instance_health(ctx: &Arc<ToolContext>, args: InstanceHealthArgs) -> Result<T
                 consecutive_successes: row.consecutive_successes,
                 reasons: row.reasons.clone(),
                 last_events: events.get(&row.instance_id).cloned().unwrap_or_default(),
+                denied: row.denied,
+                scan_enabled: row.scan_enabled,
+                pinned: row.pinned,
+                serving,
+                serving_reason,
             }
         })
         .collect();

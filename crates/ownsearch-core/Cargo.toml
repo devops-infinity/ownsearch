@@ -45,6 +45,9 @@ lopdf.workspace = true
 chromiumoxide.workspace = true
 futures-util.workspace = true
 ego-tree.workspace = true
+self_update.workspace = true
+minisign-verify.workspace = true
+semver.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true

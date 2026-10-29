@@ -516,7 +516,7 @@ async fn an_allowed_origin_gets_an_answered_preflight() {
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
     assert_eq!(status, 204);
-    assert_eq!(methods.as_deref(), Some("GET, POST, DELETE, OPTIONS"));
+    assert_eq!(methods.as_deref(), Some("POST, OPTIONS"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -318,6 +318,7 @@ pub(crate) struct FleetCandidate {
     pub network_group: Option<String>,
     pub google_exact: bool,
     pub pinned: bool,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -373,7 +374,11 @@ pub(crate) fn select_fleet(
         ranks.push((candidate.instance_id, rank));
     }
     FleetSelection {
-        short_of_minimum: ranks.len() < min,
+        short_of_minimum: candidates
+            .iter()
+            .filter(|candidate| candidate.active)
+            .count()
+            < min,
         excluded_network,
         excluded_google,
         ranks,
@@ -635,6 +640,7 @@ mod tests {
                 network_group: Some(format!("net-{}", index % 12)),
                 google_exact: index == 0,
                 pinned: false,
+                active: true,
             })
             .collect();
         let selection = select_fleet(&candidates, 6, 12, 2, false);
@@ -657,6 +663,7 @@ mod tests {
                 network_group: None,
                 google_exact: false,
                 pinned: false,
+                active: true,
             }],
             6,
             12,
@@ -675,6 +682,7 @@ mod tests {
                 network_group: None,
                 google_exact: false,
                 pinned: false,
+                active: true,
             },
             FleetCandidate {
                 instance_id: 2,
@@ -682,6 +690,7 @@ mod tests {
                 network_group: None,
                 google_exact: true,
                 pinned: false,
+                active: true,
             },
         ];
         let selection = select_fleet(&candidates, 1, 12, 2, true);
@@ -698,6 +707,7 @@ mod tests {
                 network_group: Some("a".to_owned()),
                 google_exact: false,
                 pinned: false,
+                active: true,
             },
             FleetCandidate {
                 instance_id: 2,
@@ -705,6 +715,7 @@ mod tests {
                 network_group: Some("a".to_owned()),
                 google_exact: false,
                 pinned: true,
+                active: true,
             },
             FleetCandidate {
                 instance_id: 3,
@@ -712,6 +723,7 @@ mod tests {
                 network_group: Some("a".to_owned()),
                 google_exact: false,
                 pinned: false,
+                active: true,
             },
         ];
         let selection = select_fleet(&candidates, 1, 3, 1, false);
@@ -728,6 +740,7 @@ mod tests {
                 network_group: None,
                 google_exact: false,
                 pinned: true,
+                active: true,
             },
             FleetCandidate {
                 instance_id: 2,
@@ -735,6 +748,7 @@ mod tests {
                 network_group: None,
                 google_exact: true,
                 pinned: false,
+                active: true,
             },
         ];
         let selection = select_fleet(&candidates, 1, 12, 2, true);

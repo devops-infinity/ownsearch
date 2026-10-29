@@ -636,6 +636,7 @@ fn rest_error_status(code: Option<&str>) -> StatusCode {
         | Some("ownsearch.state_corrupted")
         | Some("ownsearch.state_newer")
         | Some("ownsearch.config_error")
+        | Some("ownsearch.update_failed")
         | Some("ownsearch.internal_error") => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -774,7 +775,7 @@ async fn reject_origin(State(state): State<HttpState>, request: Request, next: N
     let Ok(origin) = origin.to_str() else {
         return rejection(
             StatusCode::FORBIDDEN,
-            "ownsearch.auth_failed",
+            "ownsearch.origin_refused",
             "the Origin header is not text",
             &instance,
         );
@@ -786,7 +787,7 @@ async fn reject_origin(State(state): State<HttpState>, request: Request, next: N
     if !allowed {
         return rejection(
             StatusCode::FORBIDDEN,
-            "ownsearch.auth_failed",
+            "ownsearch.origin_refused",
             "this Origin is not allowed; name it in OWNSEARCH_ALLOWED_ORIGINS",
             &instance,
         );
@@ -806,13 +807,15 @@ fn allow_cross_origin(response: &mut Response, origin: &str) {
     headers.insert(axum::http::header::VARY, HeaderValue::from_static("origin"));
 }
 
-async fn preflight() -> Response {
+async fn preflight(uri: axum::extract::OriginalUri) -> Response {
+    let methods = match uri.path() {
+        "/v1/search" | "/v1/fetch" => "POST, OPTIONS",
+        _ => "GET, OPTIONS",
+    };
     let mut response = StatusCode::NO_CONTENT.into_response();
     let headers = response.headers_mut();
-    headers.insert(
-        axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_static("GET, POST, DELETE, OPTIONS"),
-    );
+    let methods = HeaderValue::from_str(methods).unwrap_or(HeaderValue::from_static("OPTIONS"));
+    headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_METHODS, methods);
     headers.insert(
         axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
         HeaderValue::from_static("authorization, content-type, x-request-id"),
@@ -834,8 +837,8 @@ async fn gate_requests(State(state): State<HttpState>, request: Request, next: N
     let Ok(_permit) = state.gate.clone().try_acquire_owned() else {
         let mut response = rejection(
             StatusCode::SERVICE_UNAVAILABLE,
-            "ownsearch.rate_limited",
-            "too many requests in flight",
+            "ownsearch.busy",
+            "too many requests in flight on this server",
             &request_id_of(request.headers()),
         );
         response
@@ -900,8 +903,8 @@ async fn require_host(State(state): State<HttpState>, request: Request, next: Ne
     if !allowed {
         return rejection(
             StatusCode::FORBIDDEN,
-            "ownsearch.auth_failed",
-            "this Host is not allowed",
+            "ownsearch.host_refused",
+            "this Host is not allowed; name it in OWNSEARCH_ALLOWED_HOSTS or use localhost",
             &instance,
         );
     }
@@ -1243,8 +1246,18 @@ fn remedy_for(code: &'static str) -> &'static str {
         "ownsearch.auth_failed" => {
             "Send Authorization: Bearer <token> with a configured OWNSEARCH_BEARER_TOKENS value."
         }
-        "ownsearch.rate_limited" => "Wait for the window to pass, then retry.",
-        _ => "Check the request host, origin, and headers.",
+        "ownsearch.origin_refused" => {
+            "Name this Origin in OWNSEARCH_ALLOWED_ORIGINS, or send no Origin header."
+        }
+        "ownsearch.host_refused" => {
+            "Name this Host in OWNSEARCH_ALLOWED_HOSTS, or call the server through localhost."
+        }
+        "ownsearch.rate_limited" => "Wait for the window in Retry-After, then retry.",
+        "ownsearch.busy" => "Retry shortly; the server is at its in-flight request limit.",
+        "ownsearch.bad_request" => {
+            "Fix the request body: it must be a JSON object with the fields the tool documents."
+        }
+        _ => "Read the detail field for the cause, and the code for the stable name.",
     }
 }
 

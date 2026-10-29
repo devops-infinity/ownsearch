@@ -5,8 +5,8 @@ use ownsearch_core::{ScanOptions, Settings, ToolContext, run_scan};
 
 use crate::cli::ScanArgs;
 
-pub(crate) fn run(args: ScanArgs) -> anyhow::Result<()> {
-    let settings = Settings::load(args.overrides()).context("resolving settings")?;
+pub(crate) fn run(args: ScanArgs, common: &crate::cli::CommonArgs) -> anyhow::Result<()> {
+    let settings = Settings::load(args.overrides(common)).context("resolving settings")?;
     let options = ScanOptions {
         dry_run: args.dry_run,
         instance_id: args.instance,

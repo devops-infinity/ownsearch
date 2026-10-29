@@ -334,9 +334,9 @@ fn deleting_an_override_restores_the_instance_policy_flags() {
         .next()
         .expect("row");
     store
-        .upsert_override(
+        .apply_operator_action(
             row.instance_id,
-            &serde_json::json!({"scanEnabled": false, "denied": true}),
+            ownsearch_core::OperatorAction::Deny,
             &["operator.deny".to_owned()],
         )
         .expect("override");

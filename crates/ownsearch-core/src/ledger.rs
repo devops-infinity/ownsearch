@@ -123,7 +123,7 @@ impl Ledger {
         let scanned = scan(&mut file, &path, key).map_err(|error| match error {
             Error::Ledger(message) if message.contains("does not match its own hash") => {
                 Error::Ledger(format!(
-                    "{message}; the arguments key no longer matches this chain (a missing args.key makes every row fail the hash); restore args.key, or archive the chain with `ownsearch audit rotate`"
+                    "{message}; the arguments key no longer matches this chain (a missing args.key makes every row fail the hash); restore args.key, or archive the chain with `ownsearch audit rotate --force`"
                 ))
             }
             other => other,
@@ -486,6 +486,22 @@ pub fn existing_key(path: &Path) -> Option<[u8; 32]> {
     <[u8; 32]>::try_from(bytes.as_slice()).ok()
 }
 
+pub fn archive_unverified(path: &Path) -> Result<PathBuf> {
+    if !path.exists() {
+        return Err(Error::Ledger(format!(
+            "{} does not exist yet",
+            path.display()
+        )));
+    }
+    let stamp = crate::time::rfc3339(crate::time::now_unix())
+        .replace([':', '.'], "-")
+        .replace('T', "_");
+    let archive = path.with_file_name(format!("calls-{stamp}-unverified.jsonl"));
+    std::fs::rename(path, &archive)
+        .map_err(|error| Error::Ledger(format!("cannot archive {}: {error}", path.display())))?;
+    Ok(archive)
+}
+
 pub fn rotate(path: &Path, key: &[u8]) -> Result<(u64, PathBuf)> {
     let (entries, _) = verify(path, key)?;
     let stamp = crate::time::now_rfc3339()
@@ -781,6 +797,21 @@ mod tests {
         assert_eq!(first, second);
         assert_ne!(first, other);
         assert!(!first.contains("confidential"));
+    }
+
+    #[test]
+    fn an_unverifiable_chain_can_be_archived_without_the_key() {
+        let dir =
+            std::env::temp_dir().join(format!("ownsearch-ledger-force-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("calls.jsonl");
+        std::fs::write(&path, "{\"seq\":1}\n").expect("write");
+        let archive = archive_unverified(&path).expect("archive");
+        assert!(!path.exists());
+        assert!(archive.exists());
+        assert!(archive.to_string_lossy().contains("-unverified"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

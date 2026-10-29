@@ -535,14 +535,7 @@ mod tests {
 
     #[test]
     fn status_names_round_trip() {
-        for status in [
-            InstanceStatus::Candidate,
-            InstanceStatus::Active,
-            InstanceStatus::Probation,
-            InstanceStatus::Missing,
-            InstanceStatus::Quarantined,
-            InstanceStatus::Retired,
-        ] {
+        for status in InstanceStatus::ALL {
             assert_eq!(InstanceStatus::parse(status.as_str()), Some(status));
         }
         assert_eq!(InstanceStatus::parse("bogus"), None);
