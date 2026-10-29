@@ -1,6 +1,6 @@
 # Releasing OwnSearch
 
-How a release of OwnSearch is prepared, built, tagged, and published. Every step runs on a machine you control, and no step publishes on its own. For incident handling and rollback, see [docs/operations.md](docs/operations.md).
+How a release of OwnSearch is prepared, built, tagged, and published. The version is prepared on your machine, and the release build runs on GitHub's native runners. For incident handling and rollback, see [docs/operations.md](docs/operations.md).
 
 ## One-time setup
 
@@ -20,9 +20,9 @@ sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/aarch64-linux-musl-gcc
 
 Without the symlinks, the x86_64 musl archive fails at `aws-lc-sys` with `failed to find tool "x86_64-linux-musl-gcc"`.
 
-### Packaging tools
+### Publishing and optional packaging tools
 
-`tools/release.sh --package` needs `cargo-dist`, `minisign`, `zig`, `cargo-zigbuild`, `zip`, and `jq`. Publishing needs `mcp-publisher`.
+Publishing needs `mcp-publisher`. The optional local build with `tools/release.sh --package` also needs `cargo-dist`, `minisign`, `zig`, `cargo-zigbuild`, `zip`, and `jq`. A normal release built by the workflow does not need them.
 
 ### Hooks
 
@@ -156,7 +156,23 @@ docker buildx build --platform linux/amd64 \
 
 The image is amd64 only. The first push creates the package as `internal`, and no API endpoint changes that visibility, so set it once by hand in the package settings under `Change visibility`. Public is one way: a public package cannot be made private again.
 
+## Update host installs
+
+Every machine that runs an older `ownsearch` needs updating to the new version before it reports or serves on the new build. On a machine with a source checkout, check out the tag and reinstall:
+
+```sh
+git switch --detach vX.Y.Z
+tools/reinstall.sh
+git switch -
+```
+
+`tools/reinstall.sh` builds the release binary, runs the gate, and installs into `~/.local/bin`, or into the directory from `--dir PATH` or `OWNSEARCH_INSTALL_DIR`. Add `--skip-gate` to install without the gate, and `--doctor` to run the doctor command right after.
+
+On a channel install, update through that channel instead: `brew upgrade ownsearch`, `npm install -g @devops-infinity/ownsearch`, `cargo install --locked ownsearch`, or rerun the shell installer from the release page. A machine with no checkout can also install the published artifact directly and check it against the release `.sha256` before moving it onto `PATH`.
+
 ## Post-release check
+
+On a host updated to the new version, run these:
 
 ```sh
 ownsearch doctor
