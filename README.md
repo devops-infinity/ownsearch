@@ -49,7 +49,7 @@ OwnSearch runs on your machine. It stores its fleet in a local SQLite database, 
 
 ## Requirements
 
-- Rust 1.94.1 or newer to build. The pinned toolchain is in `rust-toolchain.toml`.
+- Rust 1.94.1 or newer to build. The repository pins Rust 1.99.1 in `rust-toolchain.toml`, and the gate builds against 1.94.1 as the minimum.
 - Linux or macOS. A Windows binary is part of the release target list, and the MCP bundle ships for macOS and Linux.
 - Outbound HTTPS for discovery, probes, and searches.
 - A C compiler for the bundled SQLite build: `build-essential` on Debian and Ubuntu, or the Command Line Tools on macOS.
