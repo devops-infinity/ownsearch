@@ -4,9 +4,34 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-30
+
 ### Added
 
 - `ownsearch update` downloads, verifies, and installs the latest release for an install from the shell installer or a plain binary copy. It verifies `sha256.sum` against the minisign key built into the binary, then checks the archive against that signed digest. For Homebrew, cargo, npm, and container installs it refuses and names the manager's own command. `--check` reports without installing, and `--json` prints the result as data.
+- `ownsearch db restore --from PATH` stages a verified backup, moves the live database and its WAL sidecars aside, installs the backup, and rechecks it. A corrupt store has a recovery command now.
+- `ownsearch audit rotate --force` archives a chain that cannot be verified, for a lost arguments key or a tampered row, and the next call starts a fresh chain.
+- `ownsearch instances set-type ID normal|tor|unknown` changes the recorded type, so a Tor row can return to the fleet as a normal instance.
+- `ownsearch_instance_info` and `ownsearch_instance_health` report `denied`, `scanEnabled`, `pinned`, `serving`, and `servingReason`, so a client can see why a row is not answering.
+
+### Changed
+
+- The scanner, the search fallback, and the fleet snapshot apply one serving rule over status, hard gate, denial, scan flag, type, and cooldown. A row that stops serving leaves the fleet and the snapshot.
+- `--state-dir`, `--ledger-dir`, and `--profile` are accepted before the subcommand as well as after it, which is what the README already promised.
+- `config show --json` and `doctor --json` keep numbers and booleans as JSON numbers and booleans instead of strings.
+- HTTP refusals carry `ownsearch.origin_refused`, `ownsearch.host_refused`, and `ownsearch.busy` instead of one `ownsearch.auth_failed` code, and a preflight answer names the methods its path accepts.
+- `ownsearch_db_query` with `entity: "events"` refuses an offset past 50000 instead of paging forever.
+- `denied` is an operator intent on every path. A policy write of `denied` is refused with the command to use, and the tool path runs the same deny or allow action as the CLI.
+
+### Fixed
+
+- A cancelled scan reported a fleet it never wrote. It now writes nothing, reports nothing, and names the cancellation.
+- An instance that was denied, or whose scanning was off, still answered searches through the fallback tiers. Both filters apply at every tier now.
+- An explicit scan could probe a Tor row or an excluded row, a quarantined row was overwritten when the scanner marked it missing, and `excluded` could be set by hand on a normal row. Each path is refused and names the command that changes it.
+- The scan guard named neither the force flag nor the remaining wait, and a cooldown could be written after the search deadline had passed.
+- `ownsearch audit verify` printed a raw os error and created `args.key` when no ledger existed yet. It reports the ledger as absent, creates nothing, and exits 0.
+- `ownsearch config delete-bearer-token` said the token was removed when none was stored.
+- The container update refusal put its advice inside the code formatting, and the smoke script sent no bearer token to the routes that need one.
 
 ## [0.3.0] - 2026-10-29
 
@@ -202,7 +227,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - PDF text is read with `lopdf`, so the tree no longer pulls the unmaintained `pdf-extract` dependency.
 - Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.
 
-[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.4.0...HEAD
 [0.1.0]: https://github.com/devops-infinity/ownsearch/releases/tag/v0.1.0
 
 [0.1.1]: https://github.com/devops-infinity/ownsearch/compare/v0.1.0...v0.1.1
@@ -212,3 +237,5 @@ All notable changes to this project are recorded here. The format follows [Keep 
 [0.2.0]: https://github.com/devops-infinity/ownsearch/compare/v0.1.2...v0.2.0
 
 [0.3.0]: https://github.com/devops-infinity/ownsearch/compare/v0.2.0...v0.3.0
+
+[0.4.0]: https://github.com/devops-infinity/ownsearch/compare/v0.3.0...v0.4.0

@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "ownsearch",
   "display_name": "OwnSearch",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Quality-ranked SearXNG search over MCP with local fleet state, scoring, and merged results.",
   "author": {
     "name": "Md. Sazzad Hossain Sharkar",
