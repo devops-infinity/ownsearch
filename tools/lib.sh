@@ -149,12 +149,27 @@ insert_changelog_heading() {
 }
 
 add_changelog_link() {
-	local new="$1" previous="$2" url
+	local new="$1" previous="$2" url unreleased tmp
 	url="https://github.com/devops-infinity/ownsearch/compare/v$previous...v$new"
+	unreleased="https://github.com/devops-infinity/ownsearch/compare/v$new...HEAD"
 	if grep -qF "[$new]: $url" CHANGELOG.md; then
 		return 0
 	fi
-	printf '\n[%s]: %s\n' "$new" "$url" >>CHANGELOG.md
+	tmp="$(mktemp "$(dirname -- CHANGELOG.md)/.link.XXXXXX")"
+	awk -v new="$new" -v url="$url" -v unreleased="$unreleased" '
+		!done && /^\[Unreleased\]: / {
+			print "[Unreleased]: " unreleased
+			print "[" new "]: " url
+			done=1
+			next
+		}
+		{ print }
+		END { if (!done) { print ""; print "[" new "]: " url } }
+	' CHANGELOG.md >"$tmp" || {
+		rm -f "$tmp"
+		die "could not rewrite CHANGELOG.md"
+	}
+	mv "$tmp" CHANGELOG.md
 }
 
 require_packaged_dist() {

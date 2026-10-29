@@ -59,12 +59,13 @@ Everything runs on this machine. Nothing is committed, pushed, or published.
   --dry-run        print every action and change nothing
   -h, --help       show this
 
-Release order on this machine:
-  1. tools/release.sh --prepare --patch, then edit CHANGELOG.md
-  2. commit the bump, then merge it into the main branch
-  3. tools/release.sh --package on macOS, so the two Darwin targets are built
-  4. tools/release.sh --tag, then push the tag; the release workflow builds,
-     signs, and publishes the release
+Release order:
+  1. tools/release.sh --prepare --minor, then edit CHANGELOG.md
+  2. commit on a release branch and merge it into the main branch
+  3. git tag -a vX.Y.Z and push it; the release workflow builds every target
+     on native runners and creates the release
+  4. publish the other channels once the release exists
+  Use --package then --tag only to build the archives on this machine instead.
 USAGE
 }
 
@@ -181,8 +182,8 @@ prepare() {
 	date="$(date +%F)"
 	log_line INFO "preparing $CURRENT -> $new"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		log_line INFO "dry run: would set the version in Cargo.toml, the ownsearch-core requirement, Cargo.lock, server.json, mcpb/manifest.json, and the Dockerfile"
-		log_line INFO "dry run: would add the CHANGELOG heading ## [$new] - $date"
+		log_line INFO "dry run: would set the version in Cargo.toml, the ownsearch-core requirement, Cargo.lock, server.json, mcpb/manifest.json, the Dockerfile, and README.md"
+		log_line INFO "dry run: would add the CHANGELOG heading ## [$new] - $date and update the compare links"
 		return 0
 	fi
 	stamp_version "$REPO" "$CURRENT" "$new"
@@ -193,6 +194,10 @@ prepare() {
 		sed -i.bak "s/^ARG OWNSEARCH_VERSION=.*/ARG OWNSEARCH_VERSION=$new/" Dockerfile
 		rm -f Dockerfile.bak
 	fi
+	if [[ -f README.md ]]; then
+		sed -i.bak -E "s/^Status: released, version [0-9]+\.[0-9]+\.[0-9]+\./Status: released, version $new./" README.md
+		rm -f README.md.bak
+	fi
 	insert_changelog_heading "$new" "$date"
 	add_changelog_link "$new" "$CURRENT"
 	if ! (verify_version_stamps "$REPO" "$new"); then
@@ -200,7 +205,7 @@ prepare() {
 		exit 1
 	fi
 	log_line SUCCESS "prepared $new"
-	log_line INFO "next: write the CHANGELOG entries, commit, and merge"
+	log_line INFO "next: write the CHANGELOG entries, commit on a release branch, and merge into main"
 }
 
 package() {
