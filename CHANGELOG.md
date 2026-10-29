@@ -4,10 +4,49 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-29
+
+### Added
+
+- Two lifecycle states: `excluded` for a Tor instance, which is never probed or served, and `unlisted` for a hand-added instance that searx.space does not announce.
+- `ownsearch instances allow` clears a denial without touching the status, and `ownsearch instances events` prints the recorded lifecycle and policy events.
+- `ownsearch_db_query` accepts `entity: "metrics"`, which reads the hourly probe metrics the scanner writes.
+
+### Changed
+
+- Every operator move runs as one transaction that writes the override, the mirrored columns, the status, the cooldown, and an event together. `restore` clears a denial, re-enables scanning, and succeeds when the instance is already a candidate.
+- A missing state database is created, migrated, and seeded with the embedded fleet by the first command that reads it, through the same warm-up path `serve` and `scan` use.
+- `--state-dir`, `--ledger-dir`, and `--profile` are global flags, so they are accepted after any subcommand.
+- `ownsearch_scan` advertises `destructiveHint: true`, because a writing run rewrites lifecycle status, quality, and fleet ranks.
+- The search cooldown is set only by a transient failure. A 400 or a 403 about one query no longer removes a healthy instance for an hour, and `ownsearch scan --force --instance N` clears a cooldown on demand.
+
 ### Fixed
 
+- An instance that failed its hard gate still answered searches. The fleet read now requires a passing gate, read from `instance_quality`.
+- Setting a status to active over MCP queried a column that does not exist, so the move always failed. The gate is read from `instance_quality` in the same transaction.
+- A status change applied while a scan was running wrote an event for a transition that never happened. The event now records the value that was applied.
+- A browser preflight request was refused with 401 once a bearer token was configured, so no browser could call `/v1/search` or `/v1/fetch`. Preflight is answered before the auth layer.
+- `/readyz` and `/metrics` returned 503 while the server was merely busy. Health routes skip the concurrency gate.
+- A 405 response carried no `Allow` header. Every 429 now carries `Retry-After`, with the real lockout time.
+- The ledger renamed its live file while holding it open, which fails on Windows, and a failed reopen wrote new rows into the archive. The handle closes before the rename, and a failed reopen stops the chain with a clear message.
+- A missing arguments key made every ledger row fail its hash with no next step. The message now names the key and `ownsearch audit rotate`.
+- The browser gate wait ignored the caller's deadline, and a missing Chromium was reported as a network error.
+- A database written by a newer release got the restore-a-backup remedy, which discards intact data. It has its own error and remedy now.
+- Database ownership is checked before WAL mode writes to the file.
+- Cancelled probes are no longer persisted as refusals, so a shutdown does not count against an instance.
 - The Dockerfile and compose healthchecks send the bearer token with their `/readyz` probe, so a deployment that sets `OWNSEARCH_BEARER_TOKENS` no longer reports unhealthy forever.
 - The scanner policy, the README, and SECURITY.md state where the headless browser runs and what `OWNSEARCH_CAPSOLVER_KEY` does, and they name the CapSolver service as an outbound boundary.
+
+### Removed
+
+- Two SQL views that no query read, `active_fleet` and `scan_due`.
+- `docs/threat-model.md`. SECURITY.md and the README keep the security guidance.
+
+### Security
+
+- A keychain read error left the server serving without authentication on a loopback bind. It now refuses to start and names the cause.
+- The container healthcheck passes the bearer token through curl's stdin config instead of a process argument.
+- The profile no longer accepts `capsolver_key` or `proxy`. Both come from the environment only.
 
 ## [0.2.0] - 2026-10-27
 
@@ -167,3 +206,5 @@ All notable changes to this project are recorded here. The format follows [Keep 
 [0.1.2]: https://github.com/devops-infinity/ownsearch/compare/v0.1.1...v0.1.2
 
 [0.2.0]: https://github.com/devops-infinity/ownsearch/compare/v0.1.2...v0.2.0
+
+[0.3.0]: https://github.com/devops-infinity/ownsearch/compare/v0.2.0...v0.3.0
