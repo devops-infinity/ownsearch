@@ -4,8 +4,8 @@ use serde_json::json;
 
 use crate::cli::DoctorArgs;
 
-pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
-    let settings = Settings::load(args.common.overrides()).context("resolving settings")?;
+pub(crate) fn run(args: DoctorArgs, common: &crate::cli::CommonArgs) -> anyhow::Result<()> {
+    let settings = Settings::load(common.overrides()).context("resolving settings")?;
     let rows = settings.describe();
     let database = settings.database_path();
     let (state_details, state_text) = inspect_state(&database);
@@ -13,7 +13,7 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
     if args.json {
         let mut settings_map = serde_json::Map::new();
         for (key, value) in &rows {
-            settings_map.insert(key.clone(), json!(value));
+            settings_map.insert(key.clone(), crate::output::setting_value(value));
         }
         let report = json!({
             "settings": settings_map,

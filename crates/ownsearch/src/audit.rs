@@ -3,11 +3,16 @@ use ownsearch_core::Settings;
 
 use crate::cli::{AuditAction, AuditArgs};
 
-pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
-    let settings = Settings::load(args.common.overrides()).context("resolving settings")?;
+pub(crate) fn run(args: AuditArgs, common: &crate::cli::CommonArgs) -> anyhow::Result<()> {
+    let settings = Settings::load(common.overrides()).context("resolving settings")?;
     match args.action {
         AuditAction::Verify { ledger_file } => {
             let path = ledger_file.unwrap_or_else(|| settings.ledger_path());
+            if !path.exists() {
+                println!("no ledger yet at {}", path.display());
+                println!("the first tool call creates one; there is nothing to verify");
+                return Ok(());
+            }
             let key = ownsearch_core::load_or_create_key(&settings.ledger_dir().join("args.key"))?;
             let (entries, head) = ownsearch_core::verify(&path, &key)
                 .with_context(|| format!("verifying {}", path.display()))?;

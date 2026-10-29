@@ -4,8 +4,8 @@ use serde_json::json;
 
 use crate::cli::{DbAction, DbArgs};
 
-pub(crate) fn run(args: DbArgs) -> anyhow::Result<()> {
-    let settings = Settings::load(args.common.overrides()).context("resolving settings")?;
+pub(crate) fn run(args: DbArgs, common: &crate::cli::CommonArgs) -> anyhow::Result<()> {
+    let settings = Settings::load(common.overrides()).context("resolving settings")?;
     let path = settings.database_path();
     if matches!(args.action, DbAction::Path) {
         println!("{}", path.display());

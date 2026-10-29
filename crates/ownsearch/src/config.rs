@@ -1,22 +1,21 @@
 use std::io::{IsTerminal, Read};
 
 use anyhow::Context;
-use ownsearch_core::{Settings, keychain_delete, keychain_set};
+use ownsearch_core::{Settings, keychain_delete, keychain_get, keychain_set};
 use secrecy::SecretString;
-use serde_json::json;
 use zeroize::Zeroizing;
 
 use crate::cli::{ConfigAction, ConfigArgs};
 
-pub(crate) fn run(args: ConfigArgs) -> anyhow::Result<()> {
-    let settings = Settings::load(args.common.overrides()).context("resolving settings")?;
+pub(crate) fn run(args: ConfigArgs, common: &crate::cli::CommonArgs) -> anyhow::Result<()> {
+    let settings = Settings::load(common.overrides()).context("resolving settings")?;
     match args.action {
         ConfigAction::Show { json: as_json } => {
             let rows = settings.describe();
             if as_json {
                 let mut map = serde_json::Map::new();
                 for (key, value) in rows {
-                    map.insert(key, json!(value));
+                    map.insert(key, crate::output::setting_value(&value));
                 }
                 println!("{}", serde_json::to_string_pretty(&map)?);
             } else {
@@ -52,6 +51,13 @@ pub(crate) fn run(args: ConfigArgs) -> anyhow::Result<()> {
             Ok(())
         }
         ConfigAction::DeleteBearerToken => {
+            if keychain_get()
+                .context("reading the token from the OS keychain")?
+                .is_none()
+            {
+                println!("no bearer token list is stored");
+                return Ok(());
+            }
             keychain_delete().context("removing the token from the OS keychain")?;
             println!("the stored bearer token list was removed");
             Ok(())

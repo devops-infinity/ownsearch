@@ -41,9 +41,14 @@ impl InstallChannel {
             Self::Homebrew => Some("brew upgrade ownsearch"),
             Self::Cargo => Some("cargo install --locked ownsearch"),
             Self::Npm => Some("npm install -g @devops-infinity/ownsearch"),
-            Self::Container => Some(
-                "docker pull ghcr.io/devops-infinity/ownsearch:latest, then restart the container",
-            ),
+            Self::Container => Some("docker pull ghcr.io/devops-infinity/ownsearch:latest"),
+        }
+    }
+
+    const fn after_upgrade(self) -> Option<&'static str> {
+        match self {
+            Self::Container => Some("restart the container after the pull"),
+            _ => None,
         }
     }
 }
@@ -195,10 +200,16 @@ fn channel() -> Result<InstallChannel> {
 fn guard_channel(channel: InstallChannel) -> Result<()> {
     match channel.upgrade_command() {
         None => Ok(()),
-        Some(command) => Err(Error::Update(format!(
-            "ownsearch here is installed by {}; update it with `{command}`",
-            channel.as_str()
-        ))),
+        Some(command) => {
+            let advice = channel
+                .after_upgrade()
+                .map(|advice| format!("; {advice}"))
+                .unwrap_or_default();
+            Err(Error::Update(format!(
+                "ownsearch here is installed by {}; update it with `{command}`{advice}",
+                channel.as_str()
+            )))
+        }
     }
 }
 

@@ -13,6 +13,8 @@ use ownsearch_core::Overrides;
     long_about = "OwnSearch discovers public SearXNG instances, scores them from repeated probes, keeps the fleet in local SQLite state, and answers MCP searches from the best healthy instances."
 )]
 pub(crate) struct Cli {
+    #[command(flatten)]
+    pub(crate) common: CommonArgs,
     #[command(subcommand)]
     pub(crate) command: Command,
 }
@@ -69,8 +71,6 @@ impl CommonArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct ServeArgs {
-    #[command(flatten)]
-    pub(crate) common: CommonArgs,
     #[arg(
         long,
         help = "Serve Streamable HTTP instead of stdio",
@@ -107,7 +107,7 @@ pub(crate) struct ServeArgs {
 }
 
 impl ServeArgs {
-    pub(crate) fn overrides(&self) -> Overrides {
+    pub(crate) fn overrides(&self, common: &CommonArgs) -> Overrides {
         let http = if self.http {
             Some(true)
         } else if self.no_http {
@@ -129,23 +129,19 @@ impl ServeArgs {
             html_fallback,
             cache_ttl_secs: self.cache_ttl_secs,
             scan_concurrency: self.concurrency,
-            ..self.common.overrides()
+            ..common.overrides()
         }
     }
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct DoctorArgs {
-    #[command(flatten)]
-    pub(crate) common: CommonArgs,
     #[arg(long, help = "Print the report as JSON")]
     pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct ScanArgs {
-    #[command(flatten)]
-    pub(crate) common: CommonArgs,
     #[arg(long, help = "Report what would change without writing state")]
     pub(crate) dry_run: bool,
     #[arg(long, help = "Probe only this instance identifier")]
@@ -180,7 +176,7 @@ pub(crate) struct ScanArgs {
 }
 
 impl ScanArgs {
-    pub(crate) fn overrides(&self) -> Overrides {
+    pub(crate) fn overrides(&self, common: &CommonArgs) -> Overrides {
         let html_fallback = if self.html_fallback {
             Some(true)
         } else if self.no_html_fallback {
@@ -190,15 +186,13 @@ impl ScanArgs {
         };
         Overrides {
             html_fallback,
-            ..self.common.overrides()
+            ..common.overrides()
         }
     }
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct InstancesArgs {
-    #[command(flatten)]
-    pub(crate) common: CommonArgs,
     #[command(subcommand)]
     pub(crate) action: InstancesAction,
 }
@@ -295,8 +289,6 @@ pub(crate) enum InstancesAction {
 
 #[derive(Debug, Args)]
 pub(crate) struct DbArgs {
-    #[command(flatten)]
-    pub(crate) common: CommonArgs,
     #[command(subcommand)]
     pub(crate) action: DbAction,
 }
@@ -336,8 +328,6 @@ pub(crate) enum DbAction {
 
 #[derive(Debug, Args)]
 pub(crate) struct ConfigArgs {
-    #[command(flatten)]
-    pub(crate) common: CommonArgs,
     #[command(subcommand)]
     pub(crate) action: ConfigAction,
 }
@@ -357,8 +347,6 @@ pub(crate) enum ConfigAction {
 
 #[derive(Debug, Args)]
 pub(crate) struct AuditArgs {
-    #[command(flatten)]
-    pub(crate) common: CommonArgs,
     #[command(subcommand)]
     pub(crate) action: AuditAction,
 }
@@ -404,11 +392,6 @@ mod tests {
     #[test]
     fn the_negative_flags_turn_a_profile_setting_off() {
         let args = ServeArgs {
-            common: CommonArgs {
-                profile: None,
-                state_dir: None,
-                ledger_dir: None,
-            },
             http: false,
             no_http: true,
             bind: None,
@@ -418,7 +401,11 @@ mod tests {
             cache_ttl_secs: None,
             concurrency: Some(2),
         };
-        let overrides = args.overrides();
+        let overrides = args.overrides(&CommonArgs {
+            profile: None,
+            state_dir: None,
+            ledger_dir: None,
+        });
         assert_eq!(overrides.http, Some(false));
         assert_eq!(overrides.html_fallback, Some(false));
         assert_eq!(overrides.offline, Some(true));
@@ -428,11 +415,6 @@ mod tests {
     #[test]
     fn the_scan_defaults_are_safe() {
         let args = ScanArgs {
-            common: CommonArgs {
-                profile: None,
-                state_dir: None,
-                ledger_dir: None,
-            },
             dry_run: false,
             instance: None,
             limit: 200,
@@ -444,7 +426,28 @@ mod tests {
             html_fallback: false,
             no_html_fallback: false,
         };
-        assert_eq!(args.overrides().html_fallback, None);
+        let common = CommonArgs {
+            profile: None,
+            state_dir: None,
+            ledger_dir: None,
+        };
+        assert_eq!(args.overrides(&common).html_fallback, None);
+    }
+
+    #[test]
+    fn the_common_flags_parse_before_and_after_a_subcommand() {
+        let before = Cli::try_parse_from(["ownsearch", "--state-dir", "/tmp/before", "db", "path"])
+            .expect("parse before the subcommand");
+        assert_eq!(
+            before.common.state_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/before"))
+        );
+        let after = Cli::try_parse_from(["ownsearch", "db", "path", "--state-dir", "/tmp/after"])
+            .expect("parse after the subcommand");
+        assert_eq!(
+            after.common.state_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/after"))
+        );
     }
 }
 

@@ -1,5 +1,16 @@
 use std::fmt;
 
+pub(crate) fn setting_value(value: &str) -> serde_json::Value {
+    match value {
+        "true" => serde_json::Value::Bool(true),
+        "false" => serde_json::Value::Bool(false),
+        _ => match value.parse::<u64>() {
+            Ok(number) if number.to_string() == value => serde_json::Value::from(number),
+            _ => serde_json::Value::from(value),
+        },
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum PrintError {
     BrokenPipe,
@@ -44,6 +55,19 @@ mod tests {
     use std::error::Error as _;
 
     use super::*;
+
+    #[test]
+    fn a_setting_value_keeps_its_json_type() {
+        assert_eq!(setting_value("42"), serde_json::json!(42));
+        assert_eq!(setting_value("true"), serde_json::json!(true));
+        assert_eq!(setting_value("false"), serde_json::json!(false));
+        assert_eq!(setting_value("007"), serde_json::json!("007"));
+        assert_eq!(setting_value("<none>"), serde_json::json!("<none>"));
+        assert_eq!(
+            setting_value("0 configured"),
+            serde_json::json!("0 configured")
+        );
+    }
 
     #[test]
     fn a_broken_pipe_is_named_as_such() {

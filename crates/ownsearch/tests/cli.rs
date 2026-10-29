@@ -612,11 +612,30 @@ fn config_show_masks_every_secret() {
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("bearer_tokens"));
     assert!(!text.contains(&"a".repeat(40)));
+    let settings: serde_json::Value = serde_json::from_str(&text).expect("json");
+    assert!(settings["scan_concurrency"].is_number(), "{text}");
+    assert!(settings["http"].is_boolean(), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn audit_reports_a_missing_ledger() {
+fn the_state_dir_flag_is_read_before_the_subcommand() {
+    let dir = temp_dir("cli-flag-order");
+    let state = dir.join("state");
+    let output = {
+        let mut command = Command::new(binary());
+        command.args(["--state-dir", &state.display().to_string(), "db", "path"]);
+        command.env("OWNSEARCH_OFFLINE", "true");
+        command.output().expect("run")
+    };
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains(&state.display().to_string()), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_missing_ledger_is_reported_as_empty() {
     let dir = temp_dir("cli-audit");
     let mut command = Command::new(binary());
     command.args(["audit", "verify"]);
@@ -624,9 +643,11 @@ fn audit_reports_a_missing_ledger() {
         command.env(key, value);
     }
     let output = command.output().expect("run");
-    assert!(!output.status.success());
-    let text = String::from_utf8_lossy(&output.stderr);
-    assert!(text.contains("cannot read"));
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("no ledger yet"));
+    assert!(text.contains("nothing to verify"));
+    assert!(!dir.join("ledger").join("args.key").exists());
     let rotate = {
         let mut command = Command::new(binary());
         command.args(["audit", "rotate"]);

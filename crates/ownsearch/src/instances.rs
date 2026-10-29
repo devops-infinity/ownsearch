@@ -5,8 +5,8 @@ use serde_json::json;
 
 use crate::cli::{InstancesAction, InstancesArgs};
 
-pub(crate) fn run(args: InstancesArgs) -> anyhow::Result<()> {
-    let settings = Settings::load(args.common.overrides()).context("resolving settings")?;
+pub(crate) fn run(args: InstancesArgs, common: &crate::cli::CommonArgs) -> anyhow::Result<()> {
+    let settings = Settings::load(common.overrides()).context("resolving settings")?;
     let store = Store::open(&settings.database_path()).context("opening the state database")?;
     store.warm_up()?;
     match args.action {
