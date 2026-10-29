@@ -6,11 +6,11 @@ Write to sazzad@devops.bd with the subject line `OwnSearch security`. Include th
 
 Do not report a security problem through a public issue, pull request, or discussion. If the address above does not answer within the acknowledgement window, open a bare issue that asks for a private contact route and carries no detail.
 
-You get an acknowledgement within three working days. A fix ships in the next release, and a published advisory names the affected versions once the fix is published.
+You get an acknowledgement within three working days, and a status update with the fix plan once the report is triaged. A fix ships in the next release, and a published advisory names the affected versions. The project targets the fix and its advisory within 90 days of confirming a report.
 
 ## Supported versions
 
-Version 0.3.x receives security fixes. A release outside that line gets a fix only when the problem can be exploited without special conditions and the fix does not break compatibility.
+Version 0.4.x receives security fixes. A release outside that line gets a fix only when the problem can be exploited without special conditions and the fix does not break compatibility.
 
 ## What OwnSearch handles
 
@@ -25,7 +25,7 @@ Version 0.3.x receives security fixes. A release outside that line gets a fix on
 
 OwnSearch stores no credentials for the searched instances, sends no telemetry, and holds no user accounts.
 
-At startup and on each discovery window it fetches `https://searx.space/data/instances.json`, unless offline mode or `OWNSEARCH_DISCOVERY_URL` changes that. Other requests go to an instance you scan or to a URL you pass to a fetch, and the public-address guard is off when `OWNSEARCH_ALLOW_PRIVATE_INSTANCES=true`.
+At startup, when local discovery state is older than the refresh window, and on each discovery window after that, it fetches `https://searx.space/data/instances.json`, unless offline mode or `OWNSEARCH_DISCOVERY_URL` changes that. Other requests go to an instance you scan or to a URL you pass to a fetch, and the public-address guard is off when `OWNSEARCH_ALLOW_PRIVATE_INSTANCES=true`.
 
 ## Scope
 
@@ -43,7 +43,7 @@ Out of scope:
 - Content returned by upstream engines.
 - A client that chooses to ignore the untrusted-data framing of search results.
 
-## Dependency and release cadence
+## Dependency and release checks
 
 - Run `tools/verify.sh` before every release and after every dependency change. It runs the full gate, including cargo audit, cargo deny, cargo machete, and a secret scan.
 - Recheck the advisory suppressions in `deny.toml` by their stated dates. A suppression past its date fails `tools/verify.sh` on the next run, including the pre-push hook.
@@ -53,4 +53,5 @@ Out of scope:
 
 - The operator of a public instance sees your query. This is how public instances work.
 - A search snippet can still be written to persuade a model. OwnSearch sanitizes text, caps length, keeps attribution, and never treats result text as an instruction, but it cannot make the text true.
-- A bot check, a CAPTCHA, or a rate limit is a control set by the operator. OwnSearch records it and stops. It never works around one.
+- No penetration test has been performed on this service. It binds to loopback by default, has a single operator, and holds no accounts. That decision reopens the moment the port is exposed beyond loopback or a second party receives a token.
+- A bot check, a CAPTCHA, or a rate limit is a control set by the operator. OwnSearch records it and stops. It runs no proof of work and adds no header, proxy, or user agent to get past one. With `OWNSEARCH_CAPSOLVER_KEY` set, a challenge that appears only in a rendered page is sent to CapSolver to solve, and the page URL and site key go with it.
