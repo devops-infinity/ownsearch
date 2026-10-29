@@ -23,16 +23,27 @@ fn token() -> String {
     "t".repeat(40)
 }
 
-async fn wait_ready(client: &reqwest::Client, base: &str) {
+async fn wait_ready(
+    client: &reqwest::Client,
+    base: &str,
+    handle: &mut tokio::task::JoinHandle<ownsearch_core::Result<()>>,
+) -> Result<(), String> {
     for _ in 0..600 {
+        if handle.is_finished() {
+            return Err(match handle.await {
+                Ok(Ok(())) => "the server stopped before it answered".to_owned(),
+                Ok(Err(error)) => format!("the server stopped with: {error}"),
+                Err(error) => format!("the server task failed: {error}"),
+            });
+        }
         if let Ok(response) = client.get(format!("{base}/healthz")).send().await
             && response.status().is_success()
         {
-            return;
+            return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("the server never answered on {base}");
+    Err(format!("no answer within 30 seconds on {base}"))
 }
 
 struct Server {
@@ -51,28 +62,40 @@ impl Drop for Server {
 
 async fn start(name: &str, extra: &[(&str, &str)]) -> Server {
     ownsearch_core::install_crypto_provider();
-    let dir = common::temp_dir(name);
-    let port = free_port();
-    let bind = format!("127.0.0.1:{port}");
-    let mut pairs: Vec<(&str, &str)> = vec![
-        ("OWNSEARCH_BIND", bind.as_str()),
-        ("OWNSEARCH_HTTP", "true"),
-    ];
-    pairs.extend_from_slice(extra);
-    let settings: Settings = common::settings_with(&dir, &pairs);
-    let handle = tokio::spawn(async move { serve_http(settings).await });
-    let base = format!("http://127.0.0.1:{port}");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .expect("client");
-    wait_ready(&client, &base).await;
-    Server {
-        handle,
-        base,
-        client,
-        dir,
+    let mut failure = String::new();
+    for attempt in 0..3 {
+        let dir = common::temp_dir(&format!("{name}-{attempt}"));
+        let port = free_port();
+        let bind = format!("127.0.0.1:{port}");
+        let mut pairs: Vec<(&str, &str)> = vec![
+            ("OWNSEARCH_BIND", bind.as_str()),
+            ("OWNSEARCH_HTTP", "true"),
+        ];
+        pairs.extend_from_slice(extra);
+        let settings: Settings = common::settings_with(&dir, &pairs);
+        let mut handle = tokio::spawn(async move { serve_http(settings).await });
+        let base = format!("http://127.0.0.1:{port}");
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("client");
+        match wait_ready(&client, &base, &mut handle).await {
+            Ok(()) => {
+                return Server {
+                    handle,
+                    base,
+                    client,
+                    dir,
+                };
+            }
+            Err(reason) => {
+                handle.abort();
+                failure = reason;
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
     }
+    panic!("the server did not start after three attempts: {failure}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
