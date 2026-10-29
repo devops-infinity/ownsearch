@@ -4,6 +4,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-30
+
 ### Fixed
 
 - TLS verification no longer fails with `UnknownIssuer` when the host trust store is missing, unreadable, or rejects every chain. The HTTP client and the TLS probe now trust the bundled Mozilla root set and add the platform roots when they load, so a scan works on a fresh container, a keychain-less macOS shell, and a static build alike.
@@ -236,7 +238,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - PDF text is read with `lopdf`, so the tree no longer pulls the unmaintained `pdf-extract` dependency.
 - Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.
 
-[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/devops-infinity/ownsearch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/devops-infinity/ownsearch/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/devops-infinity/ownsearch/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/devops-infinity/ownsearch/compare/v0.1.2...v0.2.0
