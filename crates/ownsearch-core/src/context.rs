@@ -8,7 +8,6 @@ use crate::client::FleetClient;
 use crate::config::Settings;
 use crate::db::Store;
 use crate::error::{Error, Result};
-use crate::instances::BootstrapSnapshot;
 use crate::ledger::{Ledger, args_hash};
 use crate::tls_probe::TlsProber;
 
@@ -321,13 +320,10 @@ impl ToolContext {
     }
 
     pub fn ensure_bootstrap(&self) -> Result<(usize, usize)> {
-        if self.store.bootstrap_imported()? || self.store.instance_count()? > 0 {
-            return Ok((0, 0));
+        let outcome = self.store.warm_up()?;
+        if outcome.0 == 0 {
+            return Ok(outcome);
         }
-        let snapshot = BootstrapSnapshot::embedded()?;
-        let outcome = self
-            .store
-            .import_bootstrap(&snapshot, crate::time::now_unix())?;
         if let Err(error) = self.store.write_snapshot(&self.settings.snapshot_path()) {
             tracing::warn!(%error, "the state snapshot could not be written");
         }

@@ -129,7 +129,7 @@ Searches use the active fleet. When no instance is active, OwnSearch falls back 
 }
 ```
 
-No API key is needed. The only secret OwnSearch can hold is an HTTP bearer token, used only when you serve Streamable HTTP.
+No API key is needed to search. OwnSearch holds two secrets at most: an HTTP bearer token, used only when you serve Streamable HTTP, and an optional CapSolver key, used only when you turn on the paid captcha service. Neither is read from a flag or the profile; both come from the environment, and the bearer token can also live in the OS keychain.
 
 Over Streamable HTTP, point the client at `http://127.0.0.1:8774/mcp`, or at the same host with no path. Both serve the MCP endpoint, and any other path answers 404 with a problem body. The port also answers `/healthz`, `/startupz`, `/readyz`, and `/metrics`. Send `Authorization: Bearer <token>` once `OWNSEARCH_BEARER_TOKENS` is set. The REST calls `POST /v1/search` and `POST /v1/fetch` take the tool arguments as the JSON body.
 
@@ -141,7 +141,7 @@ Over Streamable HTTP, point the client at `http://127.0.0.1:8774/mcp`, or at the
 - `ownsearch_instance_health`: hard gate result, certificate days left, TLS protocol and grade, median search time, cooldown, consecutive failures, and the most recent lifecycle events.
 - `ownsearch_scan`: refresh discovery, probe instances, rescore, and reselect the fleet. It defaults to `dry_run: true`. Within one process, a writing scan runs one at a time per state database, waits `OWNSEARCH_SCAN_MIN_INTERVAL_SECS` between runs, and refuses a named instance that is not yet due unless the call sets `force`.
 - `ownsearch_session`: local call counts, cache state, ledger length and head, and fleet size. No network call.
-- `ownsearch_db_query`: bounded read-only queries over instances, quality, policy overrides, capability snapshots, events, snapshots, and discovery runs. Each entity applies its own filters, and a filter that the selected entity cannot apply is refused instead of ignored. Events page in SQL, so any offset is reachable. It never accepts SQL.
+- `ownsearch_db_query`: bounded read-only queries over instances, quality, policy overrides, capability snapshots, events, snapshots, discovery runs, and hourly probe metrics. Each entity applies its own filters, and a filter that the selected entity cannot apply is refused instead of ignored. Events page in SQL, so any offset is reachable. It never accepts SQL.
 - `ownsearch_db_crud`: one typed lifecycle or policy change. It needs write mode, a reason, and a one-use confirmation token from a dry-run preview. It cannot delete an instance row.
 
 Every tool returns `structuredContent` plus a one-line text summary. Every input schema sets `additionalProperties: false`. Every field a preset may drop is optional in the published output schema.
@@ -204,7 +204,7 @@ Fleet selection sorts by score, takes at most `OWNSEARCH_FLEET_MAX` instances, a
 
 Settings resolve in this order: CLI flags, `OWNSEARCH_*` environment variables, a TOML profile at `${XDG_CONFIG_HOME}/ownsearch/profile.toml`, then built-in defaults.
 
-Most environment variables have a matching profile key: drop the `OWNSEARCH_` prefix and lowercase the rest. For example `OWNSEARCH_FLEET_MAX` is `fleet_max`, and `OWNSEARCH_STATE_DIR` is `state_dir`. Three keys do not follow the pattern: `OWNSEARCH_BROWSER_PATH` is `browser_executable`, and `OWNSEARCH_BEARER_TOKENS` and `OWNSEARCH_PROFILE` have no profile key. Two keys exist only in the profile: `cache_max_bytes` and `preset`.
+Most environment variables have a matching profile key: drop the `OWNSEARCH_` prefix and lowercase the rest. For example `OWNSEARCH_FLEET_MAX` is `fleet_max`, and `OWNSEARCH_STATE_DIR` is `state_dir`. Three keys do not follow the pattern: `OWNSEARCH_BROWSER_PATH` is `browser_executable`, and `OWNSEARCH_BEARER_TOKENS` and `OWNSEARCH_PROFILE` have no profile key. Two keys exist only in the profile: `cache_max_bytes` and `preset`. The secrets `OWNSEARCH_BEARER_TOKENS`, `OWNSEARCH_CAPSOLVER_KEY`, and `OWNSEARCH_PROXY` have no profile key: a profile that names one is refused when it loads.
 
 ### Paths and transports
 
@@ -363,7 +363,7 @@ The state directory is created with mode 0700 and files with mode 0600. WAL mode
 
 The database is SQLite in WAL mode with foreign keys on, STRICT tables, and a checksummed migration ledger. One migration file holds the whole schema: tables, foreign keys, checks, indexes, and views, so a development build always creates the current shape in one step. The column-level schema is `crates/ownsearch-core/src/db/migrations/0001_initial.sql`; this page does not repeat it.
 
-Tables: `schema_migrations`, `application_metadata`, `discovery_sources`, `discovery_runs`, `instances`, `capability_snapshots`, `engines`, `categories`, `capability_engines`, `capability_categories`, `probes`, `tls_observations`, `hourly_probe_metrics`, `instance_quality`, `instance_events`, `fleet_snapshots`, `instance_policy_overrides`, and `maintenance_runs`. Two views serve the hot paths: `active_fleet` and `scan_due`.
+Tables: `schema_migrations`, `application_metadata`, `discovery_sources`, `discovery_runs`, `instances`, `capability_snapshots`, `engines`, `categories`, `capability_engines`, `capability_categories`, `probes`, `tls_observations`, `hourly_probe_metrics`, `instance_quality`, `instance_events`, `fleet_snapshots`, `instance_policy_overrides`, and `maintenance_runs`.
 
 `ownsearch db verify` checks the file's integrity and foreign keys and prints the schema version. The store also checks each migration checksum when it opens. A backup is written with `VACUUM INTO` and verified before it is used.
 
@@ -428,7 +428,7 @@ Apply the change to the fleet with a scan:
 ownsearch scan --instance 1 --force
 ```
 
-An instance is never deleted, so its probe history and events stay readable. `retire` is the delete step of the lifecycle, and `restore` returns a retired or missing instance to candidate. The same operations exist over MCP through `ownsearch_db_crud`, with the preview and one-use token flow.
+An instance is never deleted, so its probe history and events stay readable. `retire` is the delete step of the lifecycle. `restore` returns a retired, missing, unlisted, quarantined, or denied instance to candidate, clears the denial, and re-enables scanning. `allow` clears a denial without changing the status. `reset-status` clears every override and resets the row to candidate. `deny` quarantines the row, stops the scanner, and says how to undo itself. A Tor row sits in `excluded` and is never probed or served; set its type to normal first if you believe it is reachable. The same operations exist over MCP through `ownsearch_db_crud`, with the preview and one-use token flow.
 
 ## AI-assisted database changes
 
@@ -476,6 +476,8 @@ cargo test -p ownsearch-core --test live -- --ignored --nocapture
 ## Privacy
 
 Queries go to the public instances you selected and to the engines behind them. OwnSearch stores no raw query text. The ledger records a keyed hash of the arguments, the tool name, the status, the upstream HTTP status class, timing, byte counts, parser, and instance ids. There is no telemetry.
+
+One more destination exists, and only when you set it: with `OWNSEARCH_CAPSOLVER_KEY` set, a detected captcha sends the page URL and the site key to `https://api.capsolver.com` to solve the challenge. Nothing else leaves the machine for that call, and the service is off without a key.
 
 ## Security
 

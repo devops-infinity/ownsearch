@@ -49,9 +49,9 @@ pub const SPECS: &[ToolSpec] = &[
     ToolSpec {
         name: "ownsearch_scan",
         title: "Scan the instance fleet",
-        description: "Refresh discovery from searx.space, probe candidates once each, rescore them, and reselect the active fleet. Set dry_run false to persist the result.",
+        description: "Refresh discovery from searx.space, probe candidates once each, rescore them, and reselect the active fleet. A dry run (the default) writes nothing; setting dry_run false overwrites lifecycle status, quality, and fleet ranks for the whole fleet.",
         read_only: false,
-        destructive: false,
+        destructive: true,
         idempotent: false,
         open_world: true,
     },

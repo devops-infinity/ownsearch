@@ -52,8 +52,9 @@ pub use config::{
 pub use context::ToolContext;
 pub use crud::{CrudRequest, CrudService};
 pub use db::{
-    CapabilityRecord, EventRecord, FleetRow, InstanceFilter, InstanceRow, KeepWindow, ProbeRecord,
-    ScanTarget, ScanUpdate, StatusCounts, Store, TlsRecord, instance_to_json,
+    CapabilityRecord, EventRecord, FleetRow, InstanceFilter, InstanceRow, KeepWindow,
+    OperatorAction, ProbeRecord, ScanTarget, ScanUpdate, StatusCounts, Store, TlsRecord,
+    instance_to_json,
 };
 pub use error::{Error, Result};
 pub use fetch::{FetchOutcome, FetchRequest, fetch as fetch_page};

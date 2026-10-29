@@ -133,7 +133,16 @@ impl ServerHandler for OwnsearchHandler {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> std::result::Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(self.tools.as_ref().clone())
+        let tools = if self.context.settings.ai_db_mode() == crate::types::AiDbMode::ReadOnly {
+            self.tools
+                .iter()
+                .filter(|tool| tool.name != "ownsearch_db_crud")
+                .cloned()
+                .collect()
+        } else {
+            self.tools.as_ref().clone()
+        };
+        Ok(ListToolsResult::with_all_items(tools)
             .with_ttl_ms(CACHE_TTL_MS)
             .with_cache_scope(CacheScope::Private))
     }

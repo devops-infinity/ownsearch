@@ -1,6 +1,6 @@
 use anyhow::Context;
 use ownsearch_core::instance_to_json;
-use ownsearch_core::{InstanceFilter, InstanceStatus, Settings, Store};
+use ownsearch_core::{InstanceFilter, InstanceStatus, OperatorAction, Settings, Store};
 use serde_json::json;
 
 use crate::cli::{InstancesAction, InstancesArgs};
@@ -8,6 +8,7 @@ use crate::cli::{InstancesAction, InstancesArgs};
 pub(crate) fn run(args: InstancesArgs) -> anyhow::Result<()> {
     let settings = Settings::load(args.common.overrides()).context("resolving settings")?;
     let store = Store::open(&settings.database_path()).context("opening the state database")?;
+    store.warm_up()?;
     match args.action {
         InstancesAction::List {
             status,
@@ -17,9 +18,12 @@ pub(crate) fn run(args: InstancesArgs) -> anyhow::Result<()> {
             let filter = InstanceFilter {
                 status: match status {
                     Some(raw) => Some(InstanceStatus::parse(&raw).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "unknown status {raw}; use candidate, active, probation, missing, quarantined, or retired"
-                        )
+                        let known = InstanceStatus::ALL
+                            .iter()
+                            .map(|value| value.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        anyhow::anyhow!("unknown status {raw}; use one of {known}")
                     })?),
                     None => None,
                 },
@@ -108,28 +112,89 @@ pub(crate) fn run(args: InstancesArgs) -> anyhow::Result<()> {
             ensure_row(&store, instance_id)?;
             let reason = reason.unwrap_or_else(|| "operator denied".to_owned());
             let (reason, _) = ownsearch_core::cap(&ownsearch_core::sanitize(&reason), 120);
-            let policy_row = store.upsert_override(
+            let status = store.apply_operator_action(
                 instance_id,
-                &json!({"denied": true, "scanEnabled": false}),
+                OperatorAction::Deny,
                 &[format!("operator.deny:{reason}")],
             )?;
-            store.set_status(
-                instance_id,
-                InstanceStatus::Quarantined,
-                &["policy.denied".to_owned()],
-            )?;
+            let policy_row = store.get_override(instance_id)?.unwrap_or(json!(null));
             println!("{}", serde_json::to_string_pretty(&policy_row)?);
+            println!(
+                "instance {instance_id} is {} and the scanner will not probe it; run `ownsearch instances allow {instance_id}` to undo",
+                status.as_str()
+            );
+            Ok(())
+        }
+        InstancesAction::Allow {
+            instance_id,
+            reason,
+        } => {
+            ensure_row(&store, instance_id)?;
+            let reason = reason.unwrap_or_else(|| "operator allowed".to_owned());
+            let (reason, _) = ownsearch_core::cap(&ownsearch_core::sanitize(&reason), 120);
+            let status = store.apply_operator_action(
+                instance_id,
+                OperatorAction::Allow,
+                &[format!("operator.allow:{reason}")],
+            )?;
+            println!(
+                "instance {instance_id} is {} and scanning is re-enabled",
+                status.as_str()
+            );
             Ok(())
         }
         InstancesAction::ResetStatus { instance_id } => {
             ensure_row(&store, instance_id)?;
-            store.delete_override(instance_id)?;
-            store.set_status(
+            let status = store.apply_operator_action(
                 instance_id,
-                InstanceStatus::Candidate,
+                OperatorAction::Reset,
                 &["operator.reset".to_owned()],
             )?;
-            println!("instance {instance_id} is candidate again with no policy override");
+            println!(
+                "instance {instance_id} is {} again with no policy override",
+                status.as_str()
+            );
+            Ok(())
+        }
+        InstancesAction::Events {
+            instance_id,
+            limit,
+            json: as_json,
+        } => {
+            if let Some(instance_id) = instance_id {
+                ensure_row(&store, instance_id)?;
+            }
+            let events = store.events_for(instance_id, usize::from(limit.clamp(1, 500)), 0)?;
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&events)?);
+            } else {
+                for event in &events {
+                    println!(
+                        "{} {} {} {} -> {}",
+                        event
+                            .get("eventId")
+                            .and_then(|value| value.as_i64())
+                            .unwrap_or(0),
+                        event
+                            .get("occurredAt")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("-"),
+                        event
+                            .get("kind")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("-"),
+                        event
+                            .get("oldValue")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("-"),
+                        event
+                            .get("newValue")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("-")
+                    );
+                }
+                println!("{} events", events.len());
+            }
             Ok(())
         }
         InstancesAction::Retire {
@@ -139,33 +204,25 @@ pub(crate) fn run(args: InstancesArgs) -> anyhow::Result<()> {
             ensure_row(&store, instance_id)?;
             let reason = reason.unwrap_or_else(|| "operator retired".to_owned());
             let (reason, _) = ownsearch_core::cap(&ownsearch_core::sanitize(&reason), 120);
-            store.set_status(
+            store.apply_operator_action(
                 instance_id,
-                InstanceStatus::Retired,
+                OperatorAction::Retire,
                 &[format!("operator.retire:{reason}")],
             )?;
             println!("instance {instance_id} is retired");
             Ok(())
         }
         InstancesAction::Restore { instance_id } => {
-            let row = store
-                .get_instance(instance_id)?
-                .ok_or_else(|| anyhow::anyhow!("instance {instance_id} does not exist"))?;
-            if !matches!(
-                row.status,
-                InstanceStatus::Retired | InstanceStatus::Missing
-            ) {
-                anyhow::bail!(
-                    "restore applies to a retired or missing instance, not {}",
-                    row.status.as_str()
-                );
-            }
-            store.set_status(
+            ensure_row(&store, instance_id)?;
+            let status = store.apply_operator_action(
                 instance_id,
-                InstanceStatus::Candidate,
+                OperatorAction::Restore,
                 &["operator.restore".to_owned()],
             )?;
-            println!("instance {instance_id} is candidate again");
+            println!(
+                "instance {instance_id} is {} and scanning is enabled",
+                status.as_str()
+            );
             Ok(())
         }
         InstancesAction::Add {

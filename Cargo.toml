@@ -72,7 +72,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls-native-certs = "0.8.5"
 x509-parser = "0.18.1"
-rusqlite = { version = "0.41.0", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 chromiumoxide = { package = "chromey", version = "2.58.2" }
 futures-util = "0.3.34"
 scraper = "0.29.0"

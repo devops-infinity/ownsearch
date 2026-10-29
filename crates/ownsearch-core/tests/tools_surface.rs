@@ -268,6 +268,9 @@ async fn every_query_entity_returns_rows() {
     let ctx = Arc::new(ToolContext::new(settings).expect("context"));
     let id = insert(&ctx.store, "https://searx.example/");
     activate(&ctx.store, id);
+    ctx.store
+        .record_metrics(id, ownsearch_core::ProbeKind::JsonSearch, 12, true, 3, 512)
+        .expect("metrics");
     for entity in [
         "instances",
         "quality",
@@ -276,6 +279,7 @@ async fn every_query_entity_returns_rows() {
         "events",
         "snapshots",
         "runs",
+        "metrics",
     ] {
         let result = call(&ctx, "ownsearch_db_query", json!({"entity": entity})).await;
         assert_eq!(result.is_error, Some(false), "{entity}");

@@ -402,7 +402,7 @@ async fn a_scan_of_a_single_instance_touches_only_that_instance() {
 fn the_store_is_reachable_from_the_test_harness() {
     let dir = common::temp_dir("scan-store");
     let store = Store::open(&dir.join("instances.db")).expect("store");
-    assert_eq!(store.schema_version().expect("version"), 1);
+    assert_eq!(store.schema_version().expect("version"), 4);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

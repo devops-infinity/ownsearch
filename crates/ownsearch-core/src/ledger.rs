@@ -75,12 +75,32 @@ pub struct Ledger {
 }
 
 struct State {
-    file: File,
+    file: Option<File>,
+    poison: Option<String>,
     offset: u64,
     seq: u64,
     head: String,
     oldest_ts: i64,
     totals: Totals,
+}
+
+impl State {
+    fn handle(&self) -> Result<&File> {
+        self.file.as_ref().ok_or_else(|| {
+            Error::Ledger(
+                self.poison
+                    .clone()
+                    .unwrap_or_else(|| "the ledger file is not open".to_owned()),
+            )
+        })
+    }
+
+    fn handle_mut(&mut self) -> Result<&mut File> {
+        let poison = self.poison.clone();
+        self.file.as_mut().ok_or_else(|| {
+            Error::Ledger(poison.unwrap_or_else(|| "the ledger file is not open".to_owned()))
+        })
+    }
 }
 
 impl std::fmt::Debug for Ledger {
@@ -100,7 +120,14 @@ impl Ledger {
         }
         let mut file = open_file(&path)?;
         lock_file(&file, &path)?;
-        let scanned = scan(&mut file, &path, key);
+        let scanned = scan(&mut file, &path, key).map_err(|error| match error {
+            Error::Ledger(message) if message.contains("does not match its own hash") => {
+                Error::Ledger(format!(
+                    "{message}; the arguments key no longer matches this chain (a missing args.key makes every row fail the hash); restore args.key, or archive the chain with `ownsearch audit rotate`"
+                ))
+            }
+            other => other,
+        });
         let repaired = scanned.and_then(|(valid_len, seq, head, oldest_ts, totals)| {
             let length = file.metadata()?.len();
             let mut valid_len = valid_len;
@@ -126,7 +153,8 @@ impl Ledger {
         Ok(Self {
             path,
             state: Mutex::new(State {
-                file,
+                file: Some(file),
+                poison: None,
                 offset: valid_len,
                 seq,
                 head,
@@ -148,27 +176,52 @@ impl Ledger {
         if state.oldest_ts == 0 || state.oldest_ts >= cutoff_unix {
             return Ok(false);
         }
-        lock_file(&state.file, &self.path)?;
-        let rotated = catch_up(&mut state, &self.path, key)
-            .and_then(|()| state.file.sync_all().map_err(Error::from))
-            .and_then(|()| {
-                let stamp = crate::time::rfc3339(crate::time::now_unix())
-                    .replace([':', '.'], "-")
-                    .replace('T', "_");
-                let archive = self.path.with_file_name(format!("calls-{stamp}.jsonl"));
-                std::fs::rename(&self.path, &archive)
-                    .map_err(|error| Error::Ledger(format!("cannot archive the ledger: {error}")))
-            });
-        if let Err(error) = rotated {
-            let _ = state.file.unlock();
-            return Err(error);
+        if let Some(reason) = &state.poison {
+            return Err(Error::Ledger(reason.clone()));
         }
-        state.file = open_append(&self.path)?;
-        state.offset = 0;
-        state.seq = 0;
-        state.head = GENESIS.to_owned();
-        state.oldest_ts = 0;
-        Ok(true)
+        {
+            let file = state.handle()?;
+            lock_file(file, &self.path)?;
+        }
+        let prepared = catch_up(&mut state, &self.path, key)
+            .and_then(|()| state.handle_mut()?.sync_all().map_err(Error::from));
+        if let Ok(file) = state.handle() {
+            let _ = file.unlock();
+        }
+        prepared?;
+        let stamp = crate::time::rfc3339(crate::time::now_unix())
+            .replace([':', '.'], "-")
+            .replace('T', "_");
+        let archive = self.path.with_file_name(format!("calls-{stamp}.jsonl"));
+        state.file = None;
+        if let Err(error) = std::fs::rename(&self.path, &archive) {
+            let reason = format!(
+                "the ledger was not archived because the rename to {} failed: {error}; the live file is unchanged at {}",
+                archive.display(),
+                self.path.display()
+            );
+            state.poison = Some(reason.clone());
+            return Err(Error::Ledger(reason));
+        }
+        match open_append(&self.path) {
+            Ok(file) => {
+                state.file = Some(file);
+                state.offset = 0;
+                state.seq = 0;
+                state.head = GENESIS.to_owned();
+                state.oldest_ts = 0;
+                state.poison = None;
+                Ok(true)
+            }
+            Err(error) => {
+                let reason = format!(
+                    "the ledger was archived as {} but the new live file could not be opened: {error}; fix the state directory, then restart or run `ownsearch audit rotate`",
+                    archive.display()
+                );
+                state.poison = Some(reason.clone());
+                Err(Error::Ledger(reason))
+            }
+        }
     }
 
     pub(crate) fn totals(&self) -> Totals {
@@ -193,9 +246,14 @@ impl Ledger {
             .state
             .lock()
             .map_err(|_| Error::Ledger("the ledger lock was poisoned".into()))?;
-        lock_file(&state.file, &self.path)?;
+        {
+            let file = state.handle()?;
+            lock_file(file, &self.path)?;
+        }
         let written = append_locked(&mut state, &self.path, record, key);
-        let _ = state.file.unlock();
+        if let Ok(file) = state.handle() {
+            let _ = file.unlock();
+        }
         written
     }
 }
@@ -227,12 +285,14 @@ fn append_locked(
     let row = sign(row, key)?;
     let mut line = serde_json::to_vec(&row)?;
     line.push(b'\n');
-    state
-        .file
-        .seek(SeekFrom::Start(state.offset))
-        .and_then(|_| state.file.write_all(&line))
-        .and_then(|()| state.file.sync_data())
-        .map_err(|error| Error::Ledger(format!("cannot write the ledger row: {error}")))?;
+    let offset = state.offset;
+    {
+        let file = state.handle_mut()?;
+        file.seek(SeekFrom::Start(offset))
+            .and_then(|_| file.write_all(&line))
+            .and_then(|()| file.sync_data())
+            .map_err(|error| Error::Ledger(format!("cannot write the ledger row: {error}")))?;
+    }
     state.offset = state.offset.saturating_add(line.len() as u64);
     if state.oldest_ts == 0 {
         state.oldest_ts = row.ts_unix;
@@ -254,8 +314,10 @@ fn catch_up(state: &mut State, path: &Path, key: &[u8]) -> Result<()> {
     file.read_to_string(&mut raw)?;
     for chunk in raw.split_inclusive('\n') {
         if !chunk.ends_with('\n') {
-            state.file.set_len(state.offset)?;
-            state.file.seek(SeekFrom::Start(state.offset))?;
+            let offset = state.offset;
+            let file = state.handle_mut()?;
+            file.set_len(offset)?;
+            file.seek(SeekFrom::Start(offset))?;
             break;
         }
         let trimmed = chunk.trim();

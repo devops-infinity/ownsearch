@@ -111,7 +111,7 @@ pub async fn refresh_discovery(
     force: bool,
     cancellation: &CancellationToken,
 ) -> Result<DiscoveryOutcome> {
-    if ctx.settings.offline() {
+    if ctx.settings.offline() || ctx.settings.ai_db_mode() == crate::types::AiDbMode::ReadOnly {
         return Ok(DiscoveryOutcome {
             skipped: true,
             ..DiscoveryOutcome::default()
@@ -284,6 +284,7 @@ pub async fn refresh_discovery(
         })
         .await?;
     }
+    ctx.bump_fleet_generation();
     Ok(DiscoveryOutcome {
         run_id: Some(run_id),
         discovered: discovered_len,
@@ -475,7 +476,9 @@ pub async fn run_scan(
                             "the scan deadline passed".to_owned(),
                         )
                     });
-            persist_probe(ctx, &probe, options.dry_run).await?;
+            if !cancellation.is_cancelled() {
+                persist_probe(ctx, &probe, options.dry_run).await?;
+            }
             probes.push(probe);
         }
     } else {
@@ -499,7 +502,9 @@ pub async fn run_scan(
             let joined = tokio::time::timeout_at(deadline, set.join_next()).await;
             match joined {
                 Ok(Some(Ok(probe))) => {
-                    persist_probe(ctx, &probe, options.dry_run).await?;
+                    if !cancellation.is_cancelled() {
+                        persist_probe(ctx, &probe, options.dry_run).await?;
+                    }
                     probes.push(probe);
                 }
                 Ok(Some(Err(error))) => {
@@ -883,26 +888,30 @@ fn explicit_target(ctx: &ToolContext, instance_id: i64, force: bool) -> Result<S
         .ok_or_else(|| Error::InvalidArgs(format!("instance {instance_id} does not exist")))?;
     if row.denied {
         return Err(Error::PolicyRefused(format!(
-            "instance {instance_id} is denied by an operator override"
+            "instance {instance_id} is denied by an operator override; run `ownsearch instances allow {instance_id}` to clear the denial"
         )));
     }
     if !row.scan_enabled {
         return Err(Error::PolicyRefused(format!(
-            "instance {instance_id} has scanning disabled"
+            "instance {instance_id} has scanning disabled; run `ownsearch instances restore {instance_id}` to re-enable it"
         )));
     }
     if row.status == crate::types::InstanceStatus::Retired {
         return Err(Error::PolicyRefused(format!(
-            "instance {instance_id} is retired"
+            "instance {instance_id} is retired; run `ownsearch instances restore {instance_id}` to bring it back"
         )));
     }
     let now = now_rfc3339();
     if let Some(until) = row.cooldown_until.as_deref()
         && until > now.as_str()
     {
-        return Err(Error::PolicyRefused(format!(
-            "instance {instance_id} is cooling down until {until}"
-        )));
+        if !force {
+            return Err(Error::PolicyRefused(format!(
+                "instance {instance_id} is cooling down until {until}; pass force to clear the cooldown and probe it now"
+            )));
+        }
+        ctx.store
+            .clear_cooldown(instance_id, &["operator.force_scan".to_owned()])?;
     }
     if !force
         && let Some(next) = row.next_scan_at.as_deref()
@@ -1661,10 +1670,9 @@ fn insert_report_probe_html(
 }
 
 fn select_and_rank(ctx: &ToolContext) -> Result<FleetSelection> {
-    let rows = ctx.store.list_instances(&crate::db::InstanceFilter {
-        limit: 500,
-        ..crate::db::InstanceFilter::default()
-    })?;
+    let rows = ctx
+        .store
+        .list_instances_unbounded(&crate::db::InstanceFilter::default())?;
     let candidates: Vec<FleetCandidate> = rows
         .iter()
         .filter(|row| {

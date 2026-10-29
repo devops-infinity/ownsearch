@@ -370,6 +370,9 @@ async fn run_scan(
     cancellation: &CancellationToken,
 ) -> Result<ToolOutcome> {
     let options = args.options();
+    if !options.dry_run && ctx.settings.ai_db_mode() == crate::types::AiDbMode::ReadOnly {
+        return Err(Error::WriteDisabled);
+    }
     let output: ScanOutput = crate::scanner::run_scan(ctx, &options, cancellation).await?;
     let text = format!(
         "{} instances probed; {} added, {} missing, {} status changes, {} in the fleet{}",

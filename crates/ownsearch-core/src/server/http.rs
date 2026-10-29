@@ -67,7 +67,7 @@ struct HttpState {
 pub async fn serve_http(settings: Settings) -> Result<()> {
     if let Some(error) = settings.bearer_token_error() {
         return Err(Error::Config(format!(
-            "the stored bearer token could not be read: {error}"
+            "the stored bearer token could not be read: {error}; run `ownsearch config set-bearer-token` to store it again"
         )));
     }
     let tokens = settings.bearer_tokens().to_vec();
@@ -128,18 +128,16 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         cancel: cancel.clone(),
     };
     let rest = Router::new()
-        .route(
-            "/v1/search",
-            post(rest_search).on(axum::routing::MethodFilter::OPTIONS, preflight),
-        )
-        .route(
-            "/v1/fetch",
-            post(rest_fetch).on(axum::routing::MethodFilter::OPTIONS, preflight),
-        )
+        .route("/v1/search", post(rest_search))
+        .route("/v1/fetch", post(rest_fetch))
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(REST_TIMEOUT_SECS),
         ));
+    let preflight_routes = Router::new()
+        .route("/v1/search", axum::routing::options(preflight))
+        .route("/v1/fetch", axum::routing::options(preflight))
+        .layer(middleware::from_fn_with_state(state.clone(), reject_origin));
     let protected = Router::new()
         .route("/startupz", get(startupz))
         .route("/readyz", get(readyz))
@@ -188,6 +186,7 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .with_state(state);
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .merge(preflight_routes)
         .merge(protected)
         .method_not_allowed_fallback(method_not_allowed)
         .fallback(not_found)
@@ -518,6 +517,11 @@ fn problem(
         axum::http::header::CONTENT_TYPE,
         HeaderValue::from_static("application/problem+json"),
     );
+    if status == StatusCode::TOO_MANY_REQUESTS && !response.headers().contains_key(RETRY_AFTER) {
+        response
+            .headers_mut()
+            .insert(RETRY_AFTER, HeaderValue::from_static("1"));
+    }
     response
 }
 
@@ -630,6 +634,7 @@ fn rest_error_status(code: Option<&str>) -> StatusCode {
         Some("ownsearch.busy") => StatusCode::TOO_MANY_REQUESTS,
         Some("ownsearch.state_error")
         | Some("ownsearch.state_corrupted")
+        | Some("ownsearch.state_newer")
         | Some("ownsearch.config_error")
         | Some("ownsearch.internal_error") => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -646,14 +651,28 @@ async fn not_found(headers: HeaderMap) -> Response {
     )
 }
 
-async fn method_not_allowed(headers: HeaderMap) -> Response {
-    problem(
+async fn method_not_allowed(headers: HeaderMap, uri: axum::extract::OriginalUri) -> Response {
+    let allowed = match uri.path() {
+        "/v1/search" | "/v1/fetch" => Some("POST, OPTIONS"),
+        "/" | "/mcp" => Some("POST"),
+        "/healthz" | "/startupz" | "/readyz" | "/metrics" => Some("GET"),
+        _ => None,
+    };
+    let mut response = problem(
         StatusCode::METHOD_NOT_ALLOWED,
         "ownsearch.method_not_allowed",
         "this path does not accept that method",
-        "Send the method the route documents.",
+        "Send the method the Allow header lists.",
         &request_id_of(&headers),
-    )
+    );
+    if let Some(allowed) = allowed
+        && let Ok(value) = HeaderValue::from_str(allowed)
+    {
+        response
+            .headers_mut()
+            .insert(axum::http::header::ALLOW, value);
+    }
+    response
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -806,6 +825,12 @@ async fn preflight() -> Response {
 }
 
 async fn gate_requests(State(state): State<HttpState>, request: Request, next: Next) -> Response {
+    if matches!(
+        request.uri().path(),
+        "/healthz" | "/startupz" | "/readyz" | "/metrics"
+    ) {
+        return next.run(request).await;
+    }
     let Ok(_permit) = state.gate.clone().try_acquire_owned() else {
         let mut response = rejection(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -894,7 +919,7 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
         .map(|info| info.0.ip());
     let address = client_address(request.headers(), peer);
     if let Some(address) = address
-        && locked_out(&state, address)
+        && let Some(remaining) = lockout_remaining(&state, address)
     {
         let mut response = rejection(
             StatusCode::TOO_MANY_REQUESTS,
@@ -902,9 +927,10 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
             "too many failed authentication attempts",
             &instance,
         );
-        response
-            .headers_mut()
-            .insert(RETRY_AFTER, HeaderValue::from_static("1"));
+        response.headers_mut().insert(
+            RETRY_AFTER,
+            HeaderValue::from_str(&remaining.to_string()).unwrap_or(HeaderValue::from_static("1")),
+        );
         return response;
     }
     let Some(presented) = bearer_token(&request) else {
@@ -962,13 +988,15 @@ fn bearer_token(request: &Request) -> Option<&str> {
     Some(token)
 }
 
-fn locked_out(state: &HttpState, address: std::net::IpAddr) -> bool {
+fn lockout_remaining(state: &HttpState, address: std::net::IpAddr) -> Option<u64> {
     let Ok(mut failed) = state.failed.lock() else {
-        return false;
+        return None;
     };
     failed.retain(|_, (_, _, last)| last.elapsed() < Duration::from_secs(LOCKOUT_SECS));
-    failed.get(&address).is_some_and(|(count, _, last)| {
-        *count >= FAILED_AUTH_LIMIT && last.elapsed() < Duration::from_secs(LOCKOUT_SECS)
+    failed.get(&address).and_then(|(count, _, last)| {
+        let elapsed = last.elapsed();
+        (*count >= FAILED_AUTH_LIMIT && elapsed < Duration::from_secs(LOCKOUT_SECS))
+            .then(|| LOCKOUT_SECS.saturating_sub(elapsed.as_secs()).max(1))
     })
 }
 
