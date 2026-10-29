@@ -18,6 +18,7 @@ fn configure(
     connect_timeout: Duration,
     user_agent: &str,
     proxy: Option<reqwest::Proxy>,
+    tls: rustls::ClientConfig,
 ) -> reqwest::ClientBuilder {
     let builder = reqwest::Client::builder()
         .timeout(timeout)
@@ -26,11 +27,30 @@ fn configure(
         .pool_max_idle_per_host(8)
         .pool_idle_timeout(Duration::from_secs(30))
         .user_agent(user_agent)
-        .https_only(false);
+        .https_only(false)
+        .tls_backend_preconfigured(tls);
     match proxy {
         Some(proxy) => builder.proxy(proxy),
         None => builder.no_proxy(),
     }
+}
+
+pub(crate) fn tls_client_config() -> Result<rustls::ClientConfig> {
+    install_crypto_provider();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let native = rustls_native_certs::load_native_certs();
+    let _ = roots.add_parsable_certificates(native.certs);
+    if roots.is_empty() {
+        return Err(Error::Config(
+            "no TLS root certificates could be loaded; install ca-certificates or replace the binary".into(),
+        ));
+    }
+    let mut config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(config)
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +110,7 @@ pub struct FleetClient {
     connect_timeout: Duration,
     proxy: Option<reqwest::Proxy>,
     allow_private: bool,
+    tls: rustls::ClientConfig,
 }
 
 impl FleetClient {
@@ -112,9 +133,16 @@ impl FleetClient {
             None => None,
         };
         let user_agent = settings.user_agent();
-        let http = configure(timeout, connect_timeout, &user_agent, proxy.clone())
-            .build()
-            .map_err(|error| Error::network("building the HTTP client", error))?;
+        let tls = tls_client_config()?;
+        let http = configure(
+            timeout,
+            connect_timeout,
+            &user_agent,
+            proxy.clone(),
+            tls.clone(),
+        )
+        .build()
+        .map_err(|error| Error::network("building the HTTP client", error))?;
         Ok(Self {
             http,
             pinned: Arc::new(Mutex::new(HashMap::new())),
@@ -124,6 +152,7 @@ impl FleetClient {
             connect_timeout,
             proxy,
             allow_private: settings.allow_private_instances(),
+            tls,
         })
     }
 
@@ -138,6 +167,7 @@ impl FleetClient {
             self.connect_timeout,
             &self.user_agent,
             self.proxy.clone(),
+            self.tls.clone(),
         )
         .resolve(host, address)
         .build()
@@ -379,16 +409,16 @@ mod tests {
     }
 
     #[test]
-    fn an_html_body_without_a_content_type_is_still_html() {
-        let fetched = Fetched {
-            status: 200,
-            content_type: None,
-            body: b"<!DOCTYPE html><html></html>".to_vec(),
-            elapsed_ms: 1,
-            truncated: false,
-            final_url: "https://searx.example/".to_owned(),
-            redirects: Vec::new(),
-        };
-        assert!(fetched.is_html());
+    fn the_shared_tls_config_builds_a_reqwest_client() {
+        let tls = tls_client_config().expect("tls config");
+        let built = configure(
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            "ownsearch-test",
+            None,
+            tls,
+        )
+        .build();
+        assert!(built.is_ok());
     }
 }

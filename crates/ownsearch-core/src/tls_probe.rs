@@ -77,20 +77,9 @@ impl std::fmt::Debug for TlsProber {
 
 impl TlsProber {
     pub fn new(timeout_secs: u64, allow_private: bool) -> Result<Self> {
-        crate::client::install_crypto_provider();
-        let mut roots = rustls::RootCertStore::empty();
-        let loaded = rustls_native_certs::load_native_certs();
-        let (added, _ignored) = roots.add_parsable_certificates(loaded.certs);
-        if added == 0 {
-            return Err(Error::Config(
-                "no system root certificates could be loaded; install ca-certificates".into(),
-            ));
-        }
-        let config = rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
+        let config = Arc::new(crate::client::tls_client_config()?);
         Ok(Self {
-            config: Arc::new(config),
+            config,
             timeout: Duration::from_secs(timeout_secs.max(1)),
             allow_private,
         })

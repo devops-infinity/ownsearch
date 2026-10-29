@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Fixed
+
+- TLS verification no longer fails with `UnknownIssuer` when the host trust store is missing, unreadable, or rejects every chain. The HTTP client and the TLS probe now trust the bundled Mozilla root set and add the platform roots when they load, so a scan works on a fresh container, a keychain-less macOS shell, and a static build alike.
+
 ## [0.4.0] - 2026-10-30
 
 ### Added
