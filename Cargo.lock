@@ -2519,6 +2519,7 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "url",
+ "webpki-roots",
  "wiremock",
  "x509-parser",
 ]

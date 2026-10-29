@@ -58,11 +58,11 @@ impl CapSolver {
     }
 
     fn build(key: SecretString, timeout_secs: u64, base: String) -> Result<Self> {
-        crate::client::install_crypto_provider();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
             .user_agent("OwnSearch captcha client")
+            .tls_backend_preconfigured(crate::client::tls_client_config()?)
             .build()
             .map_err(|error| Error::network("building the captcha client", error))?;
         Ok(Self {

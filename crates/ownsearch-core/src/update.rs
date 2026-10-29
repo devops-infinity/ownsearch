@@ -171,6 +171,7 @@ fn apply_from(base: &str) -> Result<UpdateStatus> {
         .current_version(env!("CARGO_PKG_VERSION"))
         .verify_checksum(self_update::Checksum::Sha256(digest))
         .check_install_path_writable(true)
+        .reqwest_client(download_client()?)
         .build()
         .map_err(|error| Error::Update(format!("preparing the update: {error}")))?
         .update()
@@ -213,14 +214,23 @@ fn guard_channel(channel: InstallChannel) -> Result<()> {
 }
 
 fn client() -> Result<reqwest::blocking::Client> {
+    build_client(Duration::from_secs(30))
+}
+
+fn download_client() -> Result<reqwest::blocking::Client> {
+    build_client(Duration::from_secs(600))
+}
+
+fn build_client(timeout: Duration) -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
+        .timeout(timeout)
         .connect_timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::limited(5))
         .user_agent(format!(
             "OwnSearch (self-update; +https://github.com/{OWNER}/{REPO}) v{}",
             env!("CARGO_PKG_VERSION")
         ))
+        .tls_backend_preconfigured(crate::client::tls_client_config()?)
         .build()
         .map_err(|error| Error::network("building the update client", error))
 }
@@ -351,6 +361,12 @@ fn digest_for(sums: &str, asset: &str) -> Option<String> {
 mod tests {
     use super::*;
     use wiremock::{Mock, MockServer as WireMockServer, ResponseTemplate};
+
+    #[test]
+    fn the_update_clients_build_with_the_shared_tls_config() {
+        assert!(client().is_ok());
+        assert!(download_client().is_ok());
+    }
 
     struct Server {
         runtime: tokio::runtime::Runtime,
