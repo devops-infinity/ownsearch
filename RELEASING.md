@@ -1,22 +1,72 @@
 # Releasing OwnSearch
 
-Every step below runs on your machine. Nothing here publishes on its own.
+How a release of OwnSearch is prepared, built, tagged, and published. Every step runs on a machine you control, and no step publishes on its own. For incident handling and rollback, see [docs/operations.md](docs/operations.md).
 
 ## One-time setup
 
-1. Install the tools the gate needs: `shellcheck`, `shfmt`, `bats`, `gitleaks`, `cargo-audit`, `cargo-deny`, `cargo-machete`, `cargo-llvm-cov`, `dist` (cargo-dist 0.32.0), `minisign`, `zig`, `cargo-zigbuild`, `zip`, `jq`, and `mcp-publisher`.
-2. For a local Linux package build, install `musl-tools` and link the compiler name the build looks for: `sudo apt-get install -y musl-tools`, then `sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc` and `sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/aarch64-linux-musl-gcc`. Without them the x86_64 musl archive fails at `aws-lc-sys` with `failed to find tool "x86_64-linux-musl-gcc"`.
-3. Run `tools/install-hooks.sh` once per checkout so the pre-commit and pre-push hooks use `.githooks`. The pre-commit hook scans the staged diff for secrets, and the pre-push hook runs `tools/verify.sh`.
-4. Create the minisign pair once with `minisign -G -p minisign.pub -s ~/.minisign/minisign.key`, then commit `minisign.pub`. The secret key stays out of the repository, and its text goes into the `MINISIGN_KEY` repository secret. Both are required: a release refuses to publish a signature that has no published key behind it.
-5. Store registry credentials with your usual tools. `tools/registry-auth.sh` refreshes the GitHub, npm, MCP Registry, and ghcr sessions from the environment and reports which ones are usable, without printing a secret.
+### Gate tools
 
-## Local checks
+The gate in `tools/verify.sh` needs these on `PATH`:
+
+- `cargo`, with the Rust 1.94.1 toolchain installed through `rustup`.
+- `shellcheck`, `shfmt`, `bats`, `gitleaks`, `cargo-audit`, `cargo-deny`, `cargo-machete`, `cargo-llvm-cov`, `cargo-nextest`, `cargo-semver-checks`, and `python3`.
+- `musl-tools`, plus the two compiler names the musl targets look for:
+
+```sh
+sudo apt-get install -y musl-tools
+sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
+sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/aarch64-linux-musl-gcc
+```
+
+Without the symlinks, the x86_64 musl archive fails at `aws-lc-sys` with `failed to find tool "x86_64-linux-musl-gcc"`.
+
+### Packaging tools
+
+`tools/release.sh --package` needs `cargo-dist`, `minisign`, `zig`, `cargo-zigbuild`, `zip`, and `jq`. Publishing needs `mcp-publisher`.
+
+### Hooks
+
+Run `tools/install-hooks.sh` once per checkout. The pre-commit hook scans the staged diff for secrets, and the pre-push hook runs `tools/verify.sh`.
+
+### Signing key
+
+Create the minisign pair once, and commit the public half:
+
+```sh
+minisign -G -p minisign.pub -s ~/.minisign/minisign.key
+```
+
+The secret key stays out of the repository. Its text goes into the `MINISIGN_KEY` repository secret, which the release workflow uses. A release refuses to publish a signature that has no published key behind it.
+
+### Registry credentials
+
+Store these outside the repository. `tools/registry-auth.sh` reports which sessions are usable and never prints a secret.
+
+- GitHub CLI and ghcr: `GITHUB_TOKEN`, or an existing `gh auth login`.
+- MCP Registry: `MCP_GITHUB_TOKEN`, else `GITHUB_PAT`, else `GITHUB_PERSONAL_ACCESS_TOKEN`, with `read:org`.
+- npm: `NPM_TOKEN`, or run `tools/npm-auth-setup.sh` once.
+- crates.io: `CARGO_REGISTRY_TOKEN`.
+
+## Run the gate
 
 ```sh
 tools/verify.sh
 ```
 
-The gate runs shell syntax, ShellCheck, shfmt, Bats (when installed), formatting, check, Clippy, tests, doc tests, docs, cargo audit, cargo deny, cargo machete, coverage, and a Gitleaks scan over the tree and history. A skipped check is reported. `OWNSEARCH_STRICT_GATE=1` turns a skip into a failure.
+The gate runs these checks, in this order:
+
+- Shell syntax over `tools/*.sh` and both hooks.
+- ShellCheck, the shell tests through Bats, and `shfmt -d`.
+- `cargo fmt --all -- --check`, `cargo check`, and Clippy with `-D warnings`.
+- The workspace tests, then the same suite on Rust 1.94.1 for the MSRV floor.
+- Doc tests, then `cargo doc` with `RUSTDOCFLAGS="-D warnings"`.
+- `cargo audit`, `cargo deny check`, and the suppression recheck dates in `deny.toml`.
+- `cargo machete` for unused dependencies, then line coverage against the 80 percent floor.
+- The version stamped into `server.json` and `mcpb/manifest.json`.
+- `cargo semver-checks check-release -p ownsearch-core` against the last tag.
+- A Gitleaks scan over the tree and over the commit history.
+
+A tool that is not installed is skipped and named. `OWNSEARCH_STRICT_GATE=1` turns a skip into a failure, which is what a release runs under.
 
 ## Prepare a version
 
@@ -27,9 +77,9 @@ tools/release.sh --prepare --major
 tools/release.sh --prepare --version 1.2.3
 ```
 
-The script refuses a dirty tree and a version that is not newer than the current one. It stamps the version into the workspace manifest, the binary dependency, `Cargo.lock`, every version field in the MCP Registry manifest, the bundle manifest, and the default in the Dockerfile, then inserts the changelog heading, adds the compare link, and checks every stamped file. A stamp that missed a file stops the script before it finishes. Edit the changelog text, then commit the preparation.
+The script refuses a dirty tree and a version that is not newer than the current one. It stamps the version into `Cargo.toml`, the `ownsearch-core` requirement, `Cargo.lock`, `server.json`, `mcpb/manifest.json`, and the default in the `Dockerfile`, then inserts the changelog heading and adds the compare link. A stamp that misses a file stops the script before it finishes.
 
-The version number is chosen by the Principal Architect. Do not invent one.
+Edit the changelog text, commit the preparation, and merge it into `main`.
 
 ## Package locally
 
@@ -37,7 +87,11 @@ The version number is chosen by the Principal Architect. Do not invent one.
 tools/release.sh --package
 ```
 
-This runs the strict gate, reads the target list from `dist plan`, and builds every target this host can build. It then builds the global artifacts: the shell and PowerShell installers, `ownsearch.rb` for Homebrew, and the npm package. Everything lands in `dist/`: one archive for each target this host built, `source.tar.gz`, the installers, the formula, the npm package, and the MCPB bundle built from the Linux x86_64 archive. `sha256.sum` covers every archive, the installers, the formula, the npm package, the bundle, and any bill of materials in the directory. It is signed with minisign when `~/.minisign/minisign.key` exists and `minisign.pub` is in the repository. A run that skips a target is refused unless `OWNSEARCH_ALLOW_PARTIAL=1` is set, because the installers and the formula name every target. The host binary is installed into `~/.local/bin`, or into the directory in `OWNSEARCH_INSTALL_DIR`. Nothing is uploaded.
+`--package` needs a clean tree and changelog entries under the current version. It runs the strict gate, reads the target list from `dist plan`, and builds every target this host supports. Run it on macOS to include the two Darwin targets, and on Windows for the Windows target. A target that needs another host is skipped, and a skipped target is refused unless `OWNSEARCH_ALLOW_PARTIAL=1` is set, because the installers and the formula name every target.
+
+Everything lands in `dist/`: one archive per target this host built, `source.tar.gz`, the shell and PowerShell installers, `ownsearch.rb`, the npm package, and the MCPB bundle built from the Linux x86_64 archive. `sha256.sum` covers every archive, the installers, the formula, the npm package, the bundle, and any bill of materials in the directory, and it is signed with minisign when `~/.minisign/minisign.key` exists and `minisign.pub` is in the repository.
+
+The host binary is installed into `~/.local/bin`, or into the directory in `OWNSEARCH_INSTALL_DIR`. Nothing is uploaded.
 
 ## Tag
 
@@ -45,42 +99,87 @@ This runs the strict gate, reads the target list from `dist plan`, and builds ev
 tools/release.sh --tag
 ```
 
-This requires a clean tree, changelog entries under the current version heading, and a `dist/` packaged for that version. It runs the strict gate, refuses a tag that already exists, and creates `vX.Y.Z` locally: signed when `user.signingkey` is set, and annotated with a warning when it is not. It never pushes. Push the tag only when the Principal Architect orders it. A `v*` tag starts the release workflow in `.github/workflows/release.yml`.
+`--tag` needs a clean tree, changelog entries under the current version heading, and a `dist/` packaged for that version. It runs the strict gate, refuses a tag that already exists, and creates `vX.Y.Z` at `HEAD`. The tag is signed when `user.signingkey` is set, and annotated with a warning when it is not. The script never pushes.
 
-## Edition policy
+## Push the tag
 
-A new Rust edition moves through `cargo update`, `cargo fix --edition`, the edition field in the workspace manifest, the full gate in `tools/verify.sh`, and `cargo fmt --all`, in one change. Staying on the current edition is a recorded decision, not an omission.
+```sh
+git push origin vX.Y.Z
+```
 
-## Semver checks
+A `v*` tag starts the release workflow in `.github/workflows/release.yml`. That workflow is the only publisher of the GitHub release. It takes the version from the tag, builds all seven targets from `[workspace.metadata.dist]`, cross-builds both musl targets on glibc runners with `musl-tools`, and attaches every archive, both installers, `ownsearch.rb`, `ownsearch-npm-package.tar.gz`, the MCPB bundle, `sha256.sum` with its signature, and `minisign.pub`.
 
-Install `cargo-semver-checks` once, alongside the other gate tools. Before a tagged release, `tools/verify.sh` runs `cargo semver-checks check-release -p ownsearch-core --baseline-rev <previous tag>`. The checker has three blind spots that a reviewer covers by hand: a changed field or parameter type, a change in generics or lifetimes, and a change visible only under a non-default feature set.
-
-## Deployment and rollback
-
-Every channel installs a versioned artifact: the archives and installers, the crates, the container image, and the npm loader. A bad release is rolled back by `git switch --detach vX.Y.Z` and running `tools/reinstall.sh`, repinning the image to the previous tag, or publishing the previous npm and crate versions again. Switch back with `git switch -` afterward. The database needs no rollback step: migrations run forward only and the pre-migration backup is verified before it is used. Run `tools/smoke.sh` after every deploy; a failure is the trigger to roll back.
-
-## Version, MSRV, yank, and rollback policy
-
-- Before 1.0.0, a minor release may change behavior and a patch release may fix it. The changelog records every change.
-- The declared MSRV may rise in a minor release. The changelog names the new floor, and the 1.94.1 gate in `tools/verify.sh` moves with it.
-- Yank a crates.io release only for a broken or unsafe publish, and publish the replacement first.
-- Roll back a bad binary with `git switch --detach vX.Y.Z`, `tools/reinstall.sh`, then `git switch -`. Roll back state with `ownsearch db restore --from <backup>` against the newest verified backup, then run `ownsearch db verify`.
+A manual workflow run takes the tag from its input, so the built tree is the tag and not the default branch. Every action in the workflow is pinned to a commit, so a moved tag cannot change what runs. Wait for the release to appear before publishing the npm package, because two of the publish steps download its assets.
 
 ## Publish, one registry at a time
 
-1. crates.io: `cargo publish -p ownsearch-core --locked`, then `cargo publish -p ownsearch --locked`.
-2. npm: `gh release download vX.Y.Z --pattern 'ownsearch-npm-package.tar.gz' --dir dist`, then `mkdir -p target/distrib/ownsearch-npm-package`, then `tar -xzf dist/ownsearch-npm-package.tar.gz -C target/distrib/ownsearch-npm-package --strip-components=1`. Run `tools/npm-auth-setup.sh` once, then `tools/publish-npm.sh`. The script checks the package name and the version against the workspace, injects `mcpName`, publishes, and waits for the registry to answer. `tools/publish-npm.sh --dry-run` packs and prints the file list without publishing.
-3. MCP Registry: `mcp-publisher publish` from a schema-valid `server.json`.
-4. Homebrew: `gh release download vX.Y.Z --pattern 'ownsearch.rb' --dir dist`. Two fixes are needed before the audit: drop the `version` line, because the URL already carries the version, and give `test` a real assertion, because the generated one is empty. Copy the result to `Formula/ownsearch.rb` in `devops-infinity/homebrew-tap`, run `brew audit --strict devops-infinity/tap/ownsearch`, then commit and push the tap. The release workflow never pushes the tap.
-5. ghcr: `docker buildx build --platform linux/amd64 -t ghcr.io/devops-infinity/ownsearch:X.Y.Z -t ghcr.io/devops-infinity/ownsearch:latest --push .`. The image is amd64 only. The first push creates the package as `internal`, and the REST API has no endpoint that changes package visibility, so make it public once by hand: open `https://github.com/orgs/devops-infinity/packages/container/package/ownsearch/settings`, then `Change visibility` under Danger Zone, choose `Public`, and confirm the package name. Public is one way; a public package cannot be made private again.
-6. Post-release smoke: start the installed binary, call `ownsearch doctor`, call one tool over stdio, and check `ownsearch audit verify`. A failed smoke check is a rollback.
+### crates.io
 
-Credentials live outside the repository. crates.io accepts an API token in `CARGO_REGISTRY_TOKEN`, or an OIDC trusted publisher set up once in the account settings for `ownsearch-core` and `ownsearch`. `tools/registry-auth.sh` reports which registry sessions are usable without printing a secret. Nothing is published from the local machine without the command being typed.
+```sh
+cargo publish -p ownsearch-core --locked
+cargo publish -p ownsearch --locked
+```
 
-The release workflow builds all seven targets from `[workspace.metadata.dist]` on native runners, including the two musl archives. It attaches every archive, both installers, `ownsearch.rb`, `ownsearch-npm-package.tar.gz`, the MCPB bundle, `sha256.sum` with its signature, and `minisign.pub`. The gate runs on the machine through `tools/release.sh --tag`, which refuses to create a tag it cannot pass. A manual run takes the tag from the workflow input, so the built tree is the tag and not the default branch.
+### npm
 
-## Boundaries
+```sh
+gh release download vX.Y.Z --pattern 'ownsearch-npm-package.tar.gz' --dir dist
+mkdir -p target/distrib/ownsearch-npm-package
+tar -xzf dist/ownsearch-npm-package.tar.gz -C target/distrib/ownsearch-npm-package --strip-components=1
+tools/publish-npm.sh
+```
 
-- No command in this repository commits, pushes, tags a remote, or publishes by itself.
-- No GitHub workflow other than the release workflow is added without an explicit order.
-- A release does not proceed while any gate fails. A skipped gate needs a written reason and the maintainer's approval.
+The script checks the package name and version against the workspace, injects `mcpName`, publishes, and waits for the registry to answer. `tools/publish-npm.sh --dry-run` packs and prints the file list without publishing.
+
+### MCP Registry
+
+```sh
+mcp-publisher publish
+```
+
+Run it from the repository root, against the `server.json` the gate already checked.
+
+### Homebrew tap
+
+```sh
+gh release download vX.Y.Z --pattern 'ownsearch.rb' --dir dist
+```
+
+The generated formula has no `test do` block, so add one with a real assertion. Then copy the file to `Formula/ownsearch.rb` in the `devops-infinity/homebrew-tap` repository, run `brew audit --strict devops-infinity/tap/ownsearch`, and commit and push that repository. The release workflow never pushes the tap.
+
+### ghcr
+
+```sh
+docker buildx build --platform linux/amd64 \
+  -t ghcr.io/devops-infinity/ownsearch:X.Y.Z \
+  -t ghcr.io/devops-infinity/ownsearch:latest --push .
+```
+
+The image is amd64 only. The first push creates the package as `internal`, and no API endpoint changes that visibility, so set it once by hand in the package settings under `Change visibility`. Public is one way: a public package cannot be made private again.
+
+## Post-release check
+
+```sh
+ownsearch doctor
+ownsearch serve
+ownsearch audit verify
+```
+
+Start the installed binary, call one tool over stdio, and run `ownsearch audit verify`. A failed check is a rollback. On a served instance, `tools/smoke.sh http://127.0.0.1:8774` covers the HTTP endpoints and needs a bearer token in the environment.
+
+## Roll back
+
+Every channel installs a versioned artifact, so a rollback repoints that channel at the previous version:
+
+- A binary install: `git switch --detach vX.Y.Z`, then `tools/reinstall.sh`, then `git switch -`.
+- A container: repin the image to the previous tag.
+- npm and crates.io: publish the previous version again.
+
+The database needs no rollback step. Migrations run forward only, and a pending migration takes a verified backup first. [docs/operations.md](docs/operations.md) holds the incident path for a bad release.
+
+## Release policy
+
+- Before 1.0.0, a minor release may change behavior and a patch release may fix it. The changelog records every change.
+- The declared MSRV may rise in a minor release. The changelog names the new floor, and the 1.94.1 check in `tools/verify.sh` moves with it.
+- Yank a crates.io release only for a broken or unsafe publish, and publish the replacement first.
+- No script in this repository creates a remote tag or pushes one. The tag push is a command you type.

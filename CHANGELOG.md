@@ -16,22 +16,25 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Changed
 
-- The scanner, the search fallback, and the fleet snapshot apply one serving rule over status, hard gate, denial, scan flag, type, and cooldown. A row that stops serving leaves the fleet and the snapshot.
-- `--state-dir`, `--ledger-dir`, and `--profile` are accepted before the subcommand as well as after it, which is what the README already promised.
+- **Breaking:** a fleet read applies one serving rule over status, hard gate, denial, the scan flag, type, and cooldown. A denied, retired, Tor, or cooling row now leaves both the served fleet and the snapshot, where an earlier release could still serve it.
+- **Breaking:** HTTP refusals carry `ownsearch.origin_refused`, `ownsearch.host_refused`, and `ownsearch.busy` instead of the single `ownsearch.auth_failed` code, so a client that matches on `ownsearch.auth_failed` stops matching. A preflight answer now names the methods its path accepts.
+- **Breaking:** `ownsearch_db_query` with `entity: "events"` refuses an offset past 50000 instead of paging, so an offset past that bound now returns an error.
+- `--state-dir`, `--ledger-dir`, and `--profile` are accepted before the subcommand as well as after it.
 - `config show --json` and `doctor --json` keep numbers and booleans as JSON numbers and booleans instead of strings.
-- HTTP refusals carry `ownsearch.origin_refused`, `ownsearch.host_refused`, and `ownsearch.busy` instead of one `ownsearch.auth_failed` code, and a preflight answer names the methods its path accepts.
-- `ownsearch_db_query` with `entity: "events"` refuses an offset past 50000 instead of paging forever.
-- `denied` is an operator intent on every path. A policy write of `denied` is refused with the command to use, and the tool path runs the same deny or allow action as the CLI.
+- A denial is an operator intent on every write path: a policy write of `denied` is refused and names the command to use, and the tool path runs the same deny or allow action as the CLI.
 
 ### Fixed
 
 - A cancelled scan reported a fleet it never wrote. It now writes nothing, reports nothing, and names the cancellation.
-- An instance that was denied, or whose scanning was off, still answered searches through the fallback tiers. Both filters apply at every tier now.
-- An explicit scan could probe a Tor row or an excluded row, a quarantined row was overwritten when the scanner marked it missing, and `excluded` could be set by hand on a normal row. Each path is refused and names the command that changes it.
-- The scan guard named neither the force flag nor the remaining wait, and a cooldown could be written after the search deadline had passed.
-- `ownsearch audit verify` printed a raw os error and created `args.key` when no ledger existed yet. It reports the ledger as absent, creates nothing, and exits 0.
-- `ownsearch config delete-bearer-token` said the token was removed when none was stored.
-- The container update refusal put its advice inside the code formatting, and the smoke script sent no bearer token to the routes that need one.
+- A denied instance, and an instance whose scanning was off, still answered searches through the fallback tiers. Both filters now apply at every tier.
+- An explicit scan could probe a Tor row or an excluded row. That path is now refused and names the command that changes it.
+- A quarantined row was overwritten when the scanner marked it missing. The status the operator set is now kept.
+- `excluded` could be set by hand on a normal row. That write is now refused and names the command that changes the type.
+- The scan guard named neither the force flag nor the remaining wait. It now names both.
+- A cooldown could be written after the search deadline had passed. It is no longer written.
+- `ownsearch audit verify` printed a raw OS error and created `args.key` when no ledger existed yet. It reports the ledger as absent, creates nothing, and exits 0.
+- `ownsearch config delete-bearer-token` said the token was removed when none was stored. It now reports that no token is stored.
+- The container update refusal put its advice inside the code formatting. The advice now reads as plain text.
 
 ## [0.3.0] - 2026-10-29
 
@@ -49,6 +52,11 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - `ownsearch_scan` advertises `destructiveHint: true`, because a writing run rewrites lifecycle status, quality, and fleet ranks.
 - The search cooldown is set only by a transient failure. A 400 or a 403 about one query no longer removes a healthy instance for an hour, and `ownsearch scan --force --instance N` clears a cooldown on demand.
 
+### Removed
+
+- Two SQL views that no query read, `active_fleet` and `scan_due`.
+- `docs/threat-model.md`. SECURITY.md and the README keep the security guidance.
+
 ### Fixed
 
 - An instance that failed its hard gate still answered searches. The fleet read now requires a passing gate, read from `instance_quality`.
@@ -56,8 +64,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - A status change applied while a scan was running wrote an event for a transition that never happened. The event now records the value that was applied.
 - A browser preflight request was refused with 401 once a bearer token was configured, so no browser could call `/v1/search` or `/v1/fetch`. Preflight is answered before the auth layer.
 - `/readyz` and `/metrics` returned 503 while the server was merely busy. Health routes skip the concurrency gate.
-- A 405 response carried no `Allow` header. Every 429 now carries `Retry-After`, with the real lockout time.
-- The ledger renamed its live file while holding it open, which fails on Windows, and a failed reopen wrote new rows into the archive. The handle closes before the rename, and a failed reopen stops the chain with a clear message.
+- A 405 response carried no `Allow` header. It now names the methods the path accepts.
+- A 429 response carried no `Retry-After` header. It now carries the real lockout time.
+- A ledger rotation renamed the live file while holding it open, which fails on Windows. The handle now closes before the rename.
+- A failed ledger reopen wrote new rows into the archive. It now stops the chain with a clear message.
 - A missing arguments key made every ledger row fail its hash with no next step. The message now names the key and `ownsearch audit rotate`.
 - The browser gate wait ignored the caller's deadline, and a missing Chromium was reported as a network error.
 - A database written by a newer release got the restore-a-backup remedy, which discards intact data. It has its own error and remedy now.
@@ -65,11 +75,6 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - Cancelled probes are no longer persisted as refusals, so a shutdown does not count against an instance.
 - The Dockerfile and compose healthchecks send the bearer token with their `/readyz` probe, so a deployment that sets `OWNSEARCH_BEARER_TOKENS` no longer reports unhealthy forever.
 - The scanner policy, the README, and SECURITY.md state where the headless browser runs and what `OWNSEARCH_CAPSOLVER_KEY` does, and they name the CapSolver service as an outbound boundary.
-
-### Removed
-
-- Two SQL views that no query read, `active_fleet` and `scan_due`.
-- `docs/threat-model.md`. SECURITY.md and the README keep the security guidance.
 
 ### Security
 
@@ -79,15 +84,15 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [0.2.0] - 2026-10-27
 
-### Fixed
-
-- The scanner and both server transports no longer call the state database on the async runtime. Every store call runs on the blocking pool, so a busy database can no longer park a worker thread.
-- The Dockerfile and compose healthchecks call `/readyz`, which reads the state database, instead of `/healthz`, which always answers.
-
 ### Changed
 
 - rmcp 3.7.0 to 3.8.0, plus brotli, openssl-probe, and rustix patch updates.
 - The compose service runs with a read-only root filesystem, a `/tmp` tmpfs, all capabilities dropped, fixed volume names, and a container user created with `--no-log-init`.
+
+### Fixed
+
+- A busy state database no longer parks a worker thread, so one slow query cannot stall unrelated requests.
+- The Dockerfile and compose healthchecks call `/readyz`, which reads the state database, instead of `/healthz`, which always answers.
 
 ## [0.1.2] - 2026-10-27
 
@@ -228,14 +233,9 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.
 
 [Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.4.0...HEAD
-[0.1.0]: https://github.com/devops-infinity/ownsearch/releases/tag/v0.1.0
-
-[0.1.1]: https://github.com/devops-infinity/ownsearch/compare/v0.1.0...v0.1.1
-
-[0.1.2]: https://github.com/devops-infinity/ownsearch/compare/v0.1.1...v0.1.2
-
-[0.2.0]: https://github.com/devops-infinity/ownsearch/compare/v0.1.2...v0.2.0
-
-[0.3.0]: https://github.com/devops-infinity/ownsearch/compare/v0.2.0...v0.3.0
-
 [0.4.0]: https://github.com/devops-infinity/ownsearch/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/devops-infinity/ownsearch/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/devops-infinity/ownsearch/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/devops-infinity/ownsearch/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/devops-infinity/ownsearch/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/devops-infinity/ownsearch/releases/tag/v0.1.0
