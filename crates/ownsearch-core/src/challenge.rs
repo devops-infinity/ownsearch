@@ -1,5 +1,3 @@
-//! Detection of the captcha a page serves, and the site key a solver needs.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChallengeKind {
     Turnstile,
@@ -36,8 +34,6 @@ impl ChallengeKind {
         }
     }
 
-    /// The hidden field a token lands in. Empty when the site's own script must use it,
-    /// which is how reCAPTCHA v3 works.
     pub(crate) const fn response_field(self) -> &'static str {
         match self {
             Self::Turnstile => "cf-turnstile-response",

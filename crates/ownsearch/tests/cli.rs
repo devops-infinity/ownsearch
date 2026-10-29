@@ -14,7 +14,6 @@ fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_ownsearch")
 }
 
-// A just-copied executable can report ETXTBSY while the kernel settles the write reference.
 fn run_copied(
     copied: &std::path::Path,
     dir: &std::path::Path,

@@ -1,5 +1,3 @@
-//! Parsers for the RSS and CSV output that a SearXNG instance can serve.
-
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
