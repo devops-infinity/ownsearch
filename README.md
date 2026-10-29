@@ -4,7 +4,7 @@ Self-hosted MCP and HTTP search over a scored fleet of public SearXNG instances.
 
 mcp-name: io.github.devops-infinity/ownsearch
 
-Status: pre-release, workspace version 0.2.0.
+Status: released, version 0.3.0.
 
 OwnSearch discovers public SearXNG instances from searx.space, probes them at a low rate, scores them, keeps the fleet in a local SQLite database, rotates the starting instance, retries a failing one, and answers from the next healthy instance. Each result carries the sources that supplied it, with the instance and, when known, the engine. It runs as a Model Context Protocol (MCP) server over stdio or Streamable HTTP, and the HTTP port also answers two REST calls.
 
@@ -84,6 +84,58 @@ These capabilities are on by default. Each one is controlled by the setting name
 
 ## Build and install
 
+### Install a release
+
+Pick one channel. Each installs the same `ownsearch` binary.
+
+- Homebrew, on Linux or macOS:
+
+  ```sh
+  brew trust devops-infinity/tap
+  brew install devops-infinity/tap/ownsearch
+  ```
+
+- npm, which installs the platform binary through a small loader:
+
+  ```sh
+  npm install -g @devops-infinity/ownsearch
+  ```
+
+- Cargo:
+
+  ```sh
+  cargo install --locked ownsearch
+  ```
+
+- The shell installer from the latest release:
+
+  ```sh
+  curl --proto '=https' --tlsv1.2 -sSf https://github.com/devops-infinity/ownsearch/releases/latest/download/ownsearch-installer.sh | sh
+  ```
+
+Check the result:
+
+```sh
+ownsearch --version
+```
+
+Keep one channel only. Two installs of the same binary on your PATH make it unclear which one your MCP client starts.
+
+### Update
+
+```sh
+ownsearch update --check     # report whether a newer release exists
+ownsearch update             # download, verify, and install it
+```
+
+The updater fetches the latest release from GitHub, verifies `sha256.sum` against the minisign key built into the binary, checks the archive against the digest in that signed file, and replaces the running binary in place. It runs only when you call it. There is no background check and no automatic replacement.
+
+`--check` works on every install and reports the latest version, plus the command that installs it. A full update refuses when another tool owns the install and names that command: `brew upgrade ownsearch` for Homebrew, `cargo install --locked ownsearch` for cargo, `npm install -g @devops-infinity/ownsearch` for npm, and pulling the newer image for a container. Only an install that came from the shell installer or a plain binary copy updates itself.
+
+Set `GH_TOKEN` or `GITHUB_TOKEN` to raise the GitHub API limit from 60 requests an hour. `--json` prints the result as data for a script.
+
+### Build from source
+
 ```sh
 git clone https://github.com/devops-infinity/ownsearch
 cd ownsearch
@@ -98,14 +150,22 @@ tools/reinstall.sh
 
 ## Quick start
 
+The first command that reads the database creates it, applies the schema, and seeds an embedded fleet of 67 instances: `instances list`, `db counts`, `scan`, or `serve`. `doctor` and `db path` only report, they do not create.
+
 ```sh
-ownsearch doctor
-ownsearch scan                # refresh discovery and probe the fleet
-ownsearch scan                # once OWNSEARCH_SCAN_MIN_INTERVAL_SECS (30 by default) has passed, a second pass promotes repeat successes to active
-ownsearch serve               # MCP over stdio
+ownsearch doctor              # resolved settings, state health, ledger state
+ownsearch instances list      # the seeded fleet
+ownsearch scan                # discover, probe, and score the fleet
+ownsearch scan                # after OWNSEARCH_SCAN_MIN_INTERVAL_SECS (30 by default), a second pass promotes repeat successes to active
+ownsearch instances list      # the fleet after scoring
+ownsearch serve               # MCP over stdio, for a client to start
 ```
 
-A dry run changes no fleet data and prints what would happen. On a first run it may create the empty state schema:
+Search itself has no terminal command. It runs through an MCP client, through the two REST endpoints, or through the tools a client calls. The CLI covers setup, scanning, fleet changes, and database work.
+
+The state lives in `${XDG_STATE_HOME}/ownsearch` by default, which is `~/.local/state/ownsearch` on most machines. Point every command and every MCP client at the same directory if you move it, with `OWNSEARCH_STATE_DIR` or `--state-dir`.
+
+A dry run changes nothing and prints what would happen:
 
 ```sh
 ownsearch scan --dry-run --limit 12
@@ -115,19 +175,40 @@ Searches use the active fleet. When no instance is active, OwnSearch falls back 
 
 ## Connect an MCP client
 
+Every MCP client starts a server process. Point it at the installed binary with `serve` as the only argument.
+
+Claude Code, available in every project:
+
+```sh
+claude mcp add --scope user ownsearch -- /home/you/.local/bin/ownsearch serve
+```
+
+Any client that reads a JSON config, such as Claude Desktop:
+
 ```json
 {
   "mcpServers": {
     "ownsearch": {
       "command": "/home/you/.local/bin/ownsearch",
-      "args": ["serve"],
-      "env": {
-        "OWNSEARCH_STATE_DIR": "/home/you/.local/state/ownsearch"
-      }
+      "args": ["serve"]
     }
   }
 }
 ```
+
+Codex reads a TOML config:
+
+```toml
+[mcp_servers.ownsearch]
+command = "/home/you/.local/bin/ownsearch"
+args = ["serve"]
+```
+
+Use the absolute path to the binary. A desktop client usually does not load your shell profile, so a bare `ownsearch` may not resolve, and a Homebrew or npm install puts the binary somewhere else.
+
+The server reads the same settings as the CLI. With nothing set, both use the default state directory, so one `ownsearch scan` in a terminal and the client see the same fleet. Set `OWNSEARCH_STATE_DIR` on both only when you moved the state.
+
+Check the connection after adding it. The client should list eight tools: `ownsearch_search`, `ownsearch_fetch`, `ownsearch_instance_info`, `ownsearch_instance_health`, `ownsearch_scan`, `ownsearch_session`, `ownsearch_db_query`, and `ownsearch_db_crud`. Ask the client to call `ownsearch_session` to confirm it answers, then ask it to search.
 
 No API key is needed to search. OwnSearch holds two secrets at most: an HTTP bearer token, used only when you serve Streamable HTTP, and an optional CapSolver key, used only when you turn on the paid captcha service. Neither is read from a flag or the profile; both come from the environment, and the bearer token can also live in the OS keychain.
 
@@ -141,7 +222,7 @@ Over Streamable HTTP, point the client at `http://127.0.0.1:8774/mcp`, or at the
 - `ownsearch_instance_health`: hard gate result, certificate days left, TLS protocol and grade, median search time, cooldown, consecutive failures, and the most recent lifecycle events.
 - `ownsearch_scan`: refresh discovery, probe instances, rescore, and reselect the fleet. It defaults to `dry_run: true`. Within one process, a writing scan runs one at a time per state database, waits `OWNSEARCH_SCAN_MIN_INTERVAL_SECS` between runs, and refuses a named instance that is not yet due unless the call sets `force`.
 - `ownsearch_session`: local call counts, cache state, ledger length and head, and fleet size. No network call.
-- `ownsearch_db_query`: bounded read-only queries over instances, quality, policy overrides, capability snapshots, events, snapshots, discovery runs, and hourly probe metrics. Each entity applies its own filters, and a filter that the selected entity cannot apply is refused instead of ignored. Events page in SQL, so any offset is reachable. It never accepts SQL.
+- `ownsearch_db_query`: bounded read-only queries over instances, quality, policy overrides, capability snapshots, events, snapshots, discovery runs, and hourly probe metrics. Each entity applies its own filters, and a filter that the selected entity cannot apply is refused instead of ignored. Events page in SQL up to a 50000 row offset, and a larger offset is refused rather than repeated. It never accepts SQL.
 - `ownsearch_db_crud`: one typed lifecycle or policy change. It needs write mode, a reason, and a one-use confirmation token from a dry-run preview. It cannot delete an instance row.
 
 Every tool returns `structuredContent` plus a one-line text summary. Every input schema sets `additionalProperties: false`. Every field a preset may drop is optional in the published output schema.
@@ -361,25 +442,32 @@ The state directory is created with mode 0700 and files with mode 0600. WAL mode
 
 ## Database
 
-The database is SQLite in WAL mode with foreign keys on, STRICT tables, and a checksummed migration ledger. One migration file holds the whole schema: tables, foreign keys, checks, indexes, and views, so a development build always creates the current shape in one step. The column-level schema is `crates/ownsearch-core/src/db/migrations/0001_initial.sql`; this page does not repeat it.
+The database is SQLite in WAL mode with foreign keys on, STRICT tables, and a checksummed migration ledger. The schema is built from embedded migrations that run forward at open, in order, from `0001_initial.sql` to the newest file in `crates/ownsearch-core/src/db/migrations/`. A pending migration takes a verified `VACUUM INTO` backup first. A database written by a newer release is refused with `ownsearch.state_newer` rather than read partially, and the remedy is to run that newer release. This page does not repeat the column-level schema.
 
 Tables: `schema_migrations`, `application_metadata`, `discovery_sources`, `discovery_runs`, `instances`, `capability_snapshots`, `engines`, `categories`, `capability_engines`, `capability_categories`, `probes`, `tls_observations`, `hourly_probe_metrics`, `instance_quality`, `instance_events`, `fleet_snapshots`, `instance_policy_overrides`, and `maintenance_runs`.
 
-`ownsearch db verify` checks the file's integrity and foreign keys and prints the schema version. The store also checks each migration checksum when it opens. A backup is written with `VACUUM INTO` and verified before it is used.
+`ownsearch db verify` checks the file's integrity and foreign keys and prints the schema version. The store also checks each migration checksum when it opens. A backup is written with `VACUUM INTO` and verified before it is used. `ownsearch db restore --from <backup>` stages and verifies the backup, moves the live database and its WAL sidecars aside, installs the backup, and rechecks it, so a corrupt store has a working recovery command.
 
 ## Database commands
 
 - `ownsearch db path`
 - `ownsearch db verify`
 - `ownsearch db backup [--out PATH]`
+- `ownsearch db restore --from PATH`
 - `ownsearch db export [--out PATH]`
 - `ownsearch db maintenance` (WAL checkpoint, vacuum, data expiry, and the cleanup pass)
 - `ownsearch db counts [--json]`
 - `ownsearch instances list [--status S] [--limit N] [--json]`
 - `ownsearch instances show [ID] [--url URL] [--json]`
 - `ownsearch instances add URL [--pin] [--json]`
-- `ownsearch instances pin ID`, `unpin ID`, `deny ID [--reason TEXT]`, `reset-status ID`
-- `ownsearch instances retire ID [--reason TEXT]`, `restore ID`
+- `ownsearch instances pin ID`, `unpin ID`, `deny ID [--reason TEXT]`, `allow ID [--reason TEXT]`, `reset-status ID`
+- `ownsearch instances retire ID [--reason TEXT]`, `restore ID`, `set-type ID normal|tor|unknown`
+- `ownsearch instances events [ID] [--limit N] [--json]`
+- `ownsearch config show [--json]`, `set-bearer-token`, `delete-bearer-token`
+- `ownsearch audit verify [--file PATH]`, `rotate [--file PATH]`
+- `ownsearch update [--check] [--json]`
+
+`--profile`, `--state-dir`, and `--ledger-dir` work at any position, before or after a subcommand.
 
 ### Your own instance
 
@@ -467,6 +555,9 @@ cargo test -p ownsearch-core --test live -- --ignored --nocapture
 - `ownsearch.no_fleet`: run `ownsearch scan`, then check `ownsearch instances list`.
 - Every search returns no results and `sources.failed` says `ownsearch.policy_refused`: the selected instances deny JSON and HTML. Run from a network the instances accept, or check `ownsearch instances list` for quarantined records.
 - `ownsearch.state_corrupted`: run `ownsearch db verify` and restore the newest backup.
+- `ownsearch.state_newer`: the state database was written by a newer release. Install that release, or point `OWNSEARCH_STATE_DIR` at another directory.
+- The MCP client lists no tools or marks the server as failed: use the absolute path to the binary, then run the same command in a terminal to see its error. A server that cannot open its state database exits with the reason on standard error.
+- `ownsearch audit verify` says the ledger cannot be read: on a fresh install the file appears after the first tool call. Run a search once and verify again.
 - `ownsearch.write_disabled`: set `ai_db_mode = "read-write"`.
 - `ownsearch.confirmation_expired`: call the tool again with `dry_run: true`.
 - Disk filling up: lower `OWNSEARCH_KEEP_WINDOW` for the ledger archives, event lines, and pre-migration backups, then run `ownsearch db maintenance` and read the warnings it prints. SQLite rows follow the fixed per-table windows listed under Local files and keep windows.
@@ -515,6 +606,8 @@ The release channels:
 - The MCP Registry entry `io.github.devops-infinity/ownsearch`.
 - An MCP bundle (MCPB) for desktop clients.
 - A `ghcr.io/devops-infinity/ownsearch` image.
+
+An install from the shell installer or a plain binary copy updates itself with `ownsearch update`. Every other channel updates through its own command, and the updater refuses and names that command when it detects one.
 
 A `v*` tag starts the release workflow, which builds the seven targets and then creates and publishes the GitHub release. The gate runs on the machine through `tools/verify.sh` before the tag exists, so the workflow repeats none of it. Every action in that workflow is pinned to a commit, so a moved tag cannot change what runs. `RELEASING.md` holds the ordered publish steps and the credentials each one needs.
 

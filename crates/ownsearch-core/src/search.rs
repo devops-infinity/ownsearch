@@ -159,6 +159,7 @@ pub async fn search(
     for outcome in outcomes.iter().filter(|outcome| outcome.failure.is_some()) {
         if let Some(failure) = &outcome.failure
             && cools_down(&failure.code)
+            && tokio::time::Instant::now() < hard_deadline
         {
             cool_down(ctx, outcome.instance_id, &failure.code).await;
         }
@@ -419,6 +420,7 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
         })?
         .into_iter()
         .filter(not_cooling)
+        .filter(|row| row.scan_enabled && !row.denied)
         .collect();
     if !probation.is_empty() {
         return Ok((
@@ -436,6 +438,7 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
         })?
         .into_iter()
         .filter(not_cooling)
+        .filter(|row| row.scan_enabled && !row.denied)
         .filter(|row| row.hard_gate_passed == Some(true))
         .collect();
     if !candidates.is_empty() {
@@ -456,8 +459,9 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
         .into_iter()
         .filter(|row| {
             !row.denied
+                && row.scan_enabled
                 && not_cooling(row)
-                && row.hard_gate_passed != Some(false)
+                && row.hard_gate_passed == Some(true)
                 && row.kind != crate::types::InstanceType::Tor
                 && matches!(
                     row.status,
@@ -472,7 +476,7 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
     Ok((
         unscored,
         Some(
-            "no scored instance yet; the highest ranked discovered instances were tried for this search"
+            "no scored instance yet; the highest ranked discovered instances that passed every hard gate were tried for this search"
                 .to_owned(),
         ),
     ))

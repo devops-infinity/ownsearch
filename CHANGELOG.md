@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- `ownsearch update` downloads, verifies, and installs the latest release for an install from the shell installer or a plain binary copy. It verifies `sha256.sum` against the minisign key built into the binary, then checks the archive against that signed digest. For Homebrew, cargo, npm, and container installs it refuses and names the manager's own command. `--check` reports without installing, and `--json` prints the result as data.
+
 ## [0.3.0] - 2026-10-29
 
 ### Added

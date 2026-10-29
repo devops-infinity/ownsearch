@@ -249,6 +249,355 @@ fn the_instance_commands_report_and_change_state() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn release_server(body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buffer = [0u8; 1024];
+            let _ = stream.read(&mut buffer);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://127.0.0.1:{port}"), handle)
+}
+
+#[test]
+fn the_update_command_reports_a_newer_release() {
+    let dir = temp_dir("cli-update");
+    let (base, server) = release_server(r#"{"tag_name":"v99.0.0","assets":[]}"#);
+    let json = Command::new(binary())
+        .args(["update", "--check", "--json"])
+        .env("OWNSEARCH_UPDATE_API_BASE", &base)
+        .envs(env_dir(&dir))
+        .output()
+        .expect("run");
+    let _ = server.join();
+    assert!(
+        json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).expect("json");
+    assert_eq!(
+        value.get("latest").and_then(serde_json::Value::as_str),
+        Some("99.0.0")
+    );
+    assert_eq!(
+        value.get("available").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    let (base, server) = release_server(r#"{"tag_name":"v99.0.0","assets":[]}"#);
+    let text = Command::new(binary())
+        .args(["update", "--check"])
+        .env("OWNSEARCH_UPDATE_API_BASE", &base)
+        .envs(env_dir(&dir))
+        .output()
+        .expect("run");
+    let _ = server.join();
+    assert!(text.status.success());
+    assert!(
+        String::from_utf8_lossy(&text.stdout).contains("99.0.0 is available"),
+        "{}",
+        String::from_utf8_lossy(&text.stdout)
+    );
+    let (base, server) = release_server(r#"{"tag_name":"v0.0.1","assets":[]}"#);
+    let current = Command::new(binary())
+        .args(["update", "--check"])
+        .env("OWNSEARCH_UPDATE_API_BASE", &base)
+        .envs(env_dir(&dir))
+        .output()
+        .expect("run");
+    let _ = server.join();
+    assert!(current.status.success());
+    assert!(
+        String::from_utf8_lossy(&current.stdout).contains("is the latest release"),
+        "{}",
+        String::from_utf8_lossy(&current.stdout)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn update_run(dir: &std::path::Path, args: &[&str], base: &str) -> std::process::Output {
+    Command::new(binary())
+        .args(args)
+        .env("OWNSEARCH_UPDATE_API_BASE", base)
+        .envs(env_dir(dir))
+        .output()
+        .expect("run")
+}
+
+#[test]
+fn the_update_command_refuses_an_api_error() {
+    let dir = temp_dir("cli-update-403");
+    let (base, server) = release_server_error(403);
+    let output = update_run(&dir, &["update", "--check"], &base);
+    let _ = server.join();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("GH_TOKEN"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_update_command_refuses_a_malformed_release() {
+    let dir = temp_dir("cli-update-html");
+    let (base, server) = release_server("<html>not json</html>");
+    let output = update_run(&dir, &["update", "--check"], &base);
+    let _ = server.join();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("did not parse"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_update_command_refuses_a_release_without_this_platform_asset() {
+    let dir = temp_dir("cli-update-noasset");
+    let (base, server) = release_server(r#"{"tag_name":"v99.0.0","assets":[]}"#);
+    let output = update_run(&dir, &["update"], &base);
+    let _ = server.join();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("releases/latest"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn release_server_error(status: u16) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buffer = [0u8; 1024];
+            let _ = stream.read(&mut buffer);
+            let response = format!(
+                "HTTP/1.1 {status} Error\r\ncontent-type: application/json\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://127.0.0.1:{port}"), handle)
+}
+
+#[test]
+fn the_allow_and_events_commands_show_the_policy_trail() {
+    let dir = temp_dir("cli-instances-policy");
+    let run = |args: &[&str]| {
+        Command::new(binary())
+            .args(args)
+            .envs(env_dir(&dir))
+            .output()
+            .expect("run")
+    };
+    let add = run(&["instances", "add", "http://127.0.0.1:8888/", "--json"]);
+    let added: serde_json::Value = serde_json::from_slice(&add.stdout).expect("json");
+    let id = added
+        .get("instanceId")
+        .and_then(serde_json::Value::as_i64)
+        .expect("id")
+        .to_string();
+    assert!(run(&["instances", "deny", &id]).status.success());
+    let allowed = run(&["instances", "allow", &id]);
+    assert!(allowed.status.success());
+    assert!(
+        String::from_utf8_lossy(&allowed.stdout).contains("scanning is enabled"),
+        "{}",
+        String::from_utf8_lossy(&allowed.stdout)
+    );
+    let shown = run(&["instances", "show", &id, "--json"]);
+    let row: serde_json::Value = serde_json::from_slice(&shown.stdout).expect("json");
+    assert_eq!(
+        row.get("denied").and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    let typed = run(&["instances", "set-type", &id, "tor"]);
+    assert!(typed.status.success());
+    assert!(
+        String::from_utf8_lossy(&typed.stdout).contains("excluded"),
+        "{}",
+        String::from_utf8_lossy(&typed.stdout)
+    );
+    let back = run(&["instances", "set-type", &id, "normal"]);
+    assert!(back.status.success());
+    assert!(
+        String::from_utf8_lossy(&back.stdout).contains("candidate"),
+        "{}",
+        String::from_utf8_lossy(&back.stdout)
+    );
+    let events = run(&["instances", "events", &id, "--limit", "5"]);
+    assert!(events.status.success());
+    let text = String::from_utf8_lossy(&events.stdout);
+    assert!(text.contains("policy_changed"), "{text}");
+    assert!(text.contains("events"), "{text}");
+    let json = run(&["instances", "events", &id, "--json"]);
+    assert!(json.status.success());
+    let rows: serde_json::Value = serde_json::from_slice(&json.stdout).expect("json");
+    assert!(rows.as_array().is_some_and(|items| !items.is_empty()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_update_command_refuses_a_package_managed_copy() {
+    let dir = temp_dir("cli-update-brew");
+    let target = dir
+        .join("homebrew")
+        .join("Cellar")
+        .join("ownsearch")
+        .join("0.0.0")
+        .join("bin");
+    std::fs::create_dir_all(&target).expect("dir");
+    let copied = target.join("ownsearch");
+    std::fs::copy(binary(), &copied).expect("copy");
+    let (base, server) = release_server(r#"{"tag_name":"v99.0.0","assets":[]}"#);
+    let check = Command::new(&copied)
+        .args(["update", "--check"])
+        .env("OWNSEARCH_UPDATE_API_BASE", &base)
+        .envs(env_dir(&dir))
+        .output()
+        .expect("run");
+    let _ = server.join();
+    assert!(check.status.success());
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("brew upgrade ownsearch"),
+        "{}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+    let apply = Command::new(&copied)
+        .args(["update"])
+        .env("OWNSEARCH_UPDATE_API_BASE", &base)
+        .envs(env_dir(&dir))
+        .output()
+        .expect("run");
+    assert!(!apply.status.success());
+    assert!(
+        String::from_utf8_lossy(&apply.stderr).contains("brew upgrade ownsearch"),
+        "{}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_update_command_sends_a_github_token_when_one_is_set() {
+    let dir = temp_dir("cli-update-token");
+    let (base, server) = release_server(r#"{"tag_name":"v0.0.1","assets":[]}"#);
+    let output = Command::new(binary())
+        .args(["update", "--check", "--json"])
+        .env("OWNSEARCH_UPDATE_API_BASE", &base)
+        .env("GH_TOKEN", "test-token")
+        .envs(env_dir(&dir))
+        .output()
+        .expect("run");
+    let _ = server.join();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_audit_rotate_force_archives_a_chain_it_cannot_verify() {
+    let dir = temp_dir("cli-audit-force");
+    let ledger_dir = dir.join("ledger");
+    std::fs::create_dir_all(&ledger_dir).expect("dir");
+    std::fs::write(ledger_dir.join("calls.jsonl"), "{\"row\":1}\n").expect("write");
+    let output = Command::new(binary())
+        .args(["audit", "rotate", "--force"])
+        .envs(env_dir(&dir))
+        .output()
+        .expect("run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("without verification"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(!ledger_dir.join("calls.jsonl").exists());
+    let archived = std::fs::read_dir(&ledger_dir)
+        .expect("dir")
+        .filter_map(|entry| entry.ok())
+        .any(|entry| entry.file_name().to_string_lossy().contains("-unverified"));
+    assert!(archived, "no unverified archive was written");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_db_restore_command_replaces_a_corrupt_database() {
+    let dir = temp_dir("cli-db-restore");
+    let run = |args: &[&str]| {
+        Command::new(binary())
+            .args(args)
+            .envs(env_dir(&dir))
+            .output()
+            .expect("run")
+    };
+    assert!(run(&["instances", "list"]).status.success());
+    let backup = dir.join("backup.db");
+    let made = Command::new(binary())
+        .args(["db", "backup", "--out"])
+        .arg(&backup)
+        .envs(env_dir(&dir))
+        .output()
+        .expect("run");
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let live = dir.join("state").join("instances.db");
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", live.display()));
+    }
+    std::fs::write(&live, b"not a database").expect("corrupt");
+    assert!(!run(&["db", "verify"]).status.success());
+    let restored = Command::new(binary())
+        .args(["db", "restore", "--from"])
+        .arg(&backup)
+        .envs(env_dir(&dir))
+        .output()
+        .expect("run");
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    let verify = run(&["db", "verify"]);
+    assert!(verify.status.success());
+    assert!(
+        String::from_utf8_lossy(&verify.stdout).contains("instances: 67"),
+        "{}",
+        String::from_utf8_lossy(&verify.stdout)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn config_show_masks_every_secret() {
     let dir = temp_dir("cli-config");

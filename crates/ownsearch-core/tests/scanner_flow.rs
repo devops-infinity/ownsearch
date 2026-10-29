@@ -469,6 +469,41 @@ async fn a_discovery_record_that_resolves_to_loopback_is_skipped() {
 }
 
 #[tokio::test]
+async fn an_explicit_scan_of_a_tor_instance_is_refused() {
+    let server = MockServer::start().await;
+    config_and_json(&server).await;
+    let dir = common::temp_dir("scan-tor");
+    let settings = common::settings(&dir);
+    let ctx = context(&settings, &[&format!("{}/", server.uri())]);
+    ctx.store
+        .apply_policy_change(
+            1,
+            None,
+            Some(ownsearch_core::InstanceType::Tor),
+            None,
+            &["test".to_owned()],
+        )
+        .expect("type");
+    let error = run_scan(
+        &ctx,
+        &ScanOptions {
+            dry_run: false,
+            instance_id: Some(1),
+            limit: 10,
+            force_discovery: false,
+            probe_search: false,
+            probe_google: false,
+            force: true,
+        },
+        &CancellationToken::new(),
+    )
+    .await
+    .expect_err("a Tor instance must not be probed");
+    assert!(error.to_string().contains("never probed"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn an_explicit_scan_of_a_denied_instance_is_refused() {
     let server = MockServer::start().await;
     config_and_json(&server).await;
@@ -476,9 +511,9 @@ async fn an_explicit_scan_of_a_denied_instance_is_refused() {
     let settings = common::settings(&dir);
     let ctx = context(&settings, &[&format!("{}/", server.uri())]);
     ctx.store
-        .upsert_override(
+        .apply_operator_action(
             1,
-            &json!({"denied": true, "scanEnabled": false}),
+            ownsearch_core::OperatorAction::Deny,
             &["test".to_owned()],
         )
         .expect("deny");

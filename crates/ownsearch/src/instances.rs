@@ -119,10 +119,16 @@ pub(crate) fn run(args: InstancesArgs) -> anyhow::Result<()> {
             )?;
             let policy_row = store.get_override(instance_id)?.unwrap_or(json!(null));
             println!("{}", serde_json::to_string_pretty(&policy_row)?);
-            println!(
-                "instance {instance_id} is {} and the scanner will not probe it; run `ownsearch instances allow {instance_id}` to undo",
-                status.as_str()
-            );
+            if status == InstanceStatus::Quarantined {
+                println!(
+                    "instance {instance_id} is quarantined and the scanner will not probe it; run `ownsearch instances allow {instance_id}` to undo"
+                );
+            } else {
+                println!(
+                    "instance {instance_id} is {}: the denial is recorded and the scanner will not probe it. Run `ownsearch instances set-type {instance_id} normal` to change what this row is, or `ownsearch instances allow {instance_id}` to clear the denial",
+                    status.as_str()
+                );
+            }
             Ok(())
         }
         InstancesAction::Allow {
@@ -137,10 +143,24 @@ pub(crate) fn run(args: InstancesArgs) -> anyhow::Result<()> {
                 OperatorAction::Allow,
                 &[format!("operator.allow:{reason}")],
             )?;
-            println!(
-                "instance {instance_id} is {} and scanning is re-enabled",
-                status.as_str()
-            );
+            let row = store
+                .get_instance(instance_id)?
+                .ok_or_else(|| anyhow::anyhow!("instance {instance_id} does not exist"))?;
+            if row.kind == ownsearch_core::InstanceType::Tor {
+                println!(
+                    "instance {instance_id} is {}; a Tor instance is never probed. Run `ownsearch instances set-type {instance_id} normal` to change its type",
+                    status.as_str()
+                );
+            } else if status == InstanceStatus::Retired {
+                println!(
+                    "instance {instance_id} is retired; run `ownsearch instances restore {instance_id}` to return it to service"
+                );
+            } else {
+                println!(
+                    "instance {instance_id} is {} and scanning is enabled",
+                    status.as_str()
+                );
+            }
             Ok(())
         }
         InstancesAction::ResetStatus { instance_id } => {
@@ -195,6 +215,29 @@ pub(crate) fn run(args: InstancesArgs) -> anyhow::Result<()> {
                 }
                 println!("{} events", events.len());
             }
+            Ok(())
+        }
+        InstancesAction::SetType { instance_id, kind } => {
+            ensure_row(&store, instance_id)?;
+            let kind = match kind.to_ascii_lowercase().as_str() {
+                "normal" => ownsearch_core::InstanceType::Normal,
+                "tor" => ownsearch_core::InstanceType::Tor,
+                "unknown" => ownsearch_core::InstanceType::Unknown,
+                other => anyhow::bail!("unknown type {other}; use normal, tor, or unknown"),
+            };
+            store.set_type(
+                instance_id,
+                kind,
+                &[format!("operator.set_type:{}", kind.as_str())],
+            )?;
+            let row = store
+                .get_instance(instance_id)?
+                .ok_or_else(|| anyhow::anyhow!("instance {instance_id} does not exist"))?;
+            println!(
+                "instance {instance_id} is {} with type {}",
+                row.status.as_str(),
+                row.kind.as_str()
+            );
             Ok(())
         }
         InstancesAction::Retire {

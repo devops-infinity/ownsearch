@@ -57,14 +57,14 @@ Install `cargo-semver-checks` once, alongside the other gate tools. Before a tag
 
 ## Deployment and rollback
 
-Every channel installs a versioned artifact: the archives and installers, the crates, the container image, and the npm loader. A bad release is rolled back by reinstalling the previous tag with `tools/reinstall.sh --dir`, repinning the image to the previous tag, or publishing the previous npm and crate versions again. The database needs no rollback step: migrations run forward only and the pre-migration backup is verified before it is used. Run `tools/smoke.sh` after every deploy; a failure is the trigger to roll back.
+Every channel installs a versioned artifact: the archives and installers, the crates, the container image, and the npm loader. A bad release is rolled back by `git switch --detach vX.Y.Z` and running `tools/reinstall.sh`, repinning the image to the previous tag, or publishing the previous npm and crate versions again. Switch back with `git switch -` afterward. The database needs no rollback step: migrations run forward only and the pre-migration backup is verified before it is used. Run `tools/smoke.sh` after every deploy; a failure is the trigger to roll back.
 
 ## Version, MSRV, yank, and rollback policy
 
 - Before 1.0.0, a minor release may change behavior and a patch release may fix it. The changelog records every change.
 - The declared MSRV may rise in a minor release. The changelog names the new floor, and the 1.94.1 gate in `tools/verify.sh` moves with it.
 - Yank a crates.io release only for a broken or unsafe publish, and publish the replacement first.
-- Roll back a bad binary by reinstalling the previous release with `tools/reinstall.sh` against the older tag. Roll back state from the newest verified backup in the state `backups/` directory, then run `ownsearch db verify`.
+- Roll back a bad binary with `git switch --detach vX.Y.Z`, `tools/reinstall.sh`, then `git switch -`. Roll back state with `ownsearch db restore --from <backup>` against the newest verified backup, then run `ownsearch db verify`.
 
 ## Publish, one registry at a time
 

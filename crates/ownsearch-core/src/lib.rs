@@ -39,6 +39,7 @@ mod time;
 mod tls_probe;
 mod tools;
 mod types;
+mod update;
 mod watchdog;
 
 pub use browser::{RenderConfig, Renderer};
@@ -54,13 +55,15 @@ pub use crud::{CrudRequest, CrudService};
 pub use db::{
     CapabilityRecord, EventRecord, FleetRow, InstanceFilter, InstanceRow, KeepWindow,
     OperatorAction, ProbeRecord, ScanTarget, ScanUpdate, StatusCounts, Store, TlsRecord,
-    instance_to_json,
+    instance_to_json, serving_state,
 };
 pub use error::{Error, Result};
 pub use fetch::{FetchOutcome, FetchRequest, fetch as fetch_page};
 pub use fsutil::write_atomic;
 pub use instances::{BootstrapSnapshot, DiscoveredInstance};
-pub use ledger::{CallRecord, Ledger, existing_key, load_or_create_key, rotate, verify};
+pub use ledger::{
+    CallRecord, Ledger, archive_unverified, existing_key, load_or_create_key, rotate, verify,
+};
 pub use merge::{MergeOutput, MergedResult, Observation, merge};
 pub use response::ScanOutput;
 pub use sanitize::{cap, sanitize};
@@ -77,6 +80,7 @@ pub use types::{
     AiDbMode, CrudEntity, CrudOperation, FetchFormat, InstanceStatus, InstanceType, Preset,
     ProbeKind, ProbeOutcome, QueryEntity, SafeSearch, SearchMode, TextMode, TimeRange,
 };
+pub use update::{UpdateStatus, apply as update_apply, check as update_check};
 pub use watchdog::Heartbeat;
 
 pub const APP_NAME: &str = "OwnSearch";

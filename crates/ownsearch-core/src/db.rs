@@ -36,6 +36,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
 ];
 
 const STALE_RUN_SECS: i64 = 3_600;
+const MAX_EVENT_OFFSET: usize = 50_000;
 const MAX_FLEET_SNAPSHOTS: i64 = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +90,33 @@ pub struct InstanceRow {
     pub pinned: bool,
     pub denied: bool,
     pub added_at: String,
+}
+
+pub fn serving_state(row: &InstanceRow, now: &str) -> (bool, Option<String>) {
+    if row.status != InstanceStatus::Active {
+        return (false, Some(format!("status is {}", row.status.as_str())));
+    }
+    if row.hard_gate_passed != Some(true) {
+        return (false, Some("the hard gate has not passed".to_owned()));
+    }
+    if row.denied {
+        return (false, Some("denied by an operator override".to_owned()));
+    }
+    if !row.scan_enabled {
+        return (
+            false,
+            Some("scanning is disabled, so the instance leaves the fleet".to_owned()),
+        );
+    }
+    if row.kind == InstanceType::Tor {
+        return (false, Some("a Tor instance is never served".to_owned()));
+    }
+    if let Some(until) = row.cooldown_until.as_deref()
+        && until > now
+    {
+        return (false, Some(format!("cooling down until {until}")));
+    }
+    (true, None)
 }
 
 #[derive(Debug, Clone)]
@@ -844,7 +872,7 @@ impl Store {
                FROM instances AS i
                LEFT JOIN instance_policy_overrides AS o ON o.instance_id = i.instance_id
               WHERE COALESCE(o.is_denied, 0) = 0
-                AND i.lifecycle_status NOT IN ('missing', 'unlisted', 'retired', 'excluded')",
+                AND i.lifecycle_status NOT IN ('missing', 'unlisted', 'retired', 'excluded', 'quarantined')",
         )?;
         let rows: Vec<(i64, String, String, String)> = statement
             .query_map([], |row| {
@@ -1652,6 +1680,11 @@ impl Store {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<Value>> {
+        if offset > MAX_EVENT_OFFSET {
+            return Err(Error::InvalidArgs(format!(
+                "offset {offset} is above the {MAX_EVENT_OFFSET} row cap; page with a smaller offset"
+            )));
+        }
         let reader = self.reader_conn()?;
         let sql = match instance_id {
             Some(_) => {
@@ -1690,6 +1723,7 @@ impl Store {
     }
 
     pub fn export_snapshot(&self) -> Result<Value> {
+        let now = now_rfc3339();
         let reader = self.reader_conn()?;
         let mut statement = reader.prepare(
             "SELECT i.instance_id, i.normalized_url, i.instance_kind, i.lifecycle_status, i.searxng_version,
@@ -1697,7 +1731,7 @@ impl Store {
                     COALESCE(c.is_json_enabled, 0), COALESCE(c.is_html_enabled, 0),
                     COALESCE(c.is_google_exact_seen, 0), COALESCE(c.is_google_cse_seen, 0),
                     i.discovery_rank, i.network_group, i.consecutive_successes, i.consecutive_failures,
-                    COALESCE(o.is_denied, 0), i.is_scan_enabled
+                    COALESCE(o.is_denied, 0), i.is_scan_enabled, i.cooldown_until
                FROM instances AS i
                LEFT JOIN instance_quality AS q ON q.instance_id = i.instance_id
                LEFT JOIN capability_snapshots AS c ON c.capability_id = i.current_capability_id
@@ -1727,6 +1761,7 @@ impl Store {
                 "consecutiveFailures": row.get::<_, i64>(16)?,
                 "denied": row.get::<_, i64>(17)? != 0,
                 "scanEnabled": row.get::<_, i64>(18)? != 0,
+                "cooldownUntil": row.get::<_, Option<String>>(19)?,
             }))
         })?;
         let mut instances = Vec::new();
@@ -1741,12 +1776,16 @@ impl Store {
                     && item.get("denied").and_then(Value::as_bool) == Some(false)
                     && item.get("scanEnabled").and_then(Value::as_bool) == Some(true)
                     && item.get("type").and_then(Value::as_str) != Some("tor")
+                    && item
+                        .get("cooldownUntil")
+                        .and_then(Value::as_str)
+                        .is_none_or(|until| until <= now.as_str())
             })
             .cloned()
             .collect();
         Ok(json!({
             "schemaVersion": 1,
-            "generatedAt": now_rfc3339(),
+            "generatedAt": now,
             "fleet": fleet,
             "instances": instances,
         }))
@@ -2170,6 +2209,12 @@ impl Store {
                     "unknown override field {unknown}"
                 )));
             }
+            if fields.contains_key("denied") {
+                return Err(Error::InvalidArgs(
+                    "denied is an operator intent; use the deny or allow command, not a policy field"
+                        .into(),
+                ));
+            }
             let scan_enabled = fields.get("scanEnabled").and_then(Value::as_bool);
             let html_allowed = fields.get("htmlFallbackAllowed").and_then(Value::as_bool);
             let pinned = fields.get("pinned").and_then(Value::as_bool);
@@ -2323,7 +2368,7 @@ impl Store {
                 && matches!(action, OperatorAction::Restore | OperatorAction::Reset)
             {
                 return Err(Error::PolicyRefused(format!(
-                    "instance {instance_id} is a Tor instance, which is never served; set its type to normal first (ownsearch_db_crud update instance with type normal), then restore it"
+                    "instance {instance_id} is a Tor instance, which is never served; run `ownsearch instances set-type {instance_id} normal` first, then restore it"
                 )));
             }
             let mut next = match action {

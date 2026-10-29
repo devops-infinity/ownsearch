@@ -11,6 +11,9 @@ pub(crate) fn run(args: DbArgs) -> anyhow::Result<()> {
         println!("{}", path.display());
         return Ok(());
     }
+    if let DbAction::Restore { from } = &args.action {
+        return restore(&path, from);
+    }
     if !path.exists() && matches!(args.action, DbAction::Backup { .. }) {
         anyhow::bail!(
             "{} does not exist yet; run `ownsearch db counts` or `ownsearch instances list` to create it, or start the server",
@@ -20,7 +23,7 @@ pub(crate) fn run(args: DbArgs) -> anyhow::Result<()> {
     let store = Store::open(&path).context("opening the state database")?;
     store.warm_up()?;
     match args.action {
-        DbAction::Path => Ok(()),
+        DbAction::Path | DbAction::Restore { .. } => Ok(()),
         DbAction::Verify => {
             let version = store.schema_version()?;
             store.quick_check()?;
@@ -111,4 +114,42 @@ pub(crate) fn stamp() -> String {
     ownsearch_core::now_rfc3339()
         .replace([':', '.'], "-")
         .replace('T', "_")
+}
+
+fn restore(target: &std::path::Path, source: &std::path::Path) -> anyhow::Result<()> {
+    if !source.exists() {
+        anyhow::bail!("{} does not exist", source.display());
+    }
+    let stamp = stamp();
+    let staged = target.with_file_name(format!("instances.db.restore-{stamp}"));
+    std::fs::copy(source, &staged).context("staging the backup")?;
+    let store = Store::open(&staged).context("verifying the backup")?;
+    store.quick_check()?;
+    store.foreign_key_check()?;
+    let counts = store.counts()?;
+    store.maintenance()?;
+    drop(store);
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = std::path::PathBuf::from(format!("{}{suffix}", staged.display()));
+        let _ = std::fs::remove_file(sidecar);
+    }
+    let aside = target.with_file_name(format!("instances.db.pre-restore-{stamp}"));
+    if target.exists() {
+        std::fs::rename(target, &aside).context("moving the live database aside")?;
+        for suffix in ["-wal", "-shm"] {
+            let live = std::path::PathBuf::from(format!("{}{suffix}", target.display()));
+            if live.exists() {
+                let moved = std::path::PathBuf::from(format!("{}{suffix}", aside.display()));
+                let _ = std::fs::rename(&live, &moved);
+            }
+        }
+    }
+    std::fs::rename(&staged, target).context("installing the restored database")?;
+    let store = Store::open(target).context("opening the restored database")?;
+    store.quick_check()?;
+    store.foreign_key_check()?;
+    println!("restored {} from {}", target.display(), source.display());
+    println!("instances: {} ({} active)", counts.total, counts.active);
+    println!("previous live database: {}", aside.display());
+    Ok(())
 }

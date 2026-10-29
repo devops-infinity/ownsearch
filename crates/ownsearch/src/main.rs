@@ -14,6 +14,7 @@ mod output;
 mod sbom;
 mod scan;
 mod serve;
+mod update;
 
 fn main() -> ExitCode {
     init_tracing();
@@ -44,6 +45,7 @@ fn run(parsed: cli::Cli) -> anyhow::Result<()> {
         cli::Command::Db(args) => db::run(args),
         cli::Command::Config(args) => config::run(args),
         cli::Command::Audit(args) => audit::run(args),
+        cli::Command::Update(args) => update::run(args),
         cli::Command::Sbom(args) => sbom::run(&args),
         cli::Command::Completions { shell } => {
             let mut command = cli::Cli::command();

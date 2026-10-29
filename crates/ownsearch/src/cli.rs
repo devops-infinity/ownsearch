@@ -33,6 +33,8 @@ pub(crate) enum Command {
     Config(ConfigArgs),
     #[command(about = "Verify or rotate the call ledger")]
     Audit(AuditArgs),
+    #[command(about = "Check for a newer release and install it")]
+    Update(UpdateArgs),
     #[command(about = "Write a CycloneDX 1.7 software bill of materials for the dependency graph")]
     Sbom(SbomArgs),
     #[command(about = "Print shell completions for a supported shell")]
@@ -268,6 +270,13 @@ pub(crate) enum InstancesAction {
         #[arg(long, help = "Print the new row as JSON")]
         json: bool,
     },
+    #[command(about = "Change the recorded type of an instance: normal, tor, or unknown")]
+    SetType {
+        #[arg(help = "Instance identifier")]
+        instance_id: i64,
+        #[arg(help = "Type: normal, tor, or unknown")]
+        kind: String,
+    },
     #[command(about = "Retire an instance so it leaves the fleet and the scanner")]
     Retire {
         #[arg(help = "Instance identifier")]
@@ -313,6 +322,11 @@ pub(crate) enum DbAction {
     },
     #[command(about = "Checkpoint the WAL, vacuum, and record the run")]
     Maintenance,
+    #[command(about = "Replace the live database with a verified backup")]
+    Restore {
+        #[arg(long, help = "Backup file to restore from")]
+        from: PathBuf,
+    },
     #[command(about = "Report row counts by status and type")]
     Counts {
         #[arg(long, help = "Print the counts as JSON")]
@@ -368,6 +382,11 @@ pub(crate) enum AuditAction {
             help = "Ledger file, defaulting to calls.jsonl in the data directory"
         )]
         ledger_file: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Archive even when the chain cannot be verified, for a lost key or a tampered row"
+        )]
+        force: bool,
     },
 }
 
@@ -427,6 +446,17 @@ mod tests {
         };
         assert_eq!(args.overrides().html_fallback, None);
     }
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct UpdateArgs {
+    #[arg(
+        long,
+        help = "Report whether a newer release exists, without installing it"
+    )]
+    pub(crate) check: bool,
+    #[arg(long, help = "Print the result as JSON")]
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]

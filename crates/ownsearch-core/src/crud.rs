@@ -416,7 +416,7 @@ impl CrudService {
                     .unwrap_or(Value::Null),
             }
         };
-        let after = match validated.operation {
+        let mut after = match validated.operation {
             CrudOperation::Delete => {
                 if self.store.get_override(validated.instance_id)?.is_none() {
                     return Err(Error::PolicyRefused(
@@ -466,6 +466,39 @@ impl CrudService {
                 preview
             }
         };
+        if validated.entity == CrudEntity::Instance
+            && let Some(status) = validated.fields.get("status").and_then(Value::as_str)
+            && status == InstanceStatus::Excluded.as_str()
+        {
+            let tor = !creating
+                && self
+                    .store
+                    .get_instance(validated.instance_id)?
+                    .is_some_and(|row| row.kind == InstanceType::Tor);
+            if !tor {
+                return Err(Error::PolicyRefused(
+                    "excluded is set by the scanner for a Tor instance; set the type to tor first, or use deny to stop an instance".into(),
+                ));
+            }
+        }
+        if validated.entity == CrudEntity::Instance
+            && let Some(denied) = validated.fields.get("denied").and_then(Value::as_bool)
+        {
+            let current = before
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or(InstanceStatus::Candidate.as_str());
+            let target = if denied {
+                InstanceStatus::Quarantined.as_str()
+            } else if current == InstanceStatus::Quarantined.as_str() {
+                InstanceStatus::Candidate.as_str()
+            } else {
+                current
+            };
+            if let Some(object) = after.as_object_mut() {
+                object.insert("status".to_owned(), json!(target));
+            }
+        }
         if validated.entity == CrudEntity::Instance
             && let Some(status) = validated.fields.get("status").and_then(Value::as_str)
             && status == InstanceStatus::Active.as_str()
@@ -538,12 +571,25 @@ impl CrudService {
                     .get("type")
                     .and_then(Value::as_str)
                     .map(InstanceType::parse);
+                if status == Some(InstanceStatus::Excluded)
+                    && kind != Some(InstanceType::Tor)
+                    && !self
+                        .store
+                        .get_instance(instance_id)?
+                        .is_some_and(|row| row.kind == InstanceType::Tor)
+                {
+                    return Err(Error::PolicyRefused(
+                        "excluded is set by the scanner for a Tor instance; set the type to tor first, or use deny to stop an instance".into(),
+                    ));
+                }
                 let override_fields: Map<String, Value> = fields
                     .as_object()
                     .map(|object| {
                         object
                             .iter()
-                            .filter(|(key, _)| OVERRIDE_FIELDS.contains(&key.as_str()))
+                            .filter(|(key, _)| {
+                                OVERRIDE_FIELDS.contains(&key.as_str()) && key.as_str() != "denied"
+                            })
                             .map(|(key, value)| (key.clone(), value.clone()))
                             .collect()
                     })

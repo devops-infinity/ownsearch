@@ -15,10 +15,20 @@ pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
             println!("head: {head}");
             Ok(())
         }
-        AuditAction::Rotate { ledger_file } => {
+        AuditAction::Rotate { ledger_file, force } => {
             let path = ledger_file.unwrap_or_else(|| settings.ledger_path());
             if !path.exists() {
                 anyhow::bail!("{} does not exist yet", path.display());
+            }
+            if force {
+                let archive = ownsearch_core::archive_unverified(&path)
+                    .with_context(|| format!("archiving {}", path.display()))?;
+                println!(
+                    "archived the chain without verification to {}",
+                    archive.display()
+                );
+                println!("the next call starts a fresh chain");
+                return Ok(());
             }
             let key = ownsearch_core::load_or_create_key(&settings.ledger_dir().join("args.key"))?;
             let (entries, archive) = ownsearch_core::rotate(&path, &key)
