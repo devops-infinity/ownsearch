@@ -104,7 +104,6 @@ pub fn apply() -> Result<UpdateStatus> {
 }
 
 fn api_base() -> String {
-    // Test and mirror override. Debug builds only, so a shipped binary always talks to GitHub.
     #[cfg(debug_assertions)]
     if let Ok(base) = std::env::var("OWNSEARCH_UPDATE_API_BASE")
         && !base.trim().is_empty()

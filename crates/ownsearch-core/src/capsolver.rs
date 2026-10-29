@@ -1,5 +1,3 @@
-//! Optional captcha solving through CapSolver. Runs only when a key is configured.
-
 use std::time::{Duration, Instant};
 
 use secrecy::{ExposeSecret, SecretString};
