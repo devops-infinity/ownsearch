@@ -68,50 +68,49 @@ The gate runs these checks, in this order:
 
 A tool that is not installed is skipped and named. `OWNSEARCH_STRICT_GATE=1` turns a skip into a failure, which is what a release runs under.
 
-## Prepare a version
+## Cut a release
+
+The release is prepared on this machine, and the release build runs on GitHub's native runners. Pushing a `v*` tag starts `.github/workflows/release.yml`, which builds every target on its own runner and creates the GitHub release. Building the archives locally is optional.
+
+### 1. Prepare the version on a branch
 
 ```sh
-tools/release.sh --prepare --patch
+git switch main && git pull
+git switch -c release/prepare-X-Y-Z
 tools/release.sh --prepare --minor
-tools/release.sh --prepare --major
-tools/release.sh --prepare --version 1.2.3
 ```
 
-The script refuses a dirty tree and a version that is not newer than the current one. It stamps the version into `Cargo.toml`, the `ownsearch-core` requirement, `Cargo.lock`, `server.json`, `mcpb/manifest.json`, and the default in the `Dockerfile`, then inserts the changelog heading and adds the compare link. A stamp that misses a file stops the script before it finishes.
+Use `--patch`, `--major`, or `--version X.Y.Z` instead of `--minor` as needed. The script refuses a dirty tree and a version that is not newer than the current one. It stamps the version into `Cargo.toml`, the `ownsearch-core` requirement, `Cargo.lock`, `server.json`, `mcpb/manifest.json`, the `Dockerfile`, and the README status line, moves the `[Unreleased]` notes under the new `## [X.Y.Z] - DATE` heading, and adds the compare link while updating the `[Unreleased]` link. A stamp that misses a file stops the script before it finishes.
 
-Edit the changelog text, commit the preparation, and merge it into `main`.
+### 2. Write the changelog, then commit and merge
 
-## Package locally
+Edit the changelog text under the new heading, then commit on the release branch, push it, and open a pull request into `main`.
 
 ```sh
-tools/release.sh --package
+git add -A && git commit -m "chore(release): prepare X.Y.Z"
+git push -u origin release/prepare-X-Y-Z
+gh pr create --fill --base main
 ```
 
-`--package` needs a clean tree and changelog entries under the current version. It runs the strict gate, reads the target list from `dist plan`, and builds every target this host supports. Run it on macOS to include the two Darwin targets, and on Windows for the Windows target. A target that needs another host is skipped, and a skipped target is refused unless `OWNSEARCH_ALLOW_PARTIAL=1` is set, because the installers and the formula name every target.
+Merge the pull request before tagging.
 
-Everything lands in `dist/`: one archive per target this host built, `source.tar.gz`, the shell and PowerShell installers, `ownsearch.rb`, the npm package, and the MCPB bundle built from the Linux x86_64 archive. `sha256.sum` covers every archive, the installers, the formula, the npm package, the bundle, and any bill of materials in the directory, and it is signed with minisign when `~/.minisign/minisign.key` exists and `minisign.pub` is in the repository.
-
-The host binary is installed into `~/.local/bin`, or into the directory in `OWNSEARCH_INSTALL_DIR`. Nothing is uploaded.
-
-## Tag
+### 3. Tag the merged commit and push the tag
 
 ```sh
-tools/release.sh --tag
-```
-
-`--tag` needs a clean tree, changelog entries under the current version heading, and a `dist/` packaged for that version. It runs the strict gate, refuses a tag that already exists, and creates `vX.Y.Z` at `HEAD`. The tag is signed when `user.signingkey` is set, and annotated with a warning when it is not. The script never pushes.
-
-## Push the tag
-
-```sh
+git switch main && git pull
+git tag -a vX.Y.Z -m "OwnSearch X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-A `v*` tag starts the release workflow in `.github/workflows/release.yml`. That workflow is the only publisher of the GitHub release. It takes the version from the tag, builds all seven targets from `[workspace.metadata.dist]`, cross-builds both musl targets on glibc runners with `musl-tools`, and attaches every archive, both installers, `ownsearch.rb`, `ownsearch-npm-package.tar.gz`, the MCPB bundle, `sha256.sum` with its signature, and `minisign.pub`.
+A `v*` tag starts the release workflow in `.github/workflows/release.yml`. That workflow is the only publisher of the GitHub release. It takes the version from the tag, builds all seven targets from `[workspace.metadata.dist]`, cross-builds both musl targets on glibc runners with `musl-tools`, and attaches every archive, both installers, `ownsearch.rb`, `ownsearch-npm-package.tar.gz`, the MCPB bundle, `sha256.sum` with its signature, and `minisign.pub`. Each target builds on its own native runner, so the build runs in parallel and needs no cross linker here.
 
 A manual workflow run takes the tag from its input, so the built tree is the tag and not the default branch. Every action in the workflow is pinned to a commit, so a moved tag cannot change what runs. Wait for the release to appear before publishing the npm package, because two of the publish steps download its assets.
 
-## Publish, one registry at a time
+### Optional: build the archives on this machine
+
+`tools/release.sh --package` builds the archives, installers, formula, npm package, and MCPB bundle under `dist/`, and installs the host binary into `~/.local/bin`. Run it on macOS to include the two Darwin targets, and on Windows for the Windows target; a Linux host skips them and refuses a partial set unless `OWNSEARCH_ALLOW_PARTIAL=1` is set. `tools/release.sh --tag` then creates the tag from that `dist/`. This path is slower than the tag and push above, because one machine builds every target in turn, so a normal release does not use it. `sha256.sum` covers every artifact, and it is signed with minisign when `~/.minisign/minisign.key` exists and `minisign.pub` is in the repository.
+
+## Publish after the release exists
 
 ### crates.io
 
