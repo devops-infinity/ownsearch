@@ -242,17 +242,20 @@ mod tests {
         let settings = settings(&dir);
         let ledger = Ledger::open(settings.ledger_path(), &KEY).expect("ledger");
         let events = settings.events_path();
+        let fresh = crate::time::rfc3339(crate::time::now_unix());
         std::fs::write(
             &events,
-            "{\"event\":\"discovery_run\",\"at\":\"2000-01-01T00:00:00.000Z\"}\n\
-             {\"event\":\"discovery_run\",\"at\":\"2026-10-26T00:00:00.000Z\"}\n",
+            format!(
+                "{{\"event\":\"discovery_run\",\"at\":\"2000-01-01T00:00:00.000Z\"}}\n\
+                 {{\"event\":\"discovery_run\",\"at\":\"{fresh}\"}}\n"
+            ),
         )
         .expect("events");
         let report = clean(&settings, &ledger, &KEY).expect("clean");
         assert_eq!(report.events_trimmed, 1);
         let body = std::fs::read_to_string(&events).expect("read");
         assert!(!body.contains("2000-01-01"));
-        assert!(body.contains("2026-10-26"));
+        assert!(body.contains(&fresh));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -520,6 +520,29 @@ async fn an_allowed_origin_gets_an_answered_preflight() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_allowed_origin_gets_a_preflight_even_with_a_token_configured() {
+    let server = start(
+        "http-preflight-token",
+        &[
+            ("OWNSEARCH_ALLOWED_ORIGINS", "https://allowed.example"),
+            ("OWNSEARCH_BEARER_TOKENS", &token()),
+        ],
+    )
+    .await;
+    for path in ["/v1/search", "/v1/fetch"] {
+        let response = server
+            .client
+            .request(reqwest::Method::OPTIONS, format!("{}{}", server.base, path))
+            .header("origin", "https://allowed.example")
+            .header("access-control-request-method", "POST")
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(response.status().as_u16(), 204, "{path}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_rest_call_without_a_json_content_type_is_refused() {
     let server = start("http-media", &[("OWNSEARCH_BEARER_TOKENS", &token())]).await;
     let response = server

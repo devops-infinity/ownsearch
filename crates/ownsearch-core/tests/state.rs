@@ -20,7 +20,7 @@ fn imported(name: &str) -> (Store, std::path::PathBuf) {
 #[test]
 fn a_fresh_database_lands_on_schema_one_with_wal_and_foreign_keys() {
     let (store, dir) = imported("schema");
-    assert_eq!(store.schema_version().expect("version"), 1);
+    assert_eq!(store.schema_version().expect("version"), 4);
     store.quick_check().expect("quick check");
     store.foreign_key_check().expect("foreign keys");
     assert!(dir.join("instances.db").exists());

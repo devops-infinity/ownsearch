@@ -41,6 +41,8 @@ pub enum Error {
     },
     #[error("local state is corrupt: {0}")]
     StateCorrupted(String),
+    #[error("the database records schema {found}, newer than this binary reads ({supported})")]
+    StateNewer { found: i64, supported: u32 },
     #[error("ledger: {0}")]
     Ledger(String),
     #[error("input or output failure while {context}")]
@@ -102,6 +104,7 @@ impl Error {
             Self::Network { .. } => "ownsearch.upstream_failed",
             Self::State(_) | Self::Database { .. } => "ownsearch.state_error",
             Self::StateCorrupted(_) => "ownsearch.state_corrupted",
+            Self::StateNewer { .. } => "ownsearch.state_newer",
             Self::Ledger(_) | Self::Io { .. } | Self::Json { .. } => "ownsearch.internal_error",
             Self::UnknownTool { .. } => "ownsearch.tool_not_found",
             Self::WriteDisabled => "ownsearch.write_disabled",
@@ -152,6 +155,9 @@ impl Error {
             Self::StateCorrupted(_) => {
                 "Restore the newest verified backup with `ownsearch db backup` output beside it, then scan again."
             }
+            Self::StateNewer { .. } => {
+                "This state database was written by a newer OwnSearch; run the newer release against it, or point OWNSEARCH_STATE_DIR at a different directory."
+            }
             Self::Ledger(_) | Self::Io { .. } => {
                 "Check the state and ledger directory permissions and free space."
             }
@@ -160,17 +166,17 @@ impl Error {
                 "Call tools/list and use only the names it returns for this configuration."
             }
             Self::WriteDisabled => {
-                "Set OWNSEARCH_AI_DB_MODE=read-write in the profile to allow typed database writes."
+                "Database writes are disabled by the operator. Ask the operator to set OWNSEARCH_AI_DB_MODE=read-write and restart, or run the change through the ownsearch CLI."
             }
             Self::ConfirmationExpired => {
                 "Call the tool again with dry_run true to receive a fresh preview and token."
             }
             Self::Cancelled => "Call the tool again if the work is still needed.",
             Self::Timeout { .. } => {
-                "Raise the deadline with timeout_secs, or use mode=fast to query fewer instances."
+                "Raise the deadline with timeout_secs (up to the transport limit), or use mode=fast to query fewer instances."
             }
             Self::NoFleet => {
-                "Run `ownsearch scan` to refresh and select a fleet, or check `ownsearch instances list`."
+                "Call the ownsearch_scan tool, or run `ownsearch scan`, to refresh the fleet. If every instance is cooling down, `ownsearch instances list` shows the status and an operator can clear it with `ownsearch scan --force --instance <id>`."
             }
         }
     }

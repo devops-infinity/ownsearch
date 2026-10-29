@@ -160,9 +160,7 @@ struct Profile {
     keep_window: Option<String>,
     maintenance_interval_secs: Option<u64>,
     allow_private_instances: Option<bool>,
-    capsolver_key: Option<String>,
     capsolver_timeout_secs: Option<u64>,
-    proxy: Option<String>,
 }
 
 impl Settings {
@@ -352,9 +350,7 @@ impl Settings {
             })?,
             None => profile.ai_db_mode.unwrap_or_default(),
         };
-        let capsolver_key = non_empty_env(&env, "OWNSEARCH_CAPSOLVER_KEY")
-            .or(profile.capsolver_key.clone())
-            .map(SecretString::from);
+        let capsolver_key = non_empty_env(&env, "OWNSEARCH_CAPSOLVER_KEY").map(SecretString::from);
         let capsolver_timeout_secs = bounded_u64(
             env_parse(&env, "OWNSEARCH_CAPSOLVER_TIMEOUT_SECS")?
                 .or(profile.capsolver_timeout_secs)
@@ -363,7 +359,7 @@ impl Settings {
             180,
             "capsolver_timeout_secs",
         )?;
-        let proxy = non_empty_env(&env, "OWNSEARCH_PROXY").or(profile.proxy.clone());
+        let proxy = non_empty_env(&env, "OWNSEARCH_PROXY");
         Ok(Self {
             http: overrides
                 .http
@@ -1390,10 +1386,9 @@ pub fn keychain_get() -> Result<Option<SecretString>> {
     match entry.get_password() {
         Ok(secret) => Ok(Some(SecretString::from(secret))),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => {
-            tracing::warn!(%error, "the keychain could not be read; no stored token was used");
-            Ok(None)
-        }
+        Err(error) => Err(Error::Config(format!(
+            "the keychain entry exists but could not be read: {error}; unlock it, or set OWNSEARCH_BEARER_TOKENS"
+        ))),
     }
 }
 

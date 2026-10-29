@@ -131,11 +131,14 @@ impl Renderer {
                     .into(),
             )
         })?;
-        let _permit = inner
-            .gate
-            .acquire()
+        let queued_at = tokio::time::Instant::now();
+        let _permit = tokio::time::timeout(timeout, inner.gate.acquire())
             .await
+            .map_err(|_| Error::Timeout {
+                deadline_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+            })?
             .map_err(|_| Error::State("the browser gate closed".into()))?;
+        let timeout = timeout.saturating_sub(queued_at.elapsed());
         let mut session = {
             let mut guard = inner.session.lock().await;
             if guard
@@ -433,7 +436,9 @@ async fn launch(inner: &Arc<RenderInner>) -> Result<Session> {
         Ok(launched) => launched,
         Err(error) => {
             discard_profile(&inner.profile);
-            return Err(browser_error(error));
+            return Err(Error::Config(format!(
+                "the browser could not start: {error}; install Chromium, set OWNSEARCH_BROWSER_PATH, or use render auto or never"
+            )));
         }
     };
     let handler = tokio::spawn(async move {

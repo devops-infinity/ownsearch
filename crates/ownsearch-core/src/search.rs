@@ -157,7 +157,9 @@ pub async fn search(
         .filter(|outcome| outcome.failure.is_none())
         .count();
     for outcome in outcomes.iter().filter(|outcome| outcome.failure.is_some()) {
-        if let Some(failure) = &outcome.failure {
+        if let Some(failure) = &outcome.failure
+            && cools_down(&failure.code)
+        {
             cool_down(ctx, outcome.instance_id, &failure.code).await;
         }
     }
@@ -181,7 +183,9 @@ pub async fn search(
             .await;
             if outcome.failure.is_none() {
                 successes = successes.saturating_add(1);
-            } else if let Some(failure) = &outcome.failure {
+            } else if let Some(failure) = &outcome.failure
+                && cools_down(&failure.code)
+            {
                 cool_down(ctx, row.instance_id, &failure.code).await;
             }
             outcomes.push(outcome);
@@ -555,6 +559,13 @@ fn select_instances(
         .collect()
 }
 
+fn cools_down(code: &str) -> bool {
+    matches!(
+        code,
+        "ownsearch.upstream_failed" | "ownsearch.timeout" | "ownsearch.rate_limited"
+    )
+}
+
 async fn cool_down(ctx: &Arc<ToolContext>, instance_id: i64, code: &str) {
     let until = crate::time::rfc3339(
         crate::time::now_unix()
@@ -566,7 +577,7 @@ async fn cool_down(ctx: &Arc<ToolContext>, instance_id: i64, code: &str) {
         tokio::task::spawn_blocking(move || store.mark_search_failure(instance_id, &until, &code))
             .await;
     match written {
-        Ok(Ok(())) => {}
+        Ok(Ok(())) => ctx.bump_fleet_generation(),
         Ok(Err(error)) => {
             tracing::warn!(%error, instance_id, "the cooldown was not recorded");
         }

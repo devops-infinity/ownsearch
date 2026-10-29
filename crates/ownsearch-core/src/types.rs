@@ -133,6 +133,8 @@ pub enum InstanceStatus {
     Missing,
     Quarantined,
     Retired,
+    Excluded,
+    Unlisted,
 }
 
 impl InstanceStatus {
@@ -144,6 +146,8 @@ impl InstanceStatus {
             Self::Missing => "missing",
             Self::Quarantined => "quarantined",
             Self::Retired => "retired",
+            Self::Excluded => "excluded",
+            Self::Unlisted => "unlisted",
         }
     }
 
@@ -155,9 +159,22 @@ impl InstanceStatus {
             "missing" => Some(Self::Missing),
             "quarantined" => Some(Self::Quarantined),
             "retired" => Some(Self::Retired),
+            "excluded" => Some(Self::Excluded),
+            "unlisted" => Some(Self::Unlisted),
             _ => None,
         }
     }
+
+    pub const ALL: [Self; 8] = [
+        Self::Candidate,
+        Self::Active,
+        Self::Probation,
+        Self::Missing,
+        Self::Quarantined,
+        Self::Retired,
+        Self::Excluded,
+        Self::Unlisted,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
@@ -370,6 +387,7 @@ pub enum QueryEntity {
     Events,
     Snapshots,
     Runs,
+    Metrics,
 }
 
 impl QueryEntity {
@@ -382,6 +400,7 @@ impl QueryEntity {
             "events" => Some(Self::Events),
             "snapshots" => Some(Self::Snapshots),
             "runs" | "discovery_runs" | "discovery-runs" => Some(Self::Runs),
+            "metrics" | "probe_metrics" | "probe-metrics" => Some(Self::Metrics),
             _ => None,
         }
     }
@@ -395,6 +414,7 @@ impl QueryEntity {
             Self::Events => "events",
             Self::Snapshots => "snapshots",
             Self::Runs => "runs",
+            Self::Metrics => "metrics",
         }
     }
 }

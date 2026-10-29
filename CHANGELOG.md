@@ -7,7 +7,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 ### Fixed
 
 - The Dockerfile and compose healthchecks send the bearer token with their `/readyz` probe, so a deployment that sets `OWNSEARCH_BEARER_TOKENS` no longer reports unhealthy forever.
-- The scanner policy, the README, the threat model, and SECURITY.md state where the headless browser runs and what `OWNSEARCH_CAPSOLVER_KEY` does, and they name the CapSolver service as an outbound boundary.
+- The scanner policy, the README, and SECURITY.md state where the headless browser runs and what `OWNSEARCH_CAPSOLVER_KEY` does, and they name the CapSolver service as an outbound boundary.
 
 ## [0.2.0] - 2026-10-27
 

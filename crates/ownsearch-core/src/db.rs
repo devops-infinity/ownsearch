@@ -16,11 +16,36 @@ pub(crate) const SCORE_VERSION: &str = "ownsearch-score-1";
 pub(crate) const SOURCE_ID_SEARX_SPACE: &str = "searx_space";
 pub(crate) const SOURCE_ID_BOOTSTRAP: &str = "bootstrap";
 
-const MIGRATIONS: &[(u32, &str, &str)] =
-    &[(1, "initial", include_str!("db/migrations/0001_initial.sql"))];
+const MIGRATIONS: &[(u32, &str, &str)] = &[
+    (1, "initial", include_str!("db/migrations/0001_initial.sql")),
+    (
+        2,
+        "index_expiry_reads_and_drop_unread_views",
+        include_str!("db/migrations/0002_index_expiry_reads_and_drop_unread_views.sql"),
+    ),
+    (
+        3,
+        "drop_unused_hourly_probe_metrics",
+        include_str!("db/migrations/0003_drop_unused_hourly_probe_metrics.sql"),
+    ),
+    (
+        4,
+        "restore_probe_metrics_read_path",
+        include_str!("db/migrations/0004_restore_probe_metrics_read_path.sql"),
+    ),
+];
 
 const STALE_RUN_SECS: i64 = 3_600;
 const MAX_FLEET_SNAPSHOTS: i64 = 200;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorAction {
+    Deny,
+    Allow,
+    Retire,
+    Restore,
+    Reset,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct InstanceFilter {
@@ -265,8 +290,8 @@ impl Store {
         }
         let writer = Connection::open(path)?;
         configure(&writer)?;
-        enable_wal(&writer)?;
         verify_owner(&writer, path)?;
+        enable_wal(&writer)?;
         writer.pragma_update(None, "application_id", APPLICATION_ID)?;
         lock_down_file(path)?;
         let mut store = Self {
@@ -312,6 +337,14 @@ impl Store {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn warm_up(&self) -> Result<(usize, usize)> {
+        if self.bootstrap_imported()? || self.instance_count()? > 0 {
+            return Ok((0, 0));
+        }
+        let snapshot = crate::instances::BootstrapSnapshot::embedded()?;
+        self.import_bootstrap(&snapshot, crate::time::now_unix())
     }
 
     fn writer_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
@@ -406,9 +439,10 @@ impl Store {
         let user_version: i64 =
             connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if user_version > i64::from(highest) {
-            return Err(Error::StateCorrupted(format!(
-                "the database records schema {user_version}, which is newer than this binary reads ({highest})"
-            )));
+            return Err(Error::StateNewer {
+                found: user_version,
+                supported: highest,
+            });
         }
         Ok(highest)
     }
@@ -615,10 +649,26 @@ impl Store {
         };
         self.ensure_source_with_kind("manual", "manual", "manual entry", "manual")?;
         self.import_discovered(std::slice::from_ref(&record), "manual", None, now)?;
-        let instance_id = self
+        let existing = self
             .find_instance_by_url(&normalized)?
-            .ok_or_else(|| Error::State("the manual instance was not stored".into()))?
-            .instance_id;
+            .ok_or_else(|| Error::State("the manual instance was not stored".into()))?;
+        let instance_id = existing.instance_id;
+        if existing.denied {
+            self.apply_operator_action(
+                instance_id,
+                OperatorAction::Allow,
+                &["operator.add_revived".to_owned()],
+            )?;
+        } else if matches!(
+            existing.status,
+            InstanceStatus::Retired | InstanceStatus::Missing
+        ) {
+            self.apply_operator_action(
+                instance_id,
+                OperatorAction::Restore,
+                &["operator.add_revived".to_owned()],
+            )?;
+        }
         if pinned {
             self.apply_policy_change(
                 instance_id,
@@ -689,6 +739,45 @@ impl Store {
                     params![instance_id, record.kind.as_str()],
                 )?;
             }
+            let stored_status: String = connection.query_row(
+                "SELECT lifecycle_status FROM instances WHERE instance_id = ?1",
+                params![instance_id],
+                |row| row.get(0),
+            )?;
+            let target = if record.kind == InstanceType::Tor {
+                (stored_status != InstanceStatus::Excluded.as_str())
+                    .then_some(InstanceStatus::Excluded)
+            } else if stored_status == InstanceStatus::Excluded.as_str()
+                || stored_status == "missing"
+                || stored_status == "unlisted"
+            {
+                Some(InstanceStatus::Candidate)
+            } else {
+                None
+            };
+            if let Some(target) = target {
+                connection.execute(
+                    "UPDATE instances SET lifecycle_status = ?2, updated_at = ?3 WHERE instance_id = ?1",
+                    params![instance_id, target.as_str(), now],
+                )?;
+                connection.execute(
+                    "INSERT INTO instance_events (occurred_at, event_kind, instance_id, discovery_run_id, previous_value, current_value, reason_codes_json)
+                     VALUES (?1, 'status_changed', ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        now,
+                        instance_id,
+                        run_id,
+                        stored_status,
+                        target.as_str(),
+                        json!([if record.kind == InstanceType::Tor {
+                            "discovery.tor_excluded"
+                        } else {
+                            "discovery.announced"
+                        }])
+                        .to_string()
+                    ],
+                )?;
+            }
             Ok(Upserted {
                 instance_id,
                 is_new: false,
@@ -697,11 +786,16 @@ impl Store {
         } else {
             let metrics = serde_json::to_string(record)?;
             let slug = unique_slug(connection, &record.url)?;
+            let initial_status = if record.kind == InstanceType::Tor {
+                InstanceStatus::Excluded
+            } else {
+                InstanceStatus::Candidate
+            };
             connection.execute(
                 "INSERT INTO instances (instance_slug, normalized_url, url_digest_sha256, host, instance_kind, lifecycle_status,
                     discovery_source_id, discovered_at, last_announced_at, next_scan_at, discovery_rank, network_group,
                     discovery_metrics_json, current_discovery_run_id, updated_at)
-                 VALUES (?11, ?1, ?2, ?3, ?4, 'candidate', ?5, ?6, ?6, ?6, ?7, ?8, ?9, ?10, ?6)",
+                 VALUES (?11, ?1, ?2, ?3, ?4, ?12, ?5, ?6, ?6, ?6, ?7, ?8, ?9, ?10, ?6)",
                 params![
                     record.url,
                     digest,
@@ -713,14 +807,26 @@ impl Store {
                     record.network_group(),
                     metrics,
                     run_id,
-                    slug
+                    slug,
+                    initial_status.as_str()
                 ],
             )?;
             let instance_id = connection.last_insert_rowid();
             connection.execute(
                 "INSERT INTO instance_events (occurred_at, event_kind, instance_id, discovery_run_id, current_value, reason_codes_json)
-                 VALUES (?1, 'instance_added', ?2, ?3, 'candidate', ?4)",
-                params![now, instance_id, run_id, json!(["discovery.added"]).to_string()],
+                 VALUES (?1, 'instance_added', ?2, ?3, ?4, ?5)",
+                params![
+                    now,
+                    instance_id,
+                    run_id,
+                    initial_status.as_str(),
+                    json!([if record.kind == InstanceType::Tor {
+                        "discovery.tor_excluded"
+                    } else {
+                        "discovery.added"
+                    }])
+                    .to_string()
+                ],
             )?;
             Ok(Upserted {
                 instance_id,
@@ -734,36 +840,50 @@ impl Store {
         let mut connection = self.writer_conn()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut statement = transaction.prepare(
-            "SELECT i.instance_id, i.normalized_url, i.lifecycle_status
+            "SELECT i.instance_id, i.normalized_url, i.lifecycle_status, i.discovery_source_id
                FROM instances AS i
                LEFT JOIN instance_policy_overrides AS o ON o.instance_id = i.instance_id
               WHERE COALESCE(o.is_denied, 0) = 0
-                AND i.lifecycle_status NOT IN ('missing', 'retired')",
+                AND i.lifecycle_status NOT IN ('missing', 'unlisted', 'retired', 'excluded')",
         )?;
-        let rows: Vec<(i64, String, String)> = statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        let rows: Vec<(i64, String, String, String)> = statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         drop(statement);
         let present_urls: std::collections::HashSet<&str> =
             present.iter().map(String::as_str).collect();
         let mut changed = 0;
-        for (instance_id, url, status) in rows {
+        for (instance_id, url, status, source_id) in rows {
             if present_urls.contains(url.as_str()) {
                 continue;
             }
+            let manual = source_id == "manual";
+            let target = if manual {
+                InstanceStatus::Unlisted
+            } else {
+                InstanceStatus::Missing
+            };
             transaction.execute(
-                "UPDATE instances SET lifecycle_status = 'missing', updated_at = ?2 WHERE instance_id = ?1",
-                params![instance_id, now],
+                "UPDATE instances SET lifecycle_status = ?3, updated_at = ?2 WHERE instance_id = ?1",
+                params![instance_id, now, target.as_str()],
             )?;
             transaction.execute(
                 "INSERT INTO instance_events (occurred_at, event_kind, instance_id, discovery_run_id, previous_value, current_value, reason_codes_json)
-                 VALUES (?1, 'status_changed', ?2, ?3, ?4, 'missing', ?5)",
+                 VALUES (?1, 'status_changed', ?2, ?3, ?4, ?5, ?6)",
                 params![
                     now,
                     instance_id,
                     run_id,
                     status,
-                    json!(["discovery.missing"]).to_string()
+                    target.as_str(),
+                    json!([if manual {
+                        "discovery.unlisted"
+                    } else {
+                        "discovery.missing"
+                    }])
+                    .to_string()
                 ],
             )?;
             changed += 1;
@@ -914,7 +1034,7 @@ impl Store {
         let status = if current == update.previous_status.as_str() {
             update.status.as_str().to_owned()
         } else {
-            current
+            current.clone()
         };
         connection.execute(
             "UPDATE instances SET lifecycle_status = ?2, consecutive_successes = ?3, consecutive_failures = ?4,
@@ -954,15 +1074,15 @@ impl Store {
                 now
             ],
         )?;
-        if status != update.previous_status.as_str() {
+        if status != current {
             connection.execute(
                 "INSERT INTO instance_events (occurred_at, event_kind, instance_id, previous_value, current_value, reason_codes_json)
                  VALUES (?1, 'status_changed', ?2, ?3, ?4, ?5)",
                 params![
                     now,
                     update.instance_id,
-                    update.previous_status.as_str(),
-                    update.status.as_str(),
+                    current,
+                    status,
                     json!(update.reasons).to_string()
                 ],
             )?;
@@ -1156,6 +1276,21 @@ impl Store {
     }
 
     pub fn list_instances(&self, filter: &InstanceFilter) -> Result<Vec<InstanceRow>> {
+        self.query_instances(filter, false)
+    }
+
+    pub(crate) fn list_instances_unbounded(
+        &self,
+        filter: &InstanceFilter,
+    ) -> Result<Vec<InstanceRow>> {
+        self.query_instances(filter, true)
+    }
+
+    fn query_instances(
+        &self,
+        filter: &InstanceFilter,
+        unbounded: bool,
+    ) -> Result<Vec<InstanceRow>> {
         let reader = self.reader_conn()?;
         let limit = if filter.limit == 0 {
             100
@@ -1217,7 +1352,11 @@ impl Store {
         let mut statement = reader.prepare(&sql)?;
         let mut params_vec: Vec<&dyn rusqlite::ToSql> =
             values.iter().map(|value| value.as_ref()).collect();
-        let limit_box = Box::new(i64::try_from(limit).unwrap_or(100));
+        let limit_box = Box::new(if unbounded {
+            -1
+        } else {
+            i64::try_from(limit).unwrap_or(100)
+        });
         let offset_box = Box::new(i64::try_from(filter.offset).unwrap_or(0));
         params_vec.push(limit_box.as_ref());
         params_vec.push(offset_box.as_ref());
@@ -1258,7 +1397,8 @@ impl Store {
                LEFT JOIN instance_policy_overrides AS o ON o.instance_id = i.instance_id
               WHERE COALESCE(o.is_denied, 0) = 0
                 AND i.is_scan_enabled <> 0
-                AND i.lifecycle_status <> 'retired'
+                AND i.instance_kind <> 'tor'
+                AND i.lifecycle_status NOT IN ('retired', 'excluded')
                 AND (i.cooldown_until IS NULL OR i.cooldown_until <= ?2)
                 {schedule_clause}
               ORDER BY CASE i.lifecycle_status
@@ -1266,6 +1406,7 @@ impl Store {
                          WHEN 'probation' THEN 1
                          WHEN 'candidate' THEN 2
                          WHEN 'missing' THEN 3
+                         WHEN 'unlisted' THEN 3
                          ELSE 4
                        END,
                        COALESCE(i.discovery_rank, 2147483647), i.instance_id
@@ -1313,8 +1454,9 @@ impl Store {
                 AND i.is_scan_enabled <> 0
                 AND COALESCE(o.is_denied, 0) = 0
                 AND i.instance_kind <> 'tor'
+                AND q.is_hard_gate_passed = 1
                 AND (i.cooldown_until IS NULL OR i.cooldown_until <= ?2)
-              ORDER BY COALESCE(q.fleet_rank, 2147483647), q.score DESC
+              ORDER BY q.fleet_rank IS NULL, q.fleet_rank, q.score DESC, i.instance_id
               LIMIT ?1",
         )?;
         let rows =
@@ -1554,10 +1696,12 @@ impl Store {
                     COALESCE(q.score, 0), q.fleet_rank, COALESCE(q.is_hard_gate_passed, 0), COALESCE(q.reason_codes_json, '[]'),
                     COALESCE(c.is_json_enabled, 0), COALESCE(c.is_html_enabled, 0),
                     COALESCE(c.is_google_exact_seen, 0), COALESCE(c.is_google_cse_seen, 0),
-                    i.discovery_rank, i.network_group, i.consecutive_successes, i.consecutive_failures
+                    i.discovery_rank, i.network_group, i.consecutive_successes, i.consecutive_failures,
+                    COALESCE(o.is_denied, 0), i.is_scan_enabled
                FROM instances AS i
                LEFT JOIN instance_quality AS q ON q.instance_id = i.instance_id
                LEFT JOIN capability_snapshots AS c ON c.capability_id = i.current_capability_id
+               LEFT JOIN instance_policy_overrides AS o ON o.instance_id = i.instance_id
               ORDER BY CASE WHEN i.lifecycle_status = 'active' THEN 0 ELSE 1 END,
                        COALESCE(q.fleet_rank, 2147483647), COALESCE(q.score, 0) DESC, i.instance_id",
         )?;
@@ -1581,6 +1725,8 @@ impl Store {
                 "networkGroup": row.get::<_, Option<String>>(14)?,
                 "consecutiveSuccesses": row.get::<_, i64>(15)?,
                 "consecutiveFailures": row.get::<_, i64>(16)?,
+                "denied": row.get::<_, i64>(17)? != 0,
+                "scanEnabled": row.get::<_, i64>(18)? != 0,
             }))
         })?;
         let mut instances = Vec::new();
@@ -1589,7 +1735,13 @@ impl Store {
         }
         let fleet: Vec<Value> = instances
             .iter()
-            .filter(|item| item.get("status").and_then(Value::as_str) == Some("active"))
+            .filter(|item| {
+                item.get("status").and_then(Value::as_str) == Some("active")
+                    && item.get("hardGatePassed").and_then(Value::as_bool) == Some(true)
+                    && item.get("denied").and_then(Value::as_bool) == Some(false)
+                    && item.get("scanEnabled").and_then(Value::as_bool) == Some(true)
+                    && item.get("type").and_then(Value::as_str) != Some("tor")
+            })
             .cloned()
             .collect();
         Ok(json!({
@@ -1759,7 +1911,7 @@ impl Store {
     pub fn record_metrics(
         &self,
         instance_id: i64,
-        kind: crate::types::ProbeKind,
+        kind: ProbeKind,
         duration_ms: i64,
         success: bool,
         result_count: i64,
@@ -1780,7 +1932,7 @@ impl Store {
     pub(crate) fn record_metrics_on(
         connection: &Connection,
         instance_id: i64,
-        kind: crate::types::ProbeKind,
+        kind: ProbeKind,
         duration_ms: i64,
         success: bool,
         result_count: i64,
@@ -1919,11 +2071,13 @@ impl Store {
         if let Some(status) = status
             && status == InstanceStatus::Active
         {
-            let hard_gate: Option<i64> = transaction.query_row(
-                "SELECT hard_gate_passed FROM instances WHERE instance_id = ?1",
-                params![instance_id],
-                |row| row.get(0),
-            )?;
+            let hard_gate: Option<i64> = transaction
+                .query_row(
+                    "SELECT is_hard_gate_passed FROM instance_quality WHERE instance_id = ?1",
+                    params![instance_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
             if !matches!(hard_gate, Some(value) if value != 0) {
                 return Err(Error::PolicyRefused(
                     "an instance cannot be made active until it passes the hard gate".into(),
@@ -1968,6 +2122,35 @@ impl Store {
                         instance_id,
                         previous_type,
                         kind.as_str(),
+                        json!(reasons).to_string()
+                    ],
+                )?;
+            }
+            let stored: String = transaction.query_row(
+                "SELECT lifecycle_status FROM instances WHERE instance_id = ?1",
+                params![instance_id],
+                |row| row.get(0),
+            )?;
+            let target = if kind == InstanceType::Tor {
+                (stored != InstanceStatus::Excluded.as_str()).then_some(InstanceStatus::Excluded)
+            } else if stored == InstanceStatus::Excluded.as_str() {
+                Some(InstanceStatus::Candidate)
+            } else {
+                None
+            };
+            if let Some(target) = target {
+                transaction.execute(
+                    "UPDATE instances SET lifecycle_status = ?2, updated_at = ?3 WHERE instance_id = ?1",
+                    params![instance_id, target.as_str(), now],
+                )?;
+                transaction.execute(
+                    "INSERT INTO instance_events (occurred_at, event_kind, instance_id, previous_value, current_value, reason_codes_json)
+                     VALUES (?1, 'status_changed', ?2, ?3, ?4, ?5)",
+                    params![
+                        now,
+                        instance_id,
+                        stored,
+                        target.as_str(),
                         json!(reasons).to_string()
                     ],
                 )?;
@@ -2100,6 +2283,175 @@ impl Store {
         self.apply_policy_change(instance_id, None, Some(kind), None, reasons)
     }
 
+    pub fn hard_gate_passed(&self, instance_id: i64) -> Result<bool> {
+        let reader = self.reader_conn()?;
+        let gate: Option<i64> = reader
+            .query_row(
+                "SELECT is_hard_gate_passed FROM instance_quality WHERE instance_id = ?1",
+                params![instance_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(matches!(gate, Some(value) if value != 0))
+    }
+
+    pub fn apply_operator_action(
+        &self,
+        instance_id: i64,
+        action: OperatorAction,
+        reasons: &[String],
+    ) -> Result<InstanceStatus> {
+        self.write_atomic(|connection| {
+            let now = now_rfc3339();
+            let current_text: String = connection.query_row(
+                "SELECT lifecycle_status FROM instances WHERE instance_id = ?1",
+                params![instance_id],
+                |row| row.get(0),
+            )?;
+            let current = InstanceStatus::parse(&current_text).ok_or_else(|| {
+                Error::State(format!(
+                    "stored lifecycle status {current_text:?} is not recognised"
+                ))
+            })?;
+            let kind_text: String = connection.query_row(
+                "SELECT instance_kind FROM instances WHERE instance_id = ?1",
+                params![instance_id],
+                |row| row.get(0),
+            )?;
+            let kind = InstanceType::parse(&kind_text);
+            if kind == InstanceType::Tor
+                && matches!(action, OperatorAction::Restore | OperatorAction::Reset)
+            {
+                return Err(Error::PolicyRefused(format!(
+                    "instance {instance_id} is a Tor instance, which is never served; set its type to normal first (ownsearch_db_crud update instance with type normal), then restore it"
+                )));
+            }
+            let mut next = match action {
+                OperatorAction::Deny => InstanceStatus::Quarantined,
+                OperatorAction::Retire => InstanceStatus::Retired,
+                OperatorAction::Allow => {
+                    if matches!(current, InstanceStatus::Quarantined) {
+                        InstanceStatus::Candidate
+                    } else {
+                        current
+                    }
+                }
+                OperatorAction::Restore => match current {
+                    InstanceStatus::Active | InstanceStatus::Probation => current,
+                    _ => InstanceStatus::Candidate,
+                },
+                OperatorAction::Reset => InstanceStatus::Candidate,
+            };
+            if kind == InstanceType::Tor && action != OperatorAction::Retire {
+                next = InstanceStatus::Excluded;
+            }
+            match action {
+                OperatorAction::Deny => {
+                    Self::write_override_on(connection, instance_id, Some(1), Some(0), None, &now, reasons)?;
+                    connection.execute(
+                        "UPDATE instances SET is_scan_enabled = 0, next_scan_at = NULL, cooldown_until = NULL, updated_at = ?2
+                          WHERE instance_id = ?1",
+                        params![instance_id, now],
+                    )?;
+                }
+                OperatorAction::Allow | OperatorAction::Restore => {
+                    Self::write_override_on(connection, instance_id, Some(0), Some(1), None, &now, reasons)?;
+                    connection.execute(
+                        "UPDATE instances SET is_scan_enabled = 1, next_scan_at = ?2, cooldown_until = NULL, updated_at = ?2
+                          WHERE instance_id = ?1",
+                        params![instance_id, now],
+                    )?;
+                }
+                OperatorAction::Reset => {
+                    connection.execute(
+                        "DELETE FROM instance_policy_overrides WHERE instance_id = ?1",
+                        params![instance_id],
+                    )?;
+                    connection.execute(
+                        "UPDATE instances SET is_scan_enabled = 1, is_html_fallback_allowed = 0, next_scan_at = ?2,
+                            cooldown_until = NULL, updated_at = ?2
+                          WHERE instance_id = ?1",
+                        params![instance_id, now],
+                    )?;
+                }
+                OperatorAction::Retire => {
+                    connection.execute(
+                        "UPDATE instances SET next_scan_at = NULL, cooldown_until = NULL, updated_at = ?2
+                          WHERE instance_id = ?1",
+                        params![instance_id, now],
+                    )?;
+                }
+            }
+            if next != current {
+                connection.execute(
+                    "UPDATE instances SET lifecycle_status = ?2, updated_at = ?3 WHERE instance_id = ?1",
+                    params![instance_id, next.as_str(), now],
+                )?;
+            }
+            connection.execute(
+                "INSERT INTO instance_events (occurred_at, event_kind, instance_id, previous_value, current_value, reason_codes_json)
+                 VALUES (?1, 'policy_changed', ?2, ?3, ?4, ?5)",
+                params![
+                    now,
+                    instance_id,
+                    current.as_str(),
+                    next.as_str(),
+                    json!(reasons).to_string()
+                ],
+            )?;
+            Ok(next)
+        })
+    }
+
+    pub fn clear_cooldown(&self, instance_id: i64, reasons: &[String]) -> Result<bool> {
+        self.write_atomic(|connection| {
+            let now = now_rfc3339();
+            let changed = connection.execute(
+                "UPDATE instances SET cooldown_until = NULL, next_scan_at = ?2, updated_at = ?2
+                  WHERE instance_id = ?1 AND cooldown_until IS NOT NULL",
+                params![instance_id, now],
+            )?;
+            if changed > 0 {
+                connection.execute(
+                    "INSERT INTO instance_events (occurred_at, event_kind, instance_id, current_value, reason_codes_json)
+                     VALUES (?1, 'cooldown_cleared', ?2, 'clear', ?3)",
+                    params![now, instance_id, json!(reasons).to_string()],
+                )?;
+            }
+            Ok(changed > 0)
+        })
+    }
+
+    fn write_override_on(
+        connection: &Connection,
+        instance_id: i64,
+        denied: Option<i64>,
+        scan: Option<i64>,
+        pinned: Option<i64>,
+        now: &str,
+        reasons: &[String],
+    ) -> Result<()> {
+        connection.execute(
+            "INSERT INTO instance_policy_overrides (instance_id, is_scan_enabled, is_html_fallback_allowed, is_pinned, is_denied, reason_codes_json, created_at, updated_at)
+             VALUES (?1, ?2, NULL, COALESCE(?4, 0), COALESCE(?3, 0), ?5, ?6, ?6)
+             ON CONFLICT(instance_id) DO UPDATE SET
+                is_scan_enabled = COALESCE(?2, instance_policy_overrides.is_scan_enabled),
+                is_pinned = COALESCE(?4, instance_policy_overrides.is_pinned),
+                is_denied = COALESCE(?3, instance_policy_overrides.is_denied),
+                reason_codes_json = excluded.reason_codes_json,
+                updated_at = excluded.updated_at",
+            params![
+                instance_id,
+                scan,
+                denied,
+                pinned,
+                json!(reasons).to_string(),
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn query_entity(
         &self,
         entity: QueryEntity,
@@ -2219,6 +2571,70 @@ impl Store {
                     },
                 )?;
                 let out = collect_rows(rows)?;
+                Ok(json!({"entity": entity.as_str(), "count": out.len(), "rows": out}))
+            }
+            QueryEntity::Metrics => {
+                let reader = self.reader_conn()?;
+                let sql = match filters.instance_id {
+                    Some(_) => {
+                        "SELECT m.instance_id, i.normalized_url, m.probe_kind, m.window_start_utc,
+                                m.attempt_count, m.success_count, m.failure_count, m.success_rate,
+                                m.duration_last_ms, m.duration_min_ms, m.duration_max_ms,
+                                m.total_result_count, m.response_bytes, m.updated_at
+                           FROM hourly_probe_metrics AS m
+                           JOIN instances AS i ON i.instance_id = m.instance_id
+                          WHERE m.instance_id = ?1
+                          ORDER BY m.window_start_utc DESC, m.probe_kind
+                          LIMIT ?2 OFFSET ?3"
+                    }
+                    None => {
+                        "SELECT m.instance_id, i.normalized_url, m.probe_kind, m.window_start_utc,
+                                m.attempt_count, m.success_count, m.failure_count, m.success_rate,
+                                m.duration_last_ms, m.duration_min_ms, m.duration_max_ms,
+                                m.total_result_count, m.response_bytes, m.updated_at
+                           FROM hourly_probe_metrics AS m
+                           JOIN instances AS i ON i.instance_id = m.instance_id
+                          ORDER BY m.window_start_utc DESC, m.instance_id, m.probe_kind
+                          LIMIT ?2 OFFSET ?1"
+                    }
+                };
+                let mut statement = reader.prepare(sql)?;
+                let mapper = |row: &rusqlite::Row<'_>| {
+                    Ok(json!({
+                        "instanceId": row.get::<_, i64>(0)?,
+                        "url": row.get::<_, String>(1)?,
+                        "probeKind": row.get::<_, String>(2)?,
+                        "windowStartUtc": row.get::<_, String>(3)?,
+                        "attemptCount": row.get::<_, i64>(4)?,
+                        "successCount": row.get::<_, i64>(5)?,
+                        "failureCount": row.get::<_, i64>(6)?,
+                        "successRate": row.get::<_, f64>(7)?,
+                        "durationLastMs": row.get::<_, Option<i64>>(8)?,
+                        "durationMinMs": row.get::<_, Option<i64>>(9)?,
+                        "durationMaxMs": row.get::<_, Option<i64>>(10)?,
+                        "totalResultCount": row.get::<_, i64>(11)?,
+                        "responseBytes": row.get::<_, i64>(12)?,
+                        "updatedAt": row.get::<_, String>(13)?,
+                    }))
+                };
+                let rows = match filters.instance_id {
+                    Some(id) => statement.query_map(
+                        params![
+                            id,
+                            i64::try_from(limit).unwrap_or(20),
+                            i64::try_from(offset).unwrap_or(0)
+                        ],
+                        mapper,
+                    )?,
+                    None => statement.query_map(
+                        params![
+                            i64::try_from(offset).unwrap_or(0),
+                            i64::try_from(limit).unwrap_or(20)
+                        ],
+                        mapper,
+                    )?,
+                };
+                let out: Vec<Value> = rows.collect::<std::result::Result<Vec<_>, _>>()?;
                 Ok(json!({"entity": entity.as_str(), "count": out.len(), "rows": out}))
             }
             QueryEntity::Snapshots => {

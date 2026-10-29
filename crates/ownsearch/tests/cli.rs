@@ -143,7 +143,7 @@ fn the_database_commands_work_on_a_fresh_state() {
     let verify = run(&["db", "verify"]);
     assert!(verify.status.success());
     let text = String::from_utf8_lossy(&verify.stdout);
-    assert!(text.contains("schema version: 1"));
+    assert!(text.contains("schema version: 4"));
     let counts = run(&["db", "counts", "--json"]);
     assert!(counts.status.success());
     let export = run(&["db", "export"]);
@@ -153,6 +153,48 @@ fn the_database_commands_work_on_a_fresh_state() {
     assert!(maintenance.status.success());
     let backup = run(&["db", "backup"]);
     assert!(backup.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn db_verify_creates_and_seeds_a_missing_database() {
+    let dir = temp_dir("cli-db-init");
+    let mut command = Command::new(binary());
+    command.args(["db", "verify"]);
+    for (key, value) in env_dir(&dir) {
+        command.env(key, value);
+    }
+    let output = command.output().expect("run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("instances: 67"), "{text}");
+    assert!(dir.join("state").join("instances.db").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_state_dir_flag_is_accepted_after_a_subcommand() {
+    let dir = temp_dir("cli-global-dir");
+    let target = dir.join("elsewhere");
+    let output = Command::new(binary())
+        .args(["instances", "list", "--state-dir"])
+        .arg(&target)
+        .env("HOME", "/home/tester")
+        .env("OWNSEARCH_STATE_DIR", dir.join("ignored"))
+        .env("OWNSEARCH_LEDGER_DIR", dir.join("ledger"))
+        .output()
+        .expect("run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(target.join("instances.db").exists());
+    assert!(!dir.join("ignored").join("instances.db").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -167,29 +209,38 @@ fn the_instance_commands_report_and_change_state() {
         }
         command.output().expect("run")
     };
-    let list = run(&["instances", "list"]);
+    let list = run(&["instances", "list", "--limit", "500"]);
     assert!(list.status.success());
     let text = String::from_utf8_lossy(&list.stdout);
-    assert!(text.contains("0 rows"));
+    assert!(
+        text.contains("67 rows"),
+        "a fresh database must seed the embedded fleet: {text}"
+    );
     let json = run(&["instances", "list", "--json"]);
     assert!(json.status.success());
-    let show_missing = run(&["instances", "show", "99"]);
+    let show_missing = run(&["instances", "show", "9999"]);
     assert!(!show_missing.status.success());
-    let pin_missing = run(&["instances", "pin", "99"]);
+    let pin_missing = run(&["instances", "pin", "9999"]);
     assert!(!pin_missing.status.success());
     let add = run(&["instances", "add", "http://127.0.0.1:8888/", "--json"]);
     assert!(add.status.success());
-    let retire = run(&["instances", "retire", "1", "--reason", "tidy up"]);
+    let added: serde_json::Value = serde_json::from_slice(&add.stdout).expect("json");
+    let added_id = added
+        .get("instanceId")
+        .and_then(serde_json::Value::as_i64)
+        .expect("instance id")
+        .to_string();
+    let retire = run(&["instances", "retire", &added_id, "--reason", "tidy up"]);
     assert!(retire.status.success());
-    let shown = run(&["instances", "show", "1", "--json"]);
+    let shown = run(&["instances", "show", &added_id, "--json"]);
     let row: serde_json::Value = serde_json::from_slice(&shown.stdout).expect("json");
     assert_eq!(
         row.get("status").and_then(serde_json::Value::as_str),
         Some("retired")
     );
-    let restore = run(&["instances", "restore", "1"]);
+    let restore = run(&["instances", "restore", &added_id]);
     assert!(restore.status.success());
-    let shown = run(&["instances", "show", "1", "--json"]);
+    let shown = run(&["instances", "show", &added_id, "--json"]);
     let row: serde_json::Value = serde_json::from_slice(&shown.stdout).expect("json");
     assert_eq!(
         row.get("status").and_then(serde_json::Value::as_str),

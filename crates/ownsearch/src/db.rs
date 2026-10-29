@@ -11,32 +11,14 @@ pub(crate) fn run(args: DbArgs) -> anyhow::Result<()> {
         println!("{}", path.display());
         return Ok(());
     }
-    if !path.exists() {
-        if !matches!(args.action, DbAction::Maintenance) {
-            anyhow::bail!(
-                "{} does not exist yet; start the server or run a scan first",
-                path.display()
-            );
-        }
-        let key = ownsearch_core::load_or_create_key(&settings.ledger_dir().join("args.key"))?;
-        let ledger = ownsearch_core::Ledger::open(settings.ledger_path(), &key)?;
-        let cleaned = ownsearch_core::clean(&settings, &ledger, &key)?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "stateDatabase": "not created yet",
-                "cleanup": {
-                    "ledgerRotated": cleaned.ledger_rotated,
-                    "ledgerArchivesRemoved": cleaned.ledger_archives_removed,
-                    "preMigrationRemoved": cleaned.pre_migration_removed,
-                    "eventsTrimmed": cleaned.events_trimmed,
-                    "warnings": cleaned.warnings,
-                }
-            }))?
+    if !path.exists() && matches!(args.action, DbAction::Backup { .. }) {
+        anyhow::bail!(
+            "{} does not exist yet; run `ownsearch db counts` or `ownsearch instances list` to create it, or start the server",
+            path.display()
         );
-        return Ok(());
     }
     let store = Store::open(&path).context("opening the state database")?;
+    store.warm_up()?;
     match args.action {
         DbAction::Path => Ok(()),
         DbAction::Verify => {

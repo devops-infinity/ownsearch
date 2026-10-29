@@ -46,11 +46,11 @@ pub(crate) enum Command {
 
 #[derive(Debug, Args)]
 pub(crate) struct CommonArgs {
-    #[arg(long, help = "Path to a TOML profile file")]
+    #[arg(long, global = true, help = "Path to a TOML profile file")]
     pub(crate) profile: Option<PathBuf>,
-    #[arg(long, help = "Directory that holds the state database")]
+    #[arg(long, global = true, help = "Directory that holds the state database")]
     pub(crate) state_dir: Option<PathBuf>,
-    #[arg(long, help = "Directory that holds the call ledger")]
+    #[arg(long, global = true, help = "Directory that holds the call ledger")]
     pub(crate) ledger_dir: Option<PathBuf>,
 }
 
@@ -100,7 +100,7 @@ pub(crate) struct ServeArgs {
         help = "Enable the response cache for this many seconds"
     )]
     pub(crate) cache_ttl_secs: Option<u64>,
-    #[arg(long, help = "Probe this many instances at once, from 1 to 4")]
+    #[arg(long, help = "Probe this many instances at once, from 1 to 8")]
     pub(crate) concurrency: Option<usize>,
 }
 
@@ -231,8 +231,15 @@ pub(crate) enum InstancesAction {
         #[arg(help = "Instance identifier")]
         instance_id: i64,
     },
-    #[command(about = "Deny an instance so the scanner stops probing it")]
+    #[command(about = "Deny an instance so the scanner stops probing it; undo with `allow`")]
     Deny {
+        #[arg(help = "Instance identifier")]
+        instance_id: i64,
+        #[arg(long, help = "Reason recorded with the change")]
+        reason: Option<String>,
+    },
+    #[command(about = "Clear a denial and let the scanner probe the instance again")]
+    Allow {
         #[arg(help = "Instance identifier")]
         instance_id: i64,
         #[arg(long, help = "Reason recorded with the change")]
@@ -242,6 +249,15 @@ pub(crate) enum InstancesAction {
     ResetStatus {
         #[arg(help = "Instance identifier")]
         instance_id: i64,
+    },
+    #[command(about = "List the recorded lifecycle and policy events")]
+    Events {
+        #[arg(help = "Instance identifier; omit for the newest events across all instances")]
+        instance_id: Option<i64>,
+        #[arg(long, default_value_t = 25, help = "Rows to print")]
+        limit: u16,
+        #[arg(long, help = "Print the rows as JSON")]
+        json: bool,
     },
     #[command(about = "Add an instance by URL, including a localhost or Docker instance")]
     Add {
@@ -259,7 +275,9 @@ pub(crate) enum InstancesAction {
         #[arg(long, help = "Reason recorded with the change")]
         reason: Option<String>,
     },
-    #[command(about = "Restore a retired or missing instance to candidate")]
+    #[command(
+        about = "Return a retired, missing, quarantined, or denied instance to candidate and make it scannable again"
+    )]
     Restore {
         #[arg(help = "Instance identifier")]
         instance_id: i64,

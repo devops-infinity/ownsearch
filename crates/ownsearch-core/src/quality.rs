@@ -247,10 +247,17 @@ pub(crate) fn next_status(input: HysteresisInput) -> Transition {
             reasons,
         };
     }
-    if input.current == InstanceStatus::Retired {
-        reasons.push("status.retired".to_owned());
+    if matches!(
+        input.current,
+        InstanceStatus::Retired | InstanceStatus::Excluded
+    ) {
+        reasons.push(if input.current == InstanceStatus::Retired {
+            "status.retired".to_owned()
+        } else {
+            "status.excluded".to_owned()
+        });
         return Transition {
-            status: InstanceStatus::Retired,
+            status: input.current,
             reasons,
         };
     }
@@ -280,7 +287,11 @@ pub(crate) fn next_status(input: HysteresisInput) -> Transition {
             reasons,
         };
     }
-    if input.current == InstanceStatus::Missing && input.failures == 0 {
+    if matches!(
+        input.current,
+        InstanceStatus::Missing | InstanceStatus::Unlisted
+    ) && input.failures == 0
+    {
         reasons.push("hysteresis.recovered".to_owned());
         return Transition {
             status: InstanceStatus::Probation,

@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::config::Settings;
-use crate::db::{EventRecord, Store};
+use crate::db::{EventRecord, OperatorAction, Store};
 use crate::error::{Error, Result};
 use crate::response::DbCrudOutput;
 use crate::types::{AiDbMode, CrudEntity, CrudOperation, InstanceStatus, InstanceType};
@@ -179,7 +179,7 @@ impl CrudService {
         }
         state.last_apply = Some(Instant::now());
         drop(state);
-        let instance_id = self.apply(
+        let (instance_id, applied) = self.apply(
             validated.instance_id,
             validated.create_url.as_deref(),
             entity,
@@ -188,35 +188,41 @@ impl CrudService {
             &reason,
         )?;
         let record = self.store.get_instance(instance_id)?;
-        if let Err(error) = self.store.append_event(&EventRecord {
-            kind: "ai_crud_apply".to_owned(),
-            instance_id: Some(instance_id),
-            run_id: None,
-            probe_id: None,
-            old_value: None,
-            new_value: Some(operation.as_str().to_owned()),
-            reasons: vec!["ai.applied".to_owned()],
-            payload: Some(json!({
-                "entity": entity.as_str(),
-                "fields": fields,
-                "reason": reason,
-            })),
-        }) {
-            tracing::warn!(%error, "the apply event could not be written");
-        }
-        if let Err(error) = self.store.write_snapshot(&self.snapshot_path) {
-            tracing::warn!(%error, "the state snapshot could not be written");
+        if applied {
+            if let Err(error) = self.store.append_event(&EventRecord {
+                kind: "ai_crud_apply".to_owned(),
+                instance_id: Some(instance_id),
+                run_id: None,
+                probe_id: None,
+                old_value: None,
+                new_value: Some(operation.as_str().to_owned()),
+                reasons: vec!["ai.applied".to_owned()],
+                payload: Some(json!({
+                    "entity": entity.as_str(),
+                    "fields": fields,
+                    "reason": reason,
+                })),
+            }) {
+                tracing::warn!(%error, "the apply event could not be written");
+            }
+            if let Err(error) = self.store.write_snapshot(&self.snapshot_path) {
+                tracing::warn!(%error, "the state snapshot could not be written");
+            }
         }
         Ok(DbCrudOutput {
             operation: operation.as_str().to_owned(),
             entity: entity.as_str().to_owned(),
-            applied: true,
+            applied,
             dry_run: false,
             confirmation_token: None,
             expires_in_secs: None,
             before: None,
             after: None,
-            refused_reasons: Vec::new(),
+            refused_reasons: if applied {
+                Vec::new()
+            } else {
+                vec!["no matching policy override; nothing was removed".to_owned()]
+            },
             record: record.as_ref().map(crate::db::instance_to_json),
         })
     }
@@ -411,18 +417,33 @@ impl CrudService {
             }
         };
         let after = match validated.operation {
-            CrudOperation::Delete => Value::Null,
+            CrudOperation::Delete => {
+                if self.store.get_override(validated.instance_id)?.is_none() {
+                    return Err(Error::PolicyRefused(
+                        "there is no policy override on this instance to remove".into(),
+                    ));
+                }
+                Value::Null
+            }
             CrudOperation::Retire => {
                 let mut preview = before.clone();
                 if let Some(object) = preview.as_object_mut() {
-                    object.insert("status".to_owned(), json!("retired"));
+                    object.insert("status".to_owned(), json!(InstanceStatus::Retired.as_str()));
                 }
                 preview
             }
             CrudOperation::Restore => {
+                let current = self
+                    .store
+                    .get_instance(validated.instance_id)?
+                    .ok_or_else(|| Error::InvalidArgs("instance missing".into()))?;
+                let target = match current.status {
+                    InstanceStatus::Active | InstanceStatus::Probation => current.status,
+                    _ => InstanceStatus::Candidate,
+                };
                 let mut preview = before.clone();
                 if let Some(object) = preview.as_object_mut() {
-                    object.insert("status".to_owned(), json!("candidate"));
+                    object.insert("status".to_owned(), json!(target.as_str()));
                 }
                 preview
             }
@@ -445,16 +466,17 @@ impl CrudService {
                 preview
             }
         };
-        if !creating
-            && validated.entity == CrudEntity::Instance
+        if validated.entity == CrudEntity::Instance
             && let Some(status) = validated.fields.get("status").and_then(Value::as_str)
-            && status == "active"
+            && status == InstanceStatus::Active.as_str()
         {
-            let instance = self
-                .store
-                .get_instance(validated.instance_id)?
-                .ok_or_else(|| Error::InvalidArgs("instance missing".into()))?;
-            if instance.hard_gate_passed != Some(true) {
+            if creating {
+                return Err(Error::PolicyRefused(
+                    "a new instance cannot start active; add it, run a scan, and let the scan promote it"
+                        .into(),
+                ));
+            }
+            if !self.store.hard_gate_passed(validated.instance_id)? {
                 return Err(Error::PolicyRefused(
                     "status active needs a passing hard gate; run a scan first".into(),
                 ));
@@ -474,33 +496,22 @@ impl CrudService {
         operation: CrudOperation,
         fields: &Value,
         reason: &str,
-    ) -> Result<i64> {
+    ) -> Result<(i64, bool)> {
         let reasons = vec![format!("ai.reason:{}", crate::sanitize::cap(reason, 80).0)];
         let mut instance_id = instance_id;
         match operation {
             CrudOperation::Delete => {
-                self.store.delete_override(instance_id)?;
+                if !self.store.delete_override(instance_id)? {
+                    return Ok((instance_id, false));
+                }
             }
             CrudOperation::Retire => {
                 self.store
-                    .set_status(instance_id, InstanceStatus::Retired, &reasons)?;
+                    .apply_operator_action(instance_id, OperatorAction::Retire, &reasons)?;
             }
             CrudOperation::Restore => {
-                let current = self
-                    .store
-                    .get_instance(instance_id)?
-                    .ok_or_else(|| Error::InvalidArgs("instance missing".into()))?;
-                if !matches!(
-                    current.status,
-                    InstanceStatus::Retired | InstanceStatus::Missing
-                ) {
-                    return Err(Error::PolicyRefused(format!(
-                        "restore applies to a retired or missing instance, not {}",
-                        current.status.as_str()
-                    )));
-                }
                 self.store
-                    .set_status(instance_id, InstanceStatus::Candidate, &reasons)?;
+                    .apply_operator_action(instance_id, OperatorAction::Restore, &reasons)?;
             }
             CrudOperation::Create | CrudOperation::Update => {
                 if let Some(url) = create_url {
@@ -512,16 +523,12 @@ impl CrudService {
                     Some(raw) => {
                         let status = InstanceStatus::parse(raw)
                             .ok_or_else(|| Error::InvalidArgs(format!("unknown status {raw}")))?;
-                        if status == InstanceStatus::Active {
-                            let instance = self
-                                .store
-                                .get_instance(instance_id)?
-                                .ok_or_else(|| Error::InvalidArgs("instance missing".into()))?;
-                            if instance.hard_gate_passed != Some(true) {
-                                return Err(Error::PolicyRefused(
-                                    "status active needs a passing hard gate".into(),
-                                ));
-                            }
+                        if status == InstanceStatus::Active
+                            && !self.store.hard_gate_passed(instance_id)?
+                        {
+                            return Err(Error::PolicyRefused(
+                                "status active needs a passing hard gate".into(),
+                            ));
                         }
                         Some(status)
                     }
@@ -551,9 +558,26 @@ impl CrudService {
                     override_value.as_ref(),
                     &reasons,
                 )?;
+                match fields.get("denied").and_then(Value::as_bool) {
+                    Some(true) => {
+                        self.store.apply_operator_action(
+                            instance_id,
+                            OperatorAction::Deny,
+                            &reasons,
+                        )?;
+                    }
+                    Some(false) => {
+                        self.store.apply_operator_action(
+                            instance_id,
+                            OperatorAction::Allow,
+                            &reasons,
+                        )?;
+                    }
+                    None => {}
+                }
             }
         }
-        Ok(instance_id)
+        Ok((instance_id, true))
     }
 }
 
