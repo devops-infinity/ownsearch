@@ -13,7 +13,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 
 ENV OWNSEARCH_IN_CONTAINER=1
-ARG OWNSEARCH_VERSION=0.4.0
+ARG OWNSEARCH_VERSION=0.5.0
 LABEL org.opencontainers.image.title="OwnSearch" \
       org.opencontainers.image.description="Quality-ranked public SearXNG search for MCP clients" \
       org.opencontainers.image.source="https://github.com/devops-infinity/ownsearch" \
