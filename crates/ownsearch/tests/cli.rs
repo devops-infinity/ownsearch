@@ -14,6 +14,30 @@ fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_ownsearch")
 }
 
+// A just-copied executable can report ETXTBSY while the kernel settles the write reference.
+fn run_copied(
+    copied: &std::path::Path,
+    dir: &std::path::Path,
+    base: &str,
+    args: &[&str],
+) -> std::process::Output {
+    for _ in 0..40 {
+        match Command::new(copied)
+            .args(args)
+            .env("OWNSEARCH_UPDATE_API_BASE", base)
+            .envs(env_dir(dir))
+            .output()
+        {
+            Ok(output) => return output,
+            Err(error) if error.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(error) => panic!("running the copied binary: {error}"),
+        }
+    }
+    panic!("the copied binary stayed busy");
+}
+
 fn env_dir(dir: &std::path::Path) -> Vec<(String, String)> {
     vec![
         (
@@ -470,12 +494,7 @@ fn the_update_command_refuses_a_package_managed_copy() {
     let copied = target.join("ownsearch");
     std::fs::copy(binary(), &copied).expect("copy");
     let (base, server) = release_server(r#"{"tag_name":"v99.0.0","assets":[]}"#);
-    let check = Command::new(&copied)
-        .args(["update", "--check"])
-        .env("OWNSEARCH_UPDATE_API_BASE", &base)
-        .envs(env_dir(&dir))
-        .output()
-        .expect("run");
+    let check = run_copied(&copied, &dir, &base, &["update", "--check"]);
     let _ = server.join();
     assert!(check.status.success());
     assert!(
@@ -483,12 +502,7 @@ fn the_update_command_refuses_a_package_managed_copy() {
         "{}",
         String::from_utf8_lossy(&check.stdout)
     );
-    let apply = Command::new(&copied)
-        .args(["update"])
-        .env("OWNSEARCH_UPDATE_API_BASE", &base)
-        .envs(env_dir(&dir))
-        .output()
-        .expect("run");
+    let apply = run_copied(&copied, &dir, &base, &["update"]);
     assert!(!apply.status.success());
     assert!(
         String::from_utf8_lossy(&apply.stderr).contains("brew upgrade ownsearch"),
