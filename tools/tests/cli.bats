@@ -3,14 +3,18 @@
 setup_file() {
 	REPO="$(cd -- "$(dirname -- "$BATS_TEST_FILENAME")/../.." && pwd)"
 	export REPO
-	export BIN="$REPO/target/release/ownsearch"
-	if [[ ! -x "$BIN" ]]; then
-		export BIN="$REPO/target/debug/ownsearch"
+	export BIN="$REPO/target/debug/ownsearch"
+	if [[ -x "$REPO/target/release/ownsearch" ]] \
+		&& { [[ ! -x "$BIN" ]] || [[ "$REPO/target/release/ownsearch" -nt "$BIN" ]]; }; then
+		export BIN="$REPO/target/release/ownsearch"
 	fi
 	WORK="$(mktemp -d)"
 	export WORK
 	export OWNSEARCH_STATE_DIR="$WORK/state"
 	export OWNSEARCH_LEDGER_DIR="$WORK/ledger"
+	export XDG_CONFIG_HOME="$WORK/config"
+	export HOME="$WORK/home"
+	mkdir -p "$XDG_CONFIG_HOME" "$HOME"
 }
 
 teardown_file() {
