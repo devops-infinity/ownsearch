@@ -6,6 +6,10 @@ Each entry names the message you see and the step that clears it. For a running 
 
 Run `ownsearch scan`, then check `ownsearch instances list`. Before any scan has scored the fleet, a search falls back to scanned candidates that passed every hard gate and says so in `warnings`.
 
+## A search returns fewer results than it used to
+
+Every result known to be older than the freshness window is dropped. The default window is one year, set by `OWNSEARCH_FRESHNESS_DAYS`. Raise it, or send `freshness_days: 0` on one call, when an older page is the answer. A result with no date is always kept.
+
 ## A search answers with `coverage.partial` true
 
 The search deadline passed before every selected instance answered. What arrived is kept, and `sources.failed` names each instance that missed it with `ownsearch.timeout`. Raise the mode deadline, or use `mode=fast`, when the extra sources matter.

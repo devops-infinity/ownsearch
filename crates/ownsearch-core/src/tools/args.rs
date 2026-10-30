@@ -46,6 +46,8 @@ pub(crate) struct SearchArgs {
     pub min_engines: Option<u8>,
     #[serde(default)]
     pub preset: Option<crate::presets::SearchPreset>,
+    #[serde(default)]
+    pub freshness_days: Option<u16>,
 }
 
 impl SearchArgs {
@@ -93,6 +95,13 @@ impl SearchArgs {
                 "min_engines {min_engines} is outside 1..16"
             )));
         }
+        if let Some(freshness) = self.freshness_days
+            && freshness > 3_650
+        {
+            return Err(Error::InvalidArgs(format!(
+                "freshness_days {freshness} is above 3650; use 0 to turn the window off"
+            )));
+        }
         Ok(ValidatedSearch {
             query,
             categories,
@@ -109,6 +118,7 @@ impl SearchArgs {
             dedupe: self.dedupe.unwrap_or(true),
             min_engines: self.min_engines.map(usize::from),
             search_preset: self.preset,
+            freshness_days: self.freshness_days.map(u64::from),
         })
     }
 }
@@ -130,6 +140,7 @@ pub(crate) struct ValidatedSearch {
     pub dedupe: bool,
     pub min_engines: Option<usize>,
     pub search_preset: Option<crate::presets::SearchPreset>,
+    pub freshness_days: Option<u64>,
 }
 
 fn bounded_list(values: Option<Vec<String>>, field: &str) -> Result<Vec<String>> {
@@ -433,6 +444,7 @@ mod tests {
             dedupe: None,
             min_engines: None,
             preset: None,
+            freshness_days: None,
         }
     }
 

@@ -149,6 +149,7 @@ async fn run_bench(settings: Settings, run: BenchRun) -> anyhow::Result<Vec<Samp
                     instance_ids: instances.clone(),
                     engine_weights: std::collections::BTreeMap::new(),
                     exclude_engines: Vec::new(),
+                    freshness_days: None,
                 };
                 let started = Instant::now();
                 let outcome = ownsearch_core::search(

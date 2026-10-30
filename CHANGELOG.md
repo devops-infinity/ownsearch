@@ -4,6 +4,12 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-30
+
+### Added
+
+- `OWNSEARCH_FRESHNESS_DAYS` and the per-call `freshness_days` argument set a freshness window for search results. The default is one year. A result whose `publishedDate` is known and older than the window is dropped, and a call without `time_range` asks SearXNG for the closest covering range. A result with no date is kept, and an explicit `time_range` wins.
+
 ## [0.6.0] - 2026-10-30
 
 ### Added
@@ -281,7 +287,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - PDF text is read with `lopdf`, so the tree no longer pulls the unmaintained `pdf-extract` dependency.
 - Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.
 
-[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/devops-infinity/ownsearch/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/devops-infinity/ownsearch/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/devops-infinity/ownsearch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/devops-infinity/ownsearch/compare/v0.3.0...v0.4.0
