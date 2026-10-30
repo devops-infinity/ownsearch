@@ -6,9 +6,29 @@ Each entry names the message you see and the step that clears it. For a running 
 
 Run `ownsearch scan`, then check `ownsearch instances list`. Before any scan has scored the fleet, a search falls back to scanned candidates that passed every hard gate and says so in `warnings`.
 
+## A search answers with `coverage.partial` true
+
+The search deadline passed before every selected instance answered. What arrived is kept, and `sources.failed` names each instance that missed it with `ownsearch.timeout`. Raise the mode deadline, or use `mode=fast`, when the extra sources matter.
+
 ## Every search returns no results and `sources.failed` says `ownsearch.policy_refused`
 
 The selected instances deny JSON and HTML. Run from a network the instances accept, or check `ownsearch instances list` for quarantined records.
+
+## `policy refused the request: plain http is refused because allow_plain_http_private is off`
+
+OwnSearch refuses `http://` by default. For an instance on your own machine or network, set `OWNSEARCH_ALLOW_PRIVATE_INSTANCES=true` and `OWNSEARCH_ALLOW_PLAIN_HTTP_PRIVATE=true`, then scan again. Both are needed. A public host over plain http is always refused, and the instance records `policy.plain_http_refused` until it is reachable over https or both settings are on. `ownsearch instances add` prints the decision as soon as the row is written.
+
+## `limiter.json_throttled`
+
+A SearXNG limiter allows only 4 JSON requests per IP per hour. The instance answered a JSON request with `429` while its HTML page worked, so OwnSearch marked the JSON path throttled and now searches it over HTML. It returns to JSON when `Retry-After` or the hourly window passes. The cleaner fix is to add OwnSearch's egress address to the instance's `pass_ip` list. `ownsearch_instance_health` shows `jsonThrottledUntil`.
+
+## `policy.auth_unavailable`, or a message naming an environment variable
+
+The instance has credentials stored, and the named environment variable is unset or empty in this process. Export it for the server and for the CLI, then run `ownsearch health --instance ID` to confirm. `ownsearch instances show ID` prints which variable the instance needs.
+
+## The profile is refused with `unknown field search_deadline_secs`
+
+That key was replaced by `search_deadline_fast_secs`, `search_deadline_balanced_secs`, and `search_deadline_exhaustive_secs`. Delete the old line or replace it with the three keys.
 
 ## `ownsearch.state_corrupted`
 

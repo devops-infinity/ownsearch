@@ -4,6 +4,47 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- Every instance request sends `Accept: text/html,application/json;q=0.9,*/*;q=0.8` by default, from the new `OWNSEARCH_ACCEPT` setting, so a SearXNG limiter's bot checks pass on probes, searches, and fetches.
+- Per-instance credentials: `instances set-auth ID --header NAME=ENVVAR`, `instances set-auth ID --basic USER:ENVVAR`, and `instances clear-auth ID`. The value is read from the named environment variable at request time, stored as a name only, and sent only to the instance's own origin, including after a redirect. An authenticated instance skips the browser fallback and serves through the credentialed HTML path.
+- The SearXNG limiter is respected: a JSON `429` while HTML works records `limiter.json_throttled`, keeps the instance in service over the HTML path, stores the window, and returns to JSON after `Retry-After`. Every `429` obeys `Retry-After`, and a trusted instance gets one JSON probe per hour.
+- `ownsearch_search` takes `preset` with `web`, `code`, `news`, and `images`, each mapping to categories, engine weights, and an engine deny list that the profile can redefine under `search_presets`. An explicit `categories` or `engines` argument wins.
+- Engine yield: the share of enabled engines that returned results, shown in `ownsearch_instance_health` and `instances list`. Under `OWNSEARCH_ENGINE_YIELD_THRESHOLD` the score is halved and `quality.engine_degraded` is recorded.
+- Every mode has its own default deadline: `fast` 10 seconds, `balanced` 30, `exhaustive` 60.
+- `ownsearch_db_crud` updates every instance field, including `url` or `domain`, `priority`, `auth`, `trusted`, and a manual priority that orders the fleet, and it can delete an instance with its probes, capabilities, events, counters, credentials, and policy rows. The CLI adds `instances set-url`, `instances set-priority`, `instances set-auth`, and `instances clear-auth`.
+
+- `OWNSEARCH_ALLOW_PLAIN_HTTP_PRIVATE` permits `http://` for a loopback, private, or local-only instance, together with `OWNSEARCH_ALLOW_PRIVATE_INSTANCES`. The same rule now applies in discovery, `instances add`, the probe, and search, and a refused url records `policy.plain_http_refused` instead of a TLS or JSON label.
+- `ownsearch instances add --trusted`, `ownsearch instances set-trusted ID [--off]`, and the `trusted` override field. A trusted instance is tried first, skips the per-network cap and the browser fallback, and accepts `OWNSEARCH_INSTANCE_MAX_CONCURRENT` requests at once.
+- `ownsearch instances engines ID` prints the engines an instance reported in `/config`, with rolling success and failure counts.
+- `ownsearch bench` reports p50, p95, and p99 latency, the error rate by code, results per query, unresponsive engine counts, the cache hit rate, and this process's memory and CPU.
+- `ownsearch health --instance ID` probes one instance and exits non-zero when it is not serving, for a container health check.
+- Profile settings `engine_weights`, `exclude_engines`, `exclude_domains`, and `min_engines`, and the per-call `dedupe` and `min_engines` arguments.
+- Profile setting `public_fleet` keeps discovery and every public probe off when it is false.
+- Profile setting `probe_daily_cap` caps probes per instance per rolling day.
+- `ownsearch_instance_info` returns the enabled engines, categories, and rolling per-engine counts, and a search answer reports `sources.unresponsiveEngines` at `fields: full`.
+- Every search answer carries a timing breakdown: queue, selection, upstream, parse, merge.
+
+### Changed
+
+- **Breaking:** `OWNSEARCH_SEARCH_DEADLINE_SECS` and the profile key `search_deadline_secs` are replaced by `OWNSEARCH_SEARCH_DEADLINE_FAST_SECS`, `OWNSEARCH_SEARCH_DEADLINE_BALANCED_SECS`, and `OWNSEARCH_SEARCH_DEADLINE_EXHAUSTIVE_SECS`, and their profile keys. A profile that still holds the old key is refused.
+- **Breaking:** an `ownsearch_scan` call with `dry_run: false` now requires a `reason`.
+- **Breaking:** a search result now reports every engine that returned it, plus `mergedFrom` and `bestPosition`, and a source observation lists `engines` instead of one `engine`. A merged result keeps the best title, the longest snippet, the union of engines and sources, and the best position, and duplicates are matched on a normalized url that drops tracking parameters, unwraps AMP and redirect links, and treats http and https of one host and path as one.
+- **Breaking:** results are ranked by reciprocal rank fusion over per-engine positions with engine weights, plus agreement bonuses and SearXNG's score. Small-web engines such as wiby start below general engines, which changes the order of an answer.
+- **Breaking:** `ownsearch_instance_info` no longer accepts `include_capabilities`; engines and categories are always returned.
+- A search never waits on discovery or a scan. The refresh runs in the background, and the only inline wait is two seconds on a cold start with no fleet at all.
+- Probe pacing sends more jitter by default, waits four times `OWNSEARCH_COOLDOWN_SECS` after a `429`, and says why the fleet is below `fleet_min`.
+- `ownsearch instances list` reports how many rows the limit hid.
+- A parser failure saves a capped, redacted sample of the failing answer and the instance version under the state directory.
+- A search returns what arrived when the deadline passes, with `coverage.partial: true` and every silent instance named in `sources.failed`, instead of dropping them.
+- A dry-run scan returns a `summary` saying what a real run would write, and the tool description states that the default call writes nothing.
+- With `public_fleet` off, the expected fleet size is the number of added instances, so a self-hosted setup no longer warns about the public minimum.
+- An authenticated instance skips the browser fallback, and its HTML path carries the credential.
+
+### Fixed
+
+- A plain-http private instance was quarantined with `gate.tls_invalid` and `gate.cert_unknown`, then promoted with `probe.json_denied` while every search refused it. The transport policy now refuses once, with its own reason code, and an allowed http url skips the TLS and certificate gates.
+
 ## [0.5.0] - 2026-10-30
 
 ### Fixed

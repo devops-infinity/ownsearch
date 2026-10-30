@@ -10,16 +10,11 @@ pub(crate) async fn fetch(
     query: &crate::searxng::SearchQuery,
     format: &str,
     cancellation: &CancellationToken,
+    auth: Option<&crate::auth::InstanceAuth>,
 ) -> Result<Vec<Entry>> {
     let params = [("q", query.query.clone()), ("format", format.to_owned())];
     let url = crate::client::search_url(base, &params)?;
-    let fetched = client
-        .get(
-            &url,
-            "application/rss+xml,text/csv,text/xml,text/plain",
-            cancellation,
-        )
-        .await?;
+    let fetched = client.get(&url, cancellation, auth).await?;
     if !fetched.is_success() {
         return Err(Error::Upstream {
             status: fetched.status,

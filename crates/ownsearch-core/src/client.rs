@@ -62,6 +62,7 @@ pub struct Fetched {
     pub truncated: bool,
     pub final_url: String,
     pub redirects: Vec<String>,
+    pub retry_after_secs: Option<u64>,
 }
 
 impl Fetched {
@@ -105,11 +106,13 @@ pub struct FleetClient {
     http: reqwest::Client,
     pinned: Arc<Mutex<HashMap<String, reqwest::Client>>>,
     user_agent: String,
+    accept: String,
     max_bytes: usize,
     timeout: Duration,
     connect_timeout: Duration,
     proxy: Option<reqwest::Proxy>,
     allow_private: bool,
+    allow_plain_http: bool,
     tls: rustls::ClientConfig,
 }
 
@@ -147,11 +150,13 @@ impl FleetClient {
             http,
             pinned: Arc::new(Mutex::new(HashMap::new())),
             user_agent,
+            accept: settings.accept().to_owned(),
             max_bytes: settings.max_upstream_bytes(),
             timeout,
             connect_timeout,
             proxy,
             allow_private: settings.allow_private_instances(),
+            allow_plain_http: settings.allow_plain_http_private(),
             tls,
         })
     }
@@ -188,8 +193,8 @@ impl FleetClient {
     pub async fn get(
         &self,
         url: &Url,
-        accept: &str,
         cancellation: &CancellationToken,
+        auth: Option<&crate::auth::InstanceAuth>,
     ) -> Result<Fetched> {
         let started = Instant::now();
         let mut current = url.clone();
@@ -210,16 +215,23 @@ impl FleetClient {
                     _ => self.http.clone(),
                 }
             };
-            if current.scheme() == "http" && !host_is_loopback(&current) {
-                return Err(Error::PolicyRefused(
-                    "plain http is only allowed for a loopback test server".into(),
-                ));
+            if let Some(reason) = crate::transport::plain_http_refusal(
+                &current,
+                self.allow_private,
+                self.allow_plain_http,
+            ) {
+                return Err(Error::PolicyRefused(reason));
             }
-            let request = client
+            let mut request = client
                 .get(current.clone())
                 .timeout(self.timeout)
-                .header(ACCEPT, accept)
+                .header(ACCEPT, self.accept.clone())
                 .header(ACCEPT_LANGUAGE, "en-US,en;q=0.8");
+            if let Some(auth) = auth
+                && auth.applies_to(&current)
+            {
+                request = auth.apply(request);
+            }
             let response = tokio::select! {
                 result = request.send() => result,
                 () = cancellation.cancelled() => return Err(Error::Cancelled),
@@ -249,6 +261,11 @@ impl FleetClient {
                 )));
             }
             let status = response.status().as_u16();
+            let retry_after_secs = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.trim().parse::<u64>().ok());
             if matches!(status, 301 | 302 | 303 | 307 | 308) {
                 let location = response
                     .headers()
@@ -294,6 +311,7 @@ impl FleetClient {
                 truncated,
                 final_url: current.to_string(),
                 redirects,
+                retry_after_secs: retry_after_secs.filter(|secs| *secs <= 604_800),
             });
         }
     }
@@ -327,15 +345,6 @@ async fn read_capped(
             }
             Err(error) => return Err(Error::network("reading an instance body", error)),
         }
-    }
-}
-
-fn host_is_loopback(url: &Url) -> bool {
-    match url.host() {
-        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(address)) => address.is_loopback(),
-        Some(url::Host::Ipv6(address)) => address.is_loopback(),
-        None => false,
     }
 }
 
@@ -389,6 +398,7 @@ mod tests {
             truncated: false,
             final_url: "https://searx.example/".to_owned(),
             redirects: Vec::new(),
+            retry_after_secs: None,
         };
         assert!(fetched.is_json());
         assert!(!fetched.is_html());
@@ -404,6 +414,7 @@ mod tests {
             truncated: false,
             final_url: "https://searx.example/paper.pdf".to_owned(),
             redirects: Vec::new(),
+            retry_after_secs: None,
         };
         assert!(fetched.is_pdf());
     }

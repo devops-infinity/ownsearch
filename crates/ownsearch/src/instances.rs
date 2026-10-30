@@ -30,14 +30,22 @@ pub(crate) fn run(args: InstancesArgs, common: &crate::cli::CommonArgs) -> anyho
                 limit: usize::from(limit.clamp(1, 500)),
                 ..InstanceFilter::default()
             };
+            let limit = filter.limit;
+            let total = store.count_instances(&filter)?;
             let rows = store.list_instances(&filter)?;
+            let ids: Vec<i64> = rows.iter().map(|row| row.instance_id).collect();
+            let yields = store.engine_yield_for(&ids).unwrap_or_default();
             if as_json {
                 let values: Vec<serde_json::Value> = rows.iter().map(instance_to_json).collect();
                 println!("{}", serde_json::to_string_pretty(&values)?);
             } else {
                 for row in &rows {
+                    let engine_yield = yields
+                        .get(&row.instance_id)
+                        .map(|value| format!("{value:.2}"))
+                        .unwrap_or_else(|| "-".to_owned());
                     println!(
-                        "{} {} {} score {} rank {} {}",
+                        "{} {} {} score {} rank {} yield {} {}",
                         row.instance_id,
                         row.status.as_str(),
                         row.kind.as_str(),
@@ -47,10 +55,17 @@ pub(crate) fn run(args: InstancesArgs, common: &crate::cli::CommonArgs) -> anyho
                         row.rank
                             .map(|rank| rank.to_string())
                             .unwrap_or_else(|| "-".to_owned()),
+                        engine_yield,
                         row.url
                     );
                 }
-                println!("{} rows", rows.len());
+                println!(
+                    "{} rows shown of {}; {} hidden by the {} row limit, raise it with --limit",
+                    rows.len(),
+                    total,
+                    total.saturating_sub(rows.len()),
+                    limit
+                );
             }
             Ok(())
         }
@@ -69,7 +84,25 @@ pub(crate) fn run(args: InstancesArgs, common: &crate::cli::CommonArgs) -> anyho
             };
             let instance_fields = instance_to_json(&row);
             if as_json {
-                println!("{}", serde_json::to_string_pretty(&instance_fields)?);
+                let mut shown = instance_fields.clone();
+                if let Some(record) = store.auth_for(&[row.instance_id])?.remove(&row.instance_id)
+                    && let Some(object) = shown.as_object_mut()
+                {
+                    let described = match record.kind {
+                        ownsearch_core::AuthKind::Header => format!(
+                            "header {} from {}",
+                            record.header_name.as_deref().unwrap_or("authorization"),
+                            record.secret_env
+                        ),
+                        ownsearch_core::AuthKind::Basic => format!(
+                            "basic user {} from {}",
+                            record.user_name.as_deref().unwrap_or("-"),
+                            record.secret_env
+                        ),
+                    };
+                    object.insert("auth".to_owned(), json!(described));
+                }
+                println!("{}", serde_json::to_string_pretty(&shown)?);
             } else {
                 for (key, field_value) in instance_fields.as_object().into_iter().flatten() {
                     println!("{key}: {field_value}");
@@ -81,6 +114,21 @@ pub(crate) fn run(args: InstancesArgs, common: &crate::cli::CommonArgs) -> anyho
                 let categories = store.category_names(row.instance_id)?;
                 if !categories.is_empty() {
                     println!("categories: {}", categories.join(", "));
+                }
+                if let Some(record) = store.auth_for(&[row.instance_id])?.remove(&row.instance_id) {
+                    let described = match record.kind {
+                        ownsearch_core::AuthKind::Header => format!(
+                            "header {} from {}",
+                            record.header_name.as_deref().unwrap_or("authorization"),
+                            record.secret_env
+                        ),
+                        ownsearch_core::AuthKind::Basic => format!(
+                            "basic user {} from {}",
+                            record.user_name.as_deref().unwrap_or("-"),
+                            record.secret_env
+                        ),
+                    };
+                    println!("auth: {described}");
                 }
             }
             Ok(())
@@ -271,18 +319,207 @@ pub(crate) fn run(args: InstancesArgs, common: &crate::cli::CommonArgs) -> anyho
         InstancesAction::Add {
             url,
             pin,
+            trusted,
             json: as_json,
         } => {
             let instance_id = store
                 .add_manual_instance(&url, pin, &ownsearch_core::now_rfc3339())
                 .with_context(|| format!("adding {url}"))?;
+            if trusted {
+                store.upsert_override(
+                    instance_id,
+                    &json!({"trusted": true}),
+                    &["operator.trusted".to_owned()],
+                )?;
+            }
             let row = store
                 .get_instance(instance_id)?
                 .ok_or_else(|| anyhow::anyhow!("the added instance could not be read back"))?;
+            let decision = ownsearch_core::plain_http_refusal_for_url(
+                &row.url,
+                settings.allow_private_instances(),
+                settings.allow_plain_http_private(),
+            );
+            if let Some(reason) = &decision {
+                store.append_event(&ownsearch_core::EventRecord {
+                    kind: "policy_refused".to_owned(),
+                    instance_id: Some(instance_id),
+                    run_id: None,
+                    probe_id: None,
+                    old_value: None,
+                    new_value: Some(ownsearch_core::PLAIN_HTTP_REFUSED.to_owned()),
+                    reasons: vec![ownsearch_core::PLAIN_HTTP_REFUSED.to_owned()],
+                    payload: Some(json!({"message": reason})),
+                })?;
+            }
             if as_json {
-                println!("{}", serde_json::to_string_pretty(&instance_to_json(&row))?);
+                let mut body = instance_to_json(&row);
+                if let Some(object) = body.as_object_mut() {
+                    object.insert(
+                        "transport".to_owned(),
+                        match &decision {
+                            Some(reason) => json!({
+                                "allowed": false,
+                                "reasonCode": ownsearch_core::PLAIN_HTTP_REFUSED,
+                                "message": reason,
+                            }),
+                            None => json!({"allowed": true}),
+                        },
+                    );
+                }
+                println!("{}", serde_json::to_string_pretty(&body)?);
             } else {
                 println!("{} {} {}", row.instance_id, row.status.as_str(), row.url);
+                match &decision {
+                    Some(reason) => println!(
+                        "transport: refused for probe and search with {}: {reason}",
+                        ownsearch_core::PLAIN_HTTP_REFUSED
+                    ),
+                    None => println!("transport: allowed"),
+                }
+                println!(
+                    "next: run `ownsearch scan --instance {instance_id} --force` twice to probe it and promote it, then `ownsearch health --instance {instance_id}` to check it"
+                );
+            }
+            Ok(())
+        }
+        InstancesAction::SetTrusted { instance_id, off } => {
+            ensure_row(&store, instance_id)?;
+            let trusted = !off;
+            store.upsert_override(
+                instance_id,
+                &json!({"trusted": trusted}),
+                &[if trusted {
+                    "operator.trusted"
+                } else {
+                    "operator.untrusted"
+                }
+                .to_owned()],
+            )?;
+            println!(
+                "instance {instance_id} is {}trusted",
+                if trusted { "" } else { "no longer " }
+            );
+            Ok(())
+        }
+        InstancesAction::SetAuth {
+            instance_id,
+            header,
+            basic,
+        } => {
+            ensure_row(&store, instance_id)?;
+            let row = store
+                .get_instance(instance_id)?
+                .ok_or_else(|| anyhow::anyhow!("instance {instance_id} does not exist"))?;
+            let record = match (header, basic) {
+                (Some(header), None) => {
+                    let (name, env) = header.split_once('=').ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "--header takes NAME=ENVVAR, for example X-Api-Key=SEARX_TOKEN"
+                        )
+                    })?;
+                    ownsearch_core::AuthRecord {
+                        kind: ownsearch_core::AuthKind::Header,
+                        header_name: Some(ownsearch_core::validate_header_name(name)?),
+                        user_name: None,
+                        secret_env: ownsearch_core::validate_env_name(env)?,
+                    }
+                }
+                (None, Some(basic)) => {
+                    let (user, env) = basic.split_once(':').ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "--basic takes USER:ENVVAR, for example ownsearch:SEARX_PASS"
+                        )
+                    })?;
+                    ownsearch_core::AuthRecord {
+                        kind: ownsearch_core::AuthKind::Basic,
+                        header_name: None,
+                        user_name: Some(ownsearch_core::validate_user_name(user)?),
+                        secret_env: ownsearch_core::validate_env_name(env)?,
+                    }
+                }
+                _ => anyhow::bail!("pass exactly one of --header or --basic"),
+            };
+            let auth = ownsearch_core::InstanceAuth::resolve(&row.url, record.clone())?;
+            store.set_instance_auth(instance_id, &record)?;
+            println!("instance {instance_id} auth: {}", auth.describe());
+            Ok(())
+        }
+        InstancesAction::ClearAuth { instance_id } => {
+            ensure_row(&store, instance_id)?;
+            let removed = store.clear_instance_auth(instance_id)?;
+            println!(
+                "instance {instance_id} auth: {}",
+                if removed {
+                    "cleared"
+                } else {
+                    "none was stored"
+                }
+            );
+            Ok(())
+        }
+        InstancesAction::SetUrl { instance_id, url } => {
+            ensure_row(&store, instance_id)?;
+            let normalized = store.update_instance_url(instance_id, &url)?;
+            println!("instance {instance_id} url is now {normalized} and its status is candidate");
+            println!(
+                "next: run `ownsearch scan --instance {instance_id} --force` twice to probe the new host, then `ownsearch health --instance {instance_id}`"
+            );
+            Ok(())
+        }
+        InstancesAction::SetPriority {
+            instance_id,
+            priority,
+        } => {
+            ensure_row(&store, instance_id)?;
+            if !(-1_000..=1_000).contains(&priority) {
+                anyhow::bail!("priority {priority} is outside -1000 to 1000");
+            }
+            store.set_manual_priority(instance_id, priority)?;
+            println!("instance {instance_id} priority is now {priority}");
+            Ok(())
+        }
+        InstancesAction::Engines {
+            instance_id,
+            json: as_json,
+        } => {
+            ensure_row(&store, instance_id)?;
+            let engines = store.engine_names(instance_id)?;
+            let stats = store
+                .engine_stats_for(&[instance_id])?
+                .get(&instance_id)
+                .cloned()
+                .unwrap_or_default();
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "instanceId": instance_id,
+                        "engines": engines,
+                        "stats": stats.iter().map(|stat| json!({
+                            "engine": stat.engine,
+                            "successes": stat.successes,
+                            "failures": stat.failures,
+                            "lastSeenAt": stat.last_seen_at,
+                        })).collect::<Vec<_>>(),
+                    }))?
+                );
+            } else {
+                for engine in &engines {
+                    println!("{engine}");
+                }
+                println!("{} engines enabled", engines.len());
+                if engines.is_empty() {
+                    println!(
+                        "next: run `ownsearch scan --instance {instance_id} --force` to read /config first"
+                    );
+                }
+                for stat in &stats {
+                    println!(
+                        "{}: {} ok, {} failed, last seen {}",
+                        stat.engine, stat.successes, stat.failures, stat.last_seen_at
+                    );
+                }
             }
             Ok(())
         }

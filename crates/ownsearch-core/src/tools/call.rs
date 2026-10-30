@@ -12,8 +12,8 @@ use crate::error::{Error, Result};
 use crate::ledger::CallRecord;
 use crate::projection::{MAX_RESULT_BYTES, fit_to_budget, shape_search, summary_text};
 use crate::response::{
-    DbQueryOutput, HealthItem, InstanceHealthOutput, InstanceInfo, InstanceInfoOutput, ScanOutput,
-    SessionOutput, ToolUsage,
+    DbQueryOutput, EngineStatInfo, HealthItem, InstanceHealthOutput, InstanceInfo,
+    InstanceInfoOutput, ScanOutput, SessionOutput, ToolUsage,
 };
 use crate::search::{SearchRequest, search};
 use crate::tools::args::{
@@ -204,10 +204,38 @@ async fn run_search(
     let cap = ctx.settings.result_cap().max(1);
     let limit = validated.limit.unwrap_or(cap).min(cap);
     let preset = validated.preset.unwrap_or_else(|| ctx.settings.preset());
+    let spec = validated
+        .search_preset
+        .map(|preset| crate::presets::resolve(preset, &ctx.settings));
+    let categories = if validated.categories.is_empty() {
+        spec.as_ref()
+            .map(|spec| spec.categories.clone())
+            .unwrap_or_default()
+    } else {
+        validated.categories.clone()
+    };
+    let engines = if validated.engines.is_empty() {
+        spec.as_ref()
+            .map(|spec| spec.engines.clone())
+            .unwrap_or_default()
+    } else {
+        validated.engines.clone()
+    };
+    let engine_weights = spec
+        .as_ref()
+        .map(|spec| spec.engine_weights.clone())
+        .unwrap_or_default();
+    let exclude_engines = spec
+        .as_ref()
+        .map(|spec| spec.exclude_engines.clone())
+        .unwrap_or_default();
+    let min_engines = validated
+        .min_engines
+        .or_else(|| spec.as_ref().and_then(|spec| spec.min_engines));
     let request = SearchRequest {
         query: validated.query.clone(),
-        categories: validated.categories.clone(),
-        engines: validated.engines.clone(),
+        categories,
+        engines,
         language: validated.language.clone(),
         page: validated.page,
         time_range: validated.time_range,
@@ -215,10 +243,15 @@ async fn run_search(
         limit,
         mode: validated.mode,
         deadline_override_secs: validated.timeout_secs,
+        dedupe: validated.dedupe,
+        min_engines,
+        instance_ids: Vec::new(),
+        engine_weights,
+        exclude_engines,
     };
     let deadline = validated
         .timeout_secs
-        .unwrap_or(ctx.settings.search_deadline_secs());
+        .unwrap_or_else(|| ctx.settings.search_deadline_secs(request.mode));
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(deadline.saturating_add(20)),
         search(ctx, &request, cancellation),
@@ -252,24 +285,23 @@ fn instance_info(ctx: &Arc<ToolContext>, args: InstanceInfoArgs) -> Result<ToolO
         ..InstanceFilter::default()
     };
     let rows = ctx.store.list_instances(&filter)?;
-    let include_capabilities = args.include_capabilities.unwrap_or(false);
     let ids: Vec<i64> = rows.iter().map(|row| row.instance_id).collect();
-    let engines = if include_capabilities {
-        ctx.store.engine_names_for(&ids).unwrap_or_else(|error| {
-            tracing::warn!(%error, "engine names could not be read");
-            std::collections::HashMap::new()
-        })
-    } else {
+    let engines = ctx.store.engine_names_for(&ids).unwrap_or_else(|error| {
+        tracing::warn!(%error, "engine names could not be read");
         std::collections::HashMap::new()
-    };
-    let categories = if include_capabilities {
-        ctx.store.category_names_for(&ids).unwrap_or_else(|error| {
-            tracing::warn!(%error, "category names could not be read");
-            std::collections::HashMap::new()
-        })
-    } else {
+    });
+    let categories = ctx.store.category_names_for(&ids).unwrap_or_else(|error| {
+        tracing::warn!(%error, "category names could not be read");
         std::collections::HashMap::new()
-    };
+    });
+    let stats = ctx.store.engine_stats_for(&ids).unwrap_or_else(|error| {
+        tracing::warn!(%error, "engine counters could not be read");
+        std::collections::HashMap::new()
+    });
+    let auth = ctx.store.auth_for(&ids).unwrap_or_else(|error| {
+        tracing::warn!(%error, "the instance credentials could not be read");
+        std::collections::HashMap::new()
+    });
     let now = crate::time::now_rfc3339();
     let instances: Vec<InstanceInfo> = rows
         .iter()
@@ -294,10 +326,25 @@ fn instance_info(ctx: &Arc<ToolContext>, args: InstanceInfoArgs) -> Result<ToolO
                     .get(&row.instance_id)
                     .cloned()
                     .unwrap_or_default(),
+                engine_stats: stats
+                    .get(&row.instance_id)
+                    .map(|list| {
+                        list.iter()
+                            .map(|stat| EngineStatInfo {
+                                engine: stat.engine.clone(),
+                                successes: stat.successes,
+                                failures: stat.failures,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                priority: row.manual_priority,
+                auth: auth.get(&row.instance_id).map(describe_auth),
                 reasons: row.reasons.clone(),
                 denied: row.denied,
                 scan_enabled: row.scan_enabled,
                 pinned: row.pinned,
+                trusted: row.trusted,
                 serving,
                 serving_reason,
             }
@@ -331,11 +378,14 @@ fn instance_health(ctx: &Arc<ToolContext>, args: InstanceHealthArgs) -> Result<T
         std::collections::HashMap::new()
     };
     let metrics = ctx.store.discovery_metrics_for(&ids).unwrap_or_default();
+    let yields = ctx.store.engine_yield_for(&ids).unwrap_or_default();
+    let threshold = ctx.settings.engine_yield_threshold();
     let now = crate::time::now_rfc3339();
     let instances: Vec<HealthItem> = rows
         .iter()
         .map(|row| {
             let metrics = metrics.get(&row.instance_id);
+            let engine_yield = yields.get(&row.instance_id).copied();
             let (serving, serving_reason) = crate::db::serving_state(row, &now);
             HealthItem {
                 instance_id: row.instance_id,
@@ -355,6 +405,10 @@ fn instance_health(ctx: &Arc<ToolContext>, args: InstanceHealthArgs) -> Result<T
                 cooldown_until: row.cooldown_until.clone(),
                 consecutive_failures: row.consecutive_failures,
                 consecutive_successes: row.consecutive_successes,
+                engine_yield,
+                engine_degraded: engine_yield.is_some_and(|value| value < threshold),
+                json_throttled_until: row.json_throttled_until.clone(),
+                trusted: row.trusted,
                 reasons: row.reasons.clone(),
                 last_events: events.get(&row.instance_id).cloned().unwrap_or_default(),
                 denied: row.denied,
@@ -386,18 +440,31 @@ async fn run_scan(
     cancellation: &CancellationToken,
 ) -> Result<ToolOutcome> {
     let options = args.options();
-    if !options.dry_run && ctx.settings.ai_db_mode() == crate::types::AiDbMode::ReadOnly {
-        return Err(Error::WriteDisabled);
+    if !options.dry_run {
+        if ctx.settings.ai_db_mode() == crate::types::AiDbMode::ReadOnly {
+            return Err(Error::WriteDisabled);
+        }
+        if args
+            .reason
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            return Err(Error::InvalidArgs(
+                "a writing scan needs a reason; pass dry_run false together with a short reason, or keep the default dry run"
+                    .into(),
+            ));
+        }
     }
     let output: ScanOutput = crate::scanner::run_scan(ctx, &options, cancellation).await?;
     let text = format!(
-        "{} instances probed; {} added, {} missing, {} status changes, {} in the fleet{}",
+        "{}; {} instances probed, {} added, {} missing, {} status changes",
+        output.summary,
         output.probed,
         output.added,
         output.missing,
-        output.status_changes.len(),
-        output.fleet.len(),
-        if output.dry_run { " (dry run)" } else { "" }
+        output.status_changes.len()
     );
     Ok(ToolOutcome {
         structured: serde_json::to_value(output)?,
@@ -505,6 +572,21 @@ fn db_crud_inner(ctx: &Arc<ToolContext>, args: DbCrudArgs) -> Result<ToolOutcome
         http_class: None,
         cache_hit: false,
     })
+}
+
+fn describe_auth(record: &crate::auth::AuthRecord) -> String {
+    match record.kind {
+        crate::auth::AuthKind::Header => format!(
+            "header {} from {}",
+            record.header_name.as_deref().unwrap_or("authorization"),
+            record.secret_env
+        ),
+        crate::auth::AuthKind::Basic => format!(
+            "basic user {} from {}",
+            record.user_name.as_deref().unwrap_or("-"),
+            record.secret_env
+        ),
+    }
 }
 
 fn operation_of(tool_name: &str) -> &'static str {

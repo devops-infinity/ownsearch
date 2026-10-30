@@ -19,7 +19,7 @@ The state directory is created with mode 0700 and files with mode 0600. WAL mode
 
 The database is SQLite in WAL mode with foreign keys on, STRICT tables, and a checksummed migration ledger. The schema is built from embedded migrations that run forward at open, in order, from `0001_initial.sql` to the newest file in `crates/ownsearch-core/src/db/migrations/`. A pending migration takes a verified `VACUUM INTO` backup first. A database written by a newer release is refused with `ownsearch.state_newer` rather than read partially, and the remedy is to run that newer release.
 
-Tables: `schema_migrations`, `application_metadata`, `discovery_sources`, `discovery_runs`, `instances`, `capability_snapshots`, `engines`, `categories`, `capability_engines`, `capability_categories`, `probes`, `tls_observations`, `hourly_probe_metrics`, `instance_quality`, `instance_events`, `fleet_snapshots`, `instance_policy_overrides`, and `maintenance_runs`.
+Tables: `schema_migrations`, `application_metadata`, `discovery_sources`, `discovery_runs`, `instances`, `capability_snapshots`, `engines`, `categories`, `capability_engines`, `capability_categories`, `probes`, `tls_observations`, `hourly_probe_metrics`, `instance_quality`, `engine_stats`, `instance_auth`, `instance_events`, `fleet_snapshots`, `instance_policy_overrides`, and `maintenance_runs`.
 
 Row keep windows, applied by `ownsearch db maintenance`: probes 90 days, TLS observations 90 days, capability snapshots 90 days, hourly metrics 180 days, fleet snapshots 30 days, discovery runs 180 days, lifecycle events 365 days. Instance rows are never deleted by the scanner.
 
@@ -50,7 +50,9 @@ Row keep windows, applied by `ownsearch db maintenance`: probes 90 days, TLS obs
 
 ## Your own instance
 
-`ownsearch instances add http://localhost:8888/ --pin` stores a SearXNG instance you run yourself, whether it listens on a localhost port, a Docker network address, or any other private address. The instance starts as a candidate. A scan probes it like any other instance, and two passing probes promote it to active, after which searches use it. A loopback or private host skips the TLS and certificate gate, because those checks describe a public host. The address rule still applies: set `OWNSEARCH_ALLOW_PRIVATE_INSTANCES=true`, and keep the instance on a network you control, since the same setting lets a hostile discovery document point the scanner at a local service.
+`instance_auth` holds one credential per instance as a kind, an optional header name or basic user, and the environment variable name that holds the value. The value is never stored. `instances.manual_priority` orders an instance before its score, and `instances.json_throttled_until` holds the window in which a limiter refuses JSON.
+
+- Run a self-hosted instance with `ownsearch instances add http://192.168.110.26:8080/ --pin --trusted`, with `OWNSEARCH_ALLOW_PRIVATE_INSTANCES=true` and `OWNSEARCH_ALLOW_PLAIN_HTTP_PRIVATE=true` set for every command and for the server. The instance starts as a candidate. A scan probes it like any other instance, and two passing probes promote it to active, after which searches use it. A loopback or private host skips the TLS and certificate gate, because those checks describe a public host. The address rule still applies: keep the instance on a network you control, since the same setting lets a hostile discovery document point the scanner at a local service.
 
 ## Instance lifecycle
 

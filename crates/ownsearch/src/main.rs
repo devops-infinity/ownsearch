@@ -5,10 +5,12 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser};
 
 mod audit;
+mod bench;
 mod cli;
 mod config;
 mod db;
 mod doctor;
+mod health;
 mod instances;
 mod output;
 mod sbom;
@@ -42,6 +44,8 @@ fn run(parsed: cli::Cli) -> anyhow::Result<()> {
         cli::Command::Serve(args) => serve::run(args, &common),
         cli::Command::Doctor(args) => doctor::run(args, &common),
         cli::Command::Scan(args) => scan::run(args, &common),
+        cli::Command::Bench(args) => bench::run(args, &common),
+        cli::Command::Health(args) => health::run(args, &common),
         cli::Command::Instances(args) => instances::run(args, &common),
         cli::Command::Db(args) => db::run(args, &common),
         cli::Command::Config(args) => config::run(args, &common),

@@ -27,6 +27,10 @@ pub(crate) enum Command {
     Doctor(DoctorArgs),
     #[command(about = "Refresh discovery and probe the instance fleet")]
     Scan(ScanArgs),
+    #[command(about = "Run repeated searches and report latency, errors, and load")]
+    Bench(BenchArgs),
+    #[command(about = "Probe one instance and exit non-zero when it is not serving")]
+    Health(HealthArgs),
     #[command(about = "Inspect and adjust instance lifecycle records")]
     Instances(InstancesArgs),
     #[command(about = "Manage the local SQLite state database")]
@@ -132,6 +136,43 @@ impl ServeArgs {
             ..common.overrides()
         }
     }
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BenchArgs {
+    #[arg(long, help = "File holding one query per line")]
+    pub(crate) queries: Option<PathBuf>,
+    #[arg(
+        long,
+        default_value_t = 10,
+        help = "Queries to run, or queries to run before the duration cap"
+    )]
+    pub(crate) count: u16,
+    #[arg(long, default_value_t = 4, help = "Searches in flight at once")]
+    pub(crate) concurrency: u16,
+    #[arg(long, help = "Run for this many seconds instead of a fixed count")]
+    pub(crate) duration: Option<u64>,
+    #[arg(
+        long = "instance",
+        help = "Send every query to this instance id; repeat for several"
+    )]
+    pub(crate) instances: Vec<i64>,
+    #[arg(
+        long,
+        default_value = "balanced",
+        help = "Search mode: fast, balanced, exhaustive"
+    )]
+    pub(crate) mode: String,
+    #[arg(long, help = "Print the report as JSON")]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct HealthArgs {
+    #[arg(long, help = "Instance identifier")]
+    pub(crate) instance: i64,
+    #[arg(long, help = "Print the report as JSON")]
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -261,7 +302,62 @@ pub(crate) enum InstancesAction {
         url: String,
         #[arg(long, help = "Pin the instance so it stays eligible")]
         pin: bool,
+        #[arg(
+            long,
+            help = "Mark the instance trusted: tried first, no browser fallback, higher concurrency"
+        )]
+        trusted: bool,
         #[arg(long, help = "Print the new row as JSON")]
+        json: bool,
+    },
+    #[command(about = "Mark an instance trusted, or clear the mark with --off")]
+    SetTrusted {
+        #[arg(help = "Instance identifier")]
+        instance_id: i64,
+        #[arg(long, help = "Clear the trusted mark instead of setting it")]
+        off: bool,
+    },
+    #[command(about = "Store request credentials for one instance from environment variables")]
+    SetAuth {
+        #[arg(help = "Instance identifier")]
+        instance_id: i64,
+        #[arg(
+            long,
+            help = "Custom header as NAME=ENVVAR, for example X-Api-Key=SEARX_TOKEN",
+            conflicts_with = "basic"
+        )]
+        header: Option<String>,
+        #[arg(
+            long,
+            help = "HTTP Basic as USER:ENVVAR, for example ownsearch:SEARX_PASS",
+            conflicts_with = "header"
+        )]
+        basic: Option<String>,
+    },
+    #[command(about = "Remove the stored credentials from one instance")]
+    ClearAuth {
+        #[arg(help = "Instance identifier")]
+        instance_id: i64,
+    },
+    #[command(about = "Change the url of an instance and reset it to candidate")]
+    SetUrl {
+        #[arg(help = "Instance identifier")]
+        instance_id: i64,
+        #[arg(help = "New url, for example https://search.example.org/")]
+        url: String,
+    },
+    #[command(about = "Set the manual priority, where a higher number is ordered first")]
+    SetPriority {
+        #[arg(help = "Instance identifier")]
+        instance_id: i64,
+        #[arg(help = "Priority from -1000 to 1000")]
+        priority: i64,
+    },
+    #[command(about = "Print the engines an instance reported in its /config")]
+    Engines {
+        #[arg(help = "Instance identifier")]
+        instance_id: i64,
+        #[arg(long, help = "Print the engines as JSON")]
         json: bool,
     },
     #[command(about = "Change the recorded type of an instance: normal, tor, or unknown")]

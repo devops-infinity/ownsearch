@@ -92,18 +92,11 @@ pub async fn fetch(
         };
         return Ok(cached_outcome(ctx, cache_key, output));
     }
-    let fetched = tokio::time::timeout_at(
-        deadline,
-        ctx.client.get(
-            &url,
-            "text/html,application/xhtml+xml,text/plain;q=0.9",
-            cancellation,
-        ),
-    )
-    .await
-    .map_err(|_| Error::Timeout {
-        deadline_ms: u64::try_from(budget.as_millis()).unwrap_or(0),
-    })??;
+    let fetched = tokio::time::timeout_at(deadline, ctx.client.get(&url, cancellation, None))
+        .await
+        .map_err(|_| Error::Timeout {
+            deadline_ms: u64::try_from(budget.as_millis()).unwrap_or(0),
+        })??;
     if fetched.status == 429 {
         return Err(Error::RateLimited {
             message: "the page host is rate limiting this client".into(),
@@ -310,11 +303,7 @@ async fn crawl(
         }
         let fetched = match tokio::time::timeout_at(
             deadline,
-            ctx.client.get(
-                &link,
-                "text/html,application/xhtml+xml,text/plain;q=0.9",
-                cancellation,
-            ),
+            ctx.client.get(&link, cancellation, None),
         )
         .await
         {

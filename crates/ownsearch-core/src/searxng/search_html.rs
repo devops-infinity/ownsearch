@@ -131,6 +131,7 @@ pub async fn fetch(
     base: &Url,
     query: &SearchQuery,
     cancellation: &CancellationToken,
+    auth: Option<&crate::auth::InstanceAuth>,
 ) -> ProbeReport<HtmlSearch> {
     let params = query.params(false);
     let url = match search_url(base, &params) {
@@ -139,15 +140,15 @@ pub async fn fetch(
             return ProbeReport::failed(crate::types::ProbeOutcome::Refused, error.to_string());
         }
     };
-    let fetched = match client
-        .get(&url, "text/html,application/xhtml+xml", cancellation)
-        .await
-    {
+    let fetched = match client.get(&url, cancellation, auth).await {
         Ok(fetched) => fetched,
         Err(error) => {
             let outcome = match &error {
                 crate::error::Error::Timeout { .. } => crate::types::ProbeOutcome::Timeout,
                 crate::error::Error::RateLimited { .. } => crate::types::ProbeOutcome::RateLimited,
+                crate::error::Error::PolicyRefused(_) | crate::error::Error::Cancelled => {
+                    crate::types::ProbeOutcome::Refused
+                }
                 _ => crate::types::ProbeOutcome::HttpError,
             };
             return ProbeReport {
@@ -161,6 +162,8 @@ pub async fn fetch(
                 error_message: Some(error.to_string()),
                 rate_limited: matches!(error, crate::error::Error::RateLimited { .. }),
                 blocked: false,
+                sample: None,
+                retry_after_secs: None,
             };
         }
     };
@@ -192,6 +195,8 @@ pub async fn fetch(
         error_message: blocked.then(|| "the instance served a captcha page".to_owned()),
         rate_limited: false,
         blocked,
+        sample: (outcome == crate::types::ProbeOutcome::ParserError).then(|| fetched.body.clone()),
+        retry_after_secs: fetched.retry_after_secs,
     }
 }
 

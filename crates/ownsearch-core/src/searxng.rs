@@ -66,6 +66,8 @@ pub struct ProbeReport<T> {
     pub error_message: Option<String>,
     pub rate_limited: bool,
     pub blocked: bool,
+    pub sample: Option<Vec<u8>>,
+    pub retry_after_secs: Option<u64>,
 }
 
 impl<T> ProbeReport<T> {
@@ -81,6 +83,8 @@ impl<T> ProbeReport<T> {
             error_message: Some(message.into()),
             rate_limited: false,
             blocked: false,
+            sample: None,
+            retry_after_secs: None,
         }
     }
 
@@ -96,6 +100,8 @@ impl<T> ProbeReport<T> {
             error_message: None,
             rate_limited: fetched.status == 429,
             blocked: outcome == ProbeOutcome::Blocked,
+            sample: None,
+            retry_after_secs: fetched.retry_after_secs,
         }
     }
 

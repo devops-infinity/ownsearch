@@ -7,7 +7,7 @@ use crate::types::Preset;
 pub(crate) const MAX_RESULT_BYTES: usize = 262_144;
 
 const MINIMAL_FIELDS: [&str; 5] = ["title", "url", "rank", "score", "sourceId"];
-const STANDARD_FIELDS: [&str; 9] = [
+const STANDARD_FIELDS: [&str; 10] = [
     "title",
     "url",
     "snippet",
@@ -16,11 +16,17 @@ const STANDARD_FIELDS: [&str; 9] = [
     "publishedDate",
     "score",
     "rank",
+    "mergedFrom",
     "truncated",
 ];
 
 pub(crate) fn shape_search(output: &SearchOutput, preset: Preset) -> Result<Value> {
     let mut value = serde_json::to_value(output)?;
+    if preset != Preset::Full
+        && let Some(sources) = value.get_mut("sources").and_then(Value::as_object_mut)
+    {
+        sources.remove("unresponsiveEngines");
+    }
     let Some(object) = value.as_object_mut() else {
         return Ok(value);
     };
@@ -140,12 +146,15 @@ mod tests {
                     instance_id: 7,
                     instance_slug: "searx-example".to_owned(),
                     instance_url: "https://searx.example/".to_owned(),
-                    engine: Some("google".to_owned()),
+                    engines: vec!["google".to_owned()],
                     parser: "json".to_owned(),
                     rank: Some(1),
                     score: 90.0,
                 }]),
                 published_date: Some("2026-10-20".to_owned()),
+                category: None,
+                merged_from: 2,
+                best_position: Some(1),
                 score: 88.5,
                 rank: 1,
                 kind: Some("web".to_owned()),
@@ -156,6 +165,7 @@ mod tests {
                 succeeded: vec![7],
                 failed: Vec::new(),
                 fallbacks: Vec::new(),
+                unresponsive_engines: Vec::new(),
             },
             coverage: Coverage {
                 attempted: 1,
@@ -175,6 +185,11 @@ mod tests {
             timing: SearchTiming {
                 elapsed_ms: 120,
                 deadline_ms: 12_000,
+                queue_ms: 1,
+                selection_ms: 1,
+                upstream_ms: 100,
+                parse_ms: 2,
+                merge_ms: 3,
             },
         }
     }
@@ -237,12 +252,15 @@ mod tests {
                     instance_id: 1,
                     instance_slug: "searx-example".to_owned(),
                     instance_url: "https://searx.example/".to_owned(),
-                    engine: None,
+                    engines: Vec::new(),
                     parser: "json".to_owned(),
                     rank: Some(1),
                     score: 50.0,
                 }]),
                 published_date: None,
+                category: None,
+                merged_from: 1,
+                best_position: Some(1),
                 score: 50.0,
                 rank: u32::try_from(index).unwrap_or(0) + 1,
                 kind: Some("web".to_owned()),

@@ -22,14 +22,19 @@ Most environment variables have a matching profile key: drop the `OWNSEARCH_` pr
 - `RUST_LOG`: the log filter, read by the tracing subscriber.
 - `OWNSEARCH_PROXY`: an outbound proxy URL for every HTTP request the client makes, for example `socks5h://127.0.0.1:1080`. Unset by default.
 - `OWNSEARCH_ALLOW_PRIVATE_INSTANCES`: accept loopback and private addresses for discovery records, probes, search, and fetch. Default false, and it exists for local testing only. Leave it off in any deployment that can reach the internet, because with it on a hostile discovery document can point the scanner at a local service.
+- `OWNSEARCH_ACCEPT`: the `Accept` header sent on every instance request. Default `text/html,application/json;q=0.9,*/*;q=0.8`. It must contain `text/html`, because a SearXNG limiter rejects a request without it.
+- `OWNSEARCH_ALLOW_PLAIN_HTTP_PRIVATE`: permit `http://` for a loopback, private, or local-only host, such as `http://192.168.110.26:8080/`. Default false. Both this setting and `OWNSEARCH_ALLOW_PRIVATE_INSTANCES` must be on; plain http to a public host is always refused. A refused url records `policy.plain_http_refused` and never enters the active fleet. TLS and certificate gates do not apply to an allowed http url.
 
 ## Discovery and scanning
 
 - `OWNSEARCH_DISCOVERY_URL`: discovery source. Default `https://searx.space/data/instances.json`. The URL must use HTTPS, except a loopback host.
 - `OWNSEARCH_DISCOVERY_REFRESH_SECS`: refresh window. Default 21600.
 - `OWNSEARCH_OFFLINE`: skip discovery and use local state only. Default false.
+- `OWNSEARCH_PUBLIC_FLEET`: discover from searx.space and probe public instances. Default true. When false, discovery stops, public rows are never probed, and every fleet and search uses only instances added with `ownsearch instances add`.
 - `OWNSEARCH_SCAN_CONCURRENCY`: parallel probes, 1 to 8. Default 4.
-- `OWNSEARCH_SCAN_JITTER_MS`: random delay between probes, up to this many milliseconds. Default 250.
+- `OWNSEARCH_SCAN_JITTER_MS`: random delay between probes, up to this many milliseconds. Default 750.
+- `OWNSEARCH_PROBE_DAILY_CAP`: most probes one instance receives in a rolling 24 hours. Default 96, from 1 to 10000. An instance at the cap is skipped and the scan says how many were skipped.
+- `OWNSEARCH_INSTANCE_MAX_CONCURRENT`: requests in flight to one trusted instance. Default 4, from 1 to 64. An untrusted instance always allows one at a time.
 - `OWNSEARCH_PROBE_TIMEOUT_SECS`: per-request timeout for each probe step. Default 15. One probe stops after five times this value.
 - `OWNSEARCH_SCAN_DEADLINE_SECS`: whole-scan deadline. Default 600, from 30 to 7200. The scan stops with a warning when it passes.
 - `OWNSEARCH_SCAN_MIN_INTERVAL_SECS`: minimum gap between two writing scans on the same state database. Default 30, from 0 to 3600, and 0 turns the gap off. One scan at a time within a process always applies.
@@ -53,7 +58,7 @@ Most environment variables have a matching profile key: drop the `OWNSEARCH_` pr
 
 ## Search
 
-- `OWNSEARCH_SEARCH_DEADLINE_SECS`: whole-search deadline, default 30.
+- `OWNSEARCH_SEARCH_DEADLINE_FAST_SECS`, `OWNSEARCH_SEARCH_DEADLINE_BALANCED_SECS`, `OWNSEARCH_SEARCH_DEADLINE_EXHAUSTIVE_SECS`: the whole-search deadline for each mode. Defaults 10, 30, and 60 seconds, each from 1 to 300. The `timeout_secs` argument overrides the mode deadline for one call, up to 120 seconds.
 - `OWNSEARCH_EXHAUSTIVE_MAX`: instances in `exhaustive` mode, default 16.
 - `OWNSEARCH_SEARCH_ATTEMPTS`: attempts per instance, 1 to 5. Default 3.
 - `OWNSEARCH_SEARCH_FAILOVER`: fail over to the next instance. Default true.
@@ -65,6 +70,14 @@ Most environment variables have a matching profile key: drop the `OWNSEARCH_` pr
 - `OWNSEARCH_CACHE_TTL_SECS`: how long a cached answer stays fresh. Default 300, and 0 turns the cache off.
 - Profile key `cache_max_bytes`: cache byte cap. Default 16 MiB.
 - Profile key `preset`: default field preset, `minimal`, `standard`, or `full`. Default `standard`.
+- Profile key `min_engines`: fewest distinct engines a result needs to survive the merge, from 1 to 16. Default 1. A call can raise it with `min_engines`.
+- `OWNSEARCH_ENGINE_YIELD_THRESHOLD`: the share of enabled engines that must contribute results before an instance counts as healthy. Default 0.5, from 0 to 1. Under it, the score is halved and the reason `quality.engine_degraded` is recorded; a pinned or trusted instance stays eligible but carries the reason.
+- Profile key `search_presets`: named intent presets. Each entry sets `categories`, `engines_allow`, `engines_deny`, `engine_weights`, and `min_engines`, and replaces the built-in value for every key it sets. The built-in names are `web`, `code`, `news`, and `images`; `code` asks for `it` and `general`, drops `wiby`, `bing`, and `yep`, and boosts `github`, `stackoverflow`, `mdn`, `docker hub`, `pypi`, and `crates.io`.
+- Profile key `engine_weights`: table of engine name to weight, each from 0 to 10, used by the merge ranking. Built-in weights already rank wiby at 0.25 and other small-web engines at 0.4, and every other engine at 1.0. An entry here replaces the built-in weight for that engine.
+- Profile key `exclude_engines`: engines whose results are dropped before the merge.
+- Profile key `exclude_domains`: domains dropped from results, matching the host and every subdomain.
+
+The merge rank is reciprocal rank fusion over each engine position with the engine weight, plus a bonus for each extra agreeing engine and instance, plus SearXNG's own score. The full formula is in [docs/tools.md](tools.md).
 
 ## Keep windows and maintenance
 
@@ -99,4 +112,25 @@ search_attempts = 3
 round_robin = true
 keep_window = "3d"
 ai_db_mode = "read-only"
+public_fleet = true
+min_engines = 1
+engine_yield_threshold = 0.5
+exclude_domains = ["example.com"]
+search_deadline_fast_secs = 10
+search_deadline_balanced_secs = 30
+search_deadline_exhaustive_secs = 60
+
+[engine_weights]
+wiby = 0.2
+google = 1.0
+
+[search_presets.code]
+categories = ["it", "general"]
+engines_deny = ["wiby", "bing", "yep"]
+[search_presets.code.engine_weights]
+github = 2.0
 ```
+
+## Private hosts over HTTPS
+
+`OWNSEARCH_ALLOW_PRIVATE_INSTANCES=true` also covers a public hostname that resolves to a private address, such as a production domain behind Caddy on the LAN or inside a tunnel. With a valid public certificate, the TLS and certificate gates pass and the private-address guard stands down. With the setting off, the probe refuses the address and records `gate.tls_invalid` with a message naming the non-public address.

@@ -154,6 +154,7 @@ pub async fn fetch(
     client: &FleetClient,
     base: &Url,
     cancellation: &CancellationToken,
+    auth: Option<&crate::auth::InstanceAuth>,
 ) -> ProbeReport<ConfigDocument> {
     let url = match config_url(base) {
         Ok(url) => url,
@@ -161,7 +162,7 @@ pub async fn fetch(
             return ProbeReport::failed(crate::types::ProbeOutcome::Refused, error.to_string());
         }
     };
-    let fetched: Fetched = match client.get(&url, "application/json", cancellation).await {
+    let fetched: Fetched = match client.get(&url, cancellation, auth).await {
         Ok(fetched) => fetched,
         Err(error) => return from_error(&error),
     };
@@ -183,6 +184,8 @@ pub async fn fetch(
             error_message: None,
             rate_limited: false,
             blocked: false,
+            sample: None,
+            retry_after_secs: Some(fetched.retry_after_secs).flatten(),
         },
         Err(error) => ProbeReport {
             value: None,
@@ -195,6 +198,8 @@ pub async fn fetch(
             error_message: Some(error.to_string()),
             rate_limited: false,
             blocked: false,
+            sample: Some(fetched.body.clone()),
+            retry_after_secs: fetched.retry_after_secs,
         },
     }
 }
@@ -203,7 +208,7 @@ fn from_error<T>(error: &Error) -> ProbeReport<T> {
     let outcome = match error {
         Error::Timeout { .. } => crate::types::ProbeOutcome::Timeout,
         Error::RateLimited { .. } => crate::types::ProbeOutcome::RateLimited,
-        Error::Cancelled => crate::types::ProbeOutcome::Refused,
+        Error::Cancelled | Error::PolicyRefused(_) => crate::types::ProbeOutcome::Refused,
         _ => crate::types::ProbeOutcome::HttpError,
     };
     ProbeReport {
@@ -217,6 +222,8 @@ fn from_error<T>(error: &Error) -> ProbeReport<T> {
         error_message: Some(error.to_string()),
         rate_limited: matches!(error, Error::RateLimited { .. }),
         blocked: false,
+        sample: None,
+        retry_after_secs: None,
     }
 }
 

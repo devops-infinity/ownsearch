@@ -224,7 +224,11 @@ async fn a_rate_limited_probe_cools_down_and_keeps_the_status() {
             .iter()
             .all(|change| change.next_status == "candidate")
     );
-    assert_eq!(server.received_requests().await.expect("requests").len(), 2);
+    assert!(
+        row.json_throttled_until.is_none(),
+        "a 429 on every format is a full rate limit, not a json throttle"
+    );
+    assert_eq!(server.received_requests().await.expect("requests").len(), 3);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -402,7 +406,7 @@ async fn a_scan_of_a_single_instance_touches_only_that_instance() {
 fn the_store_is_reachable_from_the_test_harness() {
     let dir = common::temp_dir("scan-store");
     let store = Store::open(&dir.join("instances.db")).expect("store");
-    assert_eq!(store.schema_version().expect("version"), 4);
+    assert_eq!(store.schema_version().expect("version"), 5);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

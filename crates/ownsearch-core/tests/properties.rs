@@ -7,9 +7,30 @@
 use ownsearch_core::sanitize;
 use ownsearch_core::search_html::HtmlSearch;
 use ownsearch_core::search_json::JsonSearch;
-use ownsearch_core::{Observation, merge};
+use std::collections::BTreeMap;
+
+use ownsearch_core::{MergeOptions, MergeOutput, Observation, merge};
 use proptest::prelude::*;
 use url::Url;
+
+const NO_NAMES: &[String] = &[];
+
+fn merge_with(observations: Vec<Observation>) -> MergeOutput {
+    static EMPTY_WEIGHTS: std::sync::LazyLock<BTreeMap<String, f64>> =
+        std::sync::LazyLock::new(BTreeMap::new);
+    merge(
+        observations,
+        &MergeOptions {
+            cap: 20,
+            snippet_chars: 300,
+            dedupe: true,
+            min_engines: 1,
+            engine_weights: &EMPTY_WEIGHTS,
+            exclude_engines: NO_NAMES,
+            exclude_domains: NO_NAMES,
+        },
+    )
+}
 
 fn observation() -> impl Strategy<Value = Observation> {
     (
@@ -27,7 +48,10 @@ fn observation() -> impl Strategy<Value = Observation> {
             instance_url: format!("https://searx{instance_id}.example/"),
             instance_score: 50.0,
             parser: "json".to_owned(),
-            engine: Some("google".to_owned()),
+            engines: vec!["google".to_owned()],
+            positions: vec![1],
+            upstream_score: None,
+            category: None,
             rank: Some(1),
             title,
             url,
@@ -52,7 +76,7 @@ proptest! {
     #[test]
     fn merging_never_invents_a_url(observations in prop::collection::vec(observation(), 0..8)) {
         let known: Vec<String> = observations.iter().map(|item| item.url.clone()).collect();
-        let output = merge(observations, 20, 300);
+        let output = merge_with(observations);
         for result in &output.results {
             let matches = known.iter().any(|url| {
                 let stripped = url.trim_end_matches('/');
@@ -67,8 +91,8 @@ proptest! {
     fn merging_is_order_independent(observations in prop::collection::vec(observation(), 0..8)) {
         let mut reversed = observations.clone();
         reversed.reverse();
-        let forward = merge(observations, 20, 300);
-        let backward = merge(reversed, 20, 300);
+        let forward = merge_with(observations);
+        let backward = merge_with(reversed);
         let mut left: Vec<String> = forward.results.iter().map(|item| item.url.clone()).collect();
         let mut right: Vec<String> = backward.results.iter().map(|item| item.url.clone()).collect();
         left.sort();
@@ -78,13 +102,13 @@ proptest! {
 
     #[test]
     fn merging_is_idempotent(observations in prop::collection::vec(observation(), 0..8)) {
-        let first = merge(observations, 20, 300);
+        let first = merge_with(observations);
         let again: Vec<Observation> = first
             .results
             .iter()
             .flat_map(|result| result.sources.clone())
             .collect();
-        let second = merge(again, 20, 300);
+        let second = merge_with(again);
         prop_assert_eq!(first.results.len(), second.results.len());
     }
 
@@ -93,7 +117,7 @@ proptest! {
         observations in prop::collection::vec(observation(), 0..8)
     ) {
         let total = observations.len();
-        let output = merge(observations, 20, 300);
+        let output = merge_with(observations);
         let sources: usize = output.results.iter().map(|result| result.sources.len()).sum();
         prop_assert!(sources <= total);
     }

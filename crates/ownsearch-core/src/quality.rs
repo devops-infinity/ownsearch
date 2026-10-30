@@ -6,11 +6,12 @@ pub(crate) const SCORE_MAX: f64 = 100.0;
 pub(crate) struct Policy {
     pub cert_min_days: i64,
     pub google_required: bool,
+    pub engine_yield_threshold: f64,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Evidence {
-    pub trusted_local: bool,
+    pub tls_gate_skipped: bool,
     pub tls_ok: bool,
     pub certificate_days: Option<i64>,
     pub analytics: bool,
@@ -33,6 +34,7 @@ pub(crate) struct Evidence {
     pub consecutive_successes: u32,
     pub consecutive_failures: u32,
     pub parser_drift: bool,
+    pub engine_yield: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +47,7 @@ pub(crate) struct Assessment {
 pub(crate) fn assess(evidence: &Evidence, policy: Policy) -> Assessment {
     let mut reasons: Vec<String> = Vec::new();
     let mut passed = true;
-    if !evidence.trusted_local {
+    if !evidence.tls_gate_skipped {
         if !evidence.tls_ok {
             passed = false;
             reasons.push("gate.tls_invalid".to_owned());
@@ -95,6 +97,12 @@ pub(crate) fn assess(evidence: &Evidence, policy: Policy) -> Assessment {
     score += tls_score(evidence);
     score += version_score(evidence.version_age_days);
     score += modifier(evidence, &mut reasons);
+    if let Some(engine_yield) = evidence.engine_yield
+        && engine_yield < policy.engine_yield_threshold
+    {
+        score *= 0.5;
+        reasons.push("quality.engine_degraded".to_owned());
+    }
     let score = score.clamp(0.0, SCORE_MAX);
     if score < 20.0 {
         reasons.push("score.low".to_owned());
@@ -318,6 +326,8 @@ pub(crate) struct FleetCandidate {
     pub network_group: Option<String>,
     pub google_exact: bool,
     pub pinned: bool,
+    pub trusted: bool,
+    pub manual_priority: i64,
     pub active: bool,
 }
 
@@ -327,6 +337,7 @@ pub(crate) struct FleetSelection {
     pub excluded_network: usize,
     pub excluded_google: usize,
     pub short_of_minimum: bool,
+    pub expected: usize,
 }
 
 pub(crate) fn select_fleet(
@@ -339,8 +350,10 @@ pub(crate) fn select_fleet(
     let mut sorted: Vec<&FleetCandidate> = candidates.iter().collect();
     sorted.sort_by(|left, right| {
         right
-            .pinned
-            .cmp(&left.pinned)
+            .trusted
+            .cmp(&left.trusted)
+            .then_with(|| right.pinned.cmp(&left.pinned))
+            .then_with(|| right.manual_priority.cmp(&left.manual_priority))
             .then_with(|| {
                 right
                     .score
@@ -358,13 +371,13 @@ pub(crate) fn select_fleet(
         if ranks.len() >= max {
             break;
         }
-        if !candidate.pinned && google_required && !candidate.google_exact {
+        if !candidate.pinned && !candidate.trusted && google_required && !candidate.google_exact {
             excluded_google += 1;
             continue;
         }
         if let Some(group) = &candidate.network_group {
             let count = per_network_counts.get(group).copied().unwrap_or(0);
-            if !candidate.pinned && count >= per_network {
+            if !candidate.pinned && !candidate.trusted && count >= per_network {
                 excluded_network += 1;
                 continue;
             }
@@ -379,6 +392,7 @@ pub(crate) fn select_fleet(
             .filter(|candidate| candidate.active)
             .count()
             < min,
+        expected: min,
         excluded_network,
         excluded_google,
         ranks,
@@ -391,7 +405,7 @@ mod tests {
 
     fn strong() -> Evidence {
         Evidence {
-            trusted_local: false,
+            tls_gate_skipped: false,
             tls_ok: true,
             certificate_days: Some(80),
             analytics: false,
@@ -414,6 +428,7 @@ mod tests {
             consecutive_successes: 2,
             consecutive_failures: 0,
             parser_drift: false,
+            engine_yield: Some(1.0),
         }
     }
 
@@ -421,6 +436,7 @@ mod tests {
         Policy {
             cert_min_days: 14,
             google_required: false,
+            engine_yield_threshold: 0.5,
         }
     }
 
@@ -484,11 +500,27 @@ mod tests {
             Policy {
                 cert_min_days: 14,
                 google_required: true,
+                engine_yield_threshold: 0.5,
             },
         );
         assert!(!strict.hard_gate_passed);
         let relaxed = assess(&evidence, policy());
         assert!(relaxed.hard_gate_passed);
+    }
+
+    #[test]
+    fn a_low_engine_yield_halves_the_score_and_names_the_reason() {
+        let mut evidence = strong();
+        evidence.engine_yield = Some(0.2);
+        let degraded = assess(&evidence, policy());
+        assert!(degraded.hard_gate_passed, "a yield drop is not a hard gate");
+        assert!(
+            degraded
+                .reasons
+                .contains(&"quality.engine_degraded".to_owned())
+        );
+        let healthy = assess(&strong(), policy());
+        assert!(degraded.score < healthy.score);
     }
 
     #[test]
@@ -640,6 +672,8 @@ mod tests {
                 network_group: Some(format!("net-{}", index % 12)),
                 google_exact: index == 0,
                 pinned: false,
+                trusted: false,
+                manual_priority: 0,
                 active: true,
             })
             .collect();
@@ -663,6 +697,8 @@ mod tests {
                 network_group: None,
                 google_exact: false,
                 pinned: false,
+                trusted: false,
+                manual_priority: 0,
                 active: true,
             }],
             6,
@@ -682,6 +718,8 @@ mod tests {
                 network_group: None,
                 google_exact: false,
                 pinned: false,
+                trusted: false,
+                manual_priority: 0,
                 active: true,
             },
             FleetCandidate {
@@ -690,6 +728,8 @@ mod tests {
                 network_group: None,
                 google_exact: true,
                 pinned: false,
+                trusted: false,
+                manual_priority: 0,
                 active: true,
             },
         ];
@@ -707,6 +747,8 @@ mod tests {
                 network_group: Some("a".to_owned()),
                 google_exact: false,
                 pinned: false,
+                trusted: false,
+                manual_priority: 0,
                 active: true,
             },
             FleetCandidate {
@@ -715,6 +757,8 @@ mod tests {
                 network_group: Some("a".to_owned()),
                 google_exact: false,
                 pinned: true,
+                trusted: false,
+                manual_priority: 0,
                 active: true,
             },
             FleetCandidate {
@@ -723,12 +767,43 @@ mod tests {
                 network_group: Some("a".to_owned()),
                 google_exact: false,
                 pinned: false,
+                trusted: false,
+                manual_priority: 0,
                 active: true,
             },
         ];
         let selection = select_fleet(&candidates, 1, 3, 1, false);
         assert_eq!(selection.ranks, vec![(2, 1)]);
         assert_eq!(selection.excluded_network, 2);
+    }
+
+    #[test]
+    fn a_trusted_instance_skips_the_per_network_cap_and_ranks_first() {
+        let candidates = vec![
+            FleetCandidate {
+                instance_id: 1,
+                score: 90.0,
+                network_group: Some("a".to_owned()),
+                google_exact: false,
+                pinned: false,
+                trusted: false,
+                manual_priority: 0,
+                active: true,
+            },
+            FleetCandidate {
+                instance_id: 2,
+                score: 10.0,
+                network_group: Some("a".to_owned()),
+                google_exact: false,
+                pinned: false,
+                trusted: true,
+                manual_priority: 0,
+                active: true,
+            },
+        ];
+        let selection = select_fleet(&candidates, 1, 1, 1, false);
+        assert_eq!(selection.ranks, vec![(2, 1)]);
+        assert_eq!(selection.excluded_network, 0);
     }
 
     #[test]
@@ -740,6 +815,8 @@ mod tests {
                 network_group: None,
                 google_exact: false,
                 pinned: true,
+                trusted: false,
+                manual_priority: 0,
                 active: true,
             },
             FleetCandidate {
@@ -748,6 +825,8 @@ mod tests {
                 network_group: None,
                 google_exact: true,
                 pinned: false,
+                trusted: false,
+                manual_priority: 0,
                 active: true,
             },
         ];

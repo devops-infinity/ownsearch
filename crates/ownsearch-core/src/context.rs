@@ -132,6 +132,8 @@ pub struct ToolContext {
     fleet_generation: std::sync::atomic::AtomicU64,
     search_permits: std::sync::Arc<tokio::sync::Semaphore>,
     search_queue: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    discovery_refreshing: std::sync::atomic::AtomicBool,
+    instance_permits: Mutex<std::collections::HashMap<i64, std::sync::Arc<tokio::sync::Semaphore>>>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -187,6 +189,8 @@ impl ToolContext {
             fleet_generation: std::sync::atomic::AtomicU64::new(0),
             search_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(search_max_concurrent)),
             search_queue: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            discovery_refreshing: std::sync::atomic::AtomicBool::new(false),
+            instance_permits: Mutex::new(std::collections::HashMap::new()),
         };
         context.maintain();
         Ok(context)
@@ -233,6 +237,8 @@ impl ToolContext {
             fleet_generation: std::sync::atomic::AtomicU64::new(0),
             search_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(search_max_concurrent)),
             search_queue: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            discovery_refreshing: std::sync::atomic::AtomicBool::new(false),
+            instance_permits: Mutex::new(std::collections::HashMap::new()),
         };
         context.maintain();
         Ok(context)
@@ -274,6 +280,46 @@ impl ToolContext {
                 ),
             }),
         }
+    }
+
+    pub(crate) fn spawn_discovery_refresh(self: &Arc<Self>) -> Option<tokio::task::JoinHandle<()>> {
+        use std::sync::atomic::Ordering;
+        if self.discovery_refreshing.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        let ctx = Arc::clone(self);
+        Some(tokio::spawn(async move {
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            match crate::scanner::refresh_discovery(&ctx, false, &cancellation).await {
+                Ok(outcome) => {
+                    if let Some(error) = outcome.error {
+                        tracing::warn!(%error, "the background discovery refresh failed");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "the background discovery refresh failed"),
+            }
+            ctx.discovery_refreshing.store(false, Ordering::SeqCst);
+        }))
+    }
+
+    pub(crate) async fn acquire_instance(
+        &self,
+        instance_id: i64,
+        trusted: bool,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let permits = if trusted {
+            self.settings.instance_max_concurrent()
+        } else {
+            1
+        };
+        let semaphore = {
+            let mut map = self.instance_permits.lock().ok()?;
+            std::sync::Arc::clone(
+                map.entry(instance_id)
+                    .or_insert_with(|| std::sync::Arc::new(tokio::sync::Semaphore::new(permits))),
+            )
+        };
+        semaphore.acquire_owned().await.ok()
     }
 
     pub fn bump_fleet_generation(&self) {

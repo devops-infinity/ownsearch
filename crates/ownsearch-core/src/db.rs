@@ -33,6 +33,11 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         "restore_probe_metrics_read_path",
         include_str!("db/migrations/0004_restore_probe_metrics_read_path.sql"),
     ),
+    (
+        5,
+        "trust_priority_engine_stats_and_auth",
+        include_str!("db/migrations/0005_trust_priority_engine_stats_and_auth.sql"),
+    ),
 ];
 
 const STALE_RUN_SECS: i64 = 3_600;
@@ -89,6 +94,10 @@ pub struct InstanceRow {
     pub network_group: Option<String>,
     pub pinned: bool,
     pub denied: bool,
+    pub trusted: bool,
+    pub source: String,
+    pub json_throttled_until: Option<String>,
+    pub manual_priority: i64,
     pub added_at: String,
 }
 
@@ -141,6 +150,9 @@ pub struct ScanTarget {
     pub html_fallback_allowed: bool,
     pub consecutive_successes: i64,
     pub consecutive_failures: i64,
+    pub trusted: bool,
+    pub json_throttled_until: Option<String>,
+    pub source: String,
 }
 
 struct Upserted {
@@ -233,6 +245,14 @@ pub struct ScanUpdate {
     pub version: Option<String>,
     pub capability_id: Option<i64>,
     pub tls_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EngineStat {
+    pub engine: String,
+    pub successes: i64,
+    pub failures: i64,
+    pub last_seen_at: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1367,7 +1387,9 @@ impl Store {
                     i.consecutive_successes, i.consecutive_failures, i.last_success_at, i.last_failure_at,
                     i.next_scan_at, i.cooldown_until, i.is_scan_enabled, i.is_html_fallback_allowed,
                     i.discovery_rank, i.network_group, i.discovered_at,
-                    COALESCE(o.is_pinned, 0), COALESCE(o.is_denied, 0), i.instance_slug
+                    COALESCE(o.is_pinned, 0), COALESCE(o.is_denied, 0), i.instance_slug,
+                    COALESCE(o.is_trusted, 0), i.discovery_source_id, i.json_throttled_until,
+                    i.manual_priority
                FROM instances AS i
                LEFT JOIN instance_quality AS q ON q.instance_id = i.instance_id
                LEFT JOIN capability_snapshots AS c ON c.capability_id = i.current_capability_id
@@ -1411,16 +1433,28 @@ impl Store {
         Ok(self.list_instances(&filter)?.into_iter().next())
     }
 
-    pub fn scan_targets(&self, limit: usize, now: &str, force: bool) -> Result<Vec<ScanTarget>> {
+    pub fn scan_targets(
+        &self,
+        limit: usize,
+        now: &str,
+        force: bool,
+        manual_only: bool,
+    ) -> Result<Vec<ScanTarget>> {
         let reader = self.reader_conn()?;
         let schedule_clause = if force {
             ""
         } else {
             "AND (i.next_scan_at IS NULL OR i.next_scan_at <= ?2)"
         };
+        let source_clause = if manual_only {
+            "AND i.discovery_source_id = 'manual'"
+        } else {
+            ""
+        };
         let sql = format!(
             "SELECT i.instance_id, i.normalized_url, i.lifecycle_status, i.instance_kind,
-                    i.is_html_fallback_allowed, i.consecutive_successes, i.consecutive_failures
+                    i.is_html_fallback_allowed, i.consecutive_successes, i.consecutive_failures,
+                    COALESCE(o.is_trusted, 0), i.json_throttled_until, i.discovery_source_id
                FROM instances AS i
                LEFT JOIN instance_policy_overrides AS o ON o.instance_id = i.instance_id
               WHERE COALESCE(o.is_denied, 0) = 0
@@ -1428,6 +1462,7 @@ impl Store {
                 AND i.instance_kind <> 'tor'
                 AND i.lifecycle_status NOT IN ('retired', 'excluded')
                 AND (i.cooldown_until IS NULL OR i.cooldown_until <= ?2)
+                {source_clause}
                 {schedule_clause}
               ORDER BY CASE i.lifecycle_status
                          WHEN 'active' THEN 0
@@ -1462,6 +1497,9 @@ impl Store {
                     html_fallback_allowed: row.get::<_, i64>(4)? != 0,
                     consecutive_successes: row.get(5)?,
                     consecutive_failures: row.get(6)?,
+                    trusted: row.get::<_, i64>(7)? != 0,
+                    json_throttled_until: row.get(8)?,
+                    source: row.get(9)?,
                 })
             })?;
         let out = collect_rows(rows)?;
@@ -1642,6 +1680,431 @@ impl Store {
             out.entry(instance_id).or_default().push(value);
         }
         Ok(out)
+    }
+
+    pub fn engine_stats_for(
+        &self,
+        ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, Vec<EngineStat>>> {
+        let mut out: std::collections::HashMap<i64, Vec<EngineStat>> =
+            std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "SELECT instance_id, engine_name, success_count, failure_count, last_seen_at
+               FROM engine_stats
+              WHERE instance_id IN ({placeholders})
+              ORDER BY instance_id, engine_name"
+        );
+        let reader = self.reader_conn()?;
+        let mut statement = reader.prepare(&sql)?;
+        let values: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let rows = statement.query_map(values.as_slice(), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                EngineStat {
+                    engine: row.get(1)?,
+                    successes: row.get(2)?,
+                    failures: row.get(3)?,
+                    last_seen_at: row.get(4)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (instance_id, stat) = row?;
+            out.entry(instance_id).or_default().push(stat);
+        }
+        Ok(out)
+    }
+
+    pub fn record_engine_stats(
+        &self,
+        instance_id: i64,
+        successes: &[String],
+        failures: &[String],
+    ) -> Result<()> {
+        if successes.is_empty() && failures.is_empty() {
+            return Ok(());
+        }
+        let now = now_rfc3339();
+        self.write_atomic(|connection| {
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for engine in successes {
+                let name = engine.trim().to_ascii_lowercase();
+                if seen.insert(name.clone()) {
+                    bump_engine(connection, instance_id, &name, true, &now)?;
+                }
+            }
+            for engine in failures {
+                let name = engine.trim().to_ascii_lowercase();
+                if seen.insert(name.clone()) {
+                    bump_engine(connection, instance_id, &name, false, &now)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    pub fn engine_yield_for(&self, ids: &[i64]) -> Result<std::collections::HashMap<i64, f64>> {
+        let mut out: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "SELECT i.instance_id,
+                    (SELECT COUNT(*) FROM capability_engines AS ce
+                      WHERE ce.capability_id = i.current_capability_id),
+                    (SELECT COUNT(*) FROM engine_stats AS es
+                      WHERE es.instance_id = i.instance_id AND es.success_count > 0)
+               FROM instances AS i
+              WHERE i.instance_id IN ({placeholders})"
+        );
+        let reader = self.reader_conn()?;
+        let mut statement = reader.prepare(&sql)?;
+        let values: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let rows = statement.query_map(values.as_slice(), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (instance_id, enabled, contributing) = row?;
+            if enabled > 0 {
+                let contributing = f64::from(i32::try_from(contributing.max(0)).unwrap_or(0));
+                let enabled = f64::from(i32::try_from(enabled).unwrap_or(1));
+                out.insert(instance_id, (contributing / enabled).clamp(0.0, 1.0));
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn update_instance_url(&self, instance_id: i64, url: &str) -> Result<String> {
+        let normalized = crate::types::normalize_url(url)?;
+        let host = url::Url::parse(&normalized)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(str::to_owned))
+            .ok_or_else(|| Error::InvalidArgs(format!("{normalized} has no host")))?;
+        let digest = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(normalized.as_bytes()).to_vec()
+        };
+        let mut connection = self.writer_conn()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let previous: String = transaction.query_row(
+            "SELECT normalized_url FROM instances WHERE instance_id = ?1",
+            params![instance_id],
+            |row| row.get(0),
+        )?;
+        if previous == normalized {
+            return Ok(normalized);
+        }
+        let taken: Option<i64> = transaction
+            .query_row(
+                "SELECT instance_id FROM instances WHERE normalized_url = ?1 AND instance_id <> ?2",
+                params![normalized, instance_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if taken.is_some() {
+            return Err(Error::InvalidArgs(format!(
+                "another instance already holds {normalized}"
+            )));
+        }
+        let slug = unique_slug(&transaction, &normalized)?;
+        let now = now_rfc3339();
+        transaction.execute(
+            "UPDATE instances SET normalized_url = ?2, url_digest_sha256 = ?3, host = ?4,
+                instance_slug = ?5, lifecycle_status = 'candidate',
+                current_capability_id = NULL, current_tls_observation_id = NULL,
+                json_throttled_until = NULL, consecutive_successes = 0, consecutive_failures = 0,
+                last_success_at = NULL, last_failure_at = NULL, cooldown_until = NULL,
+                next_scan_at = ?6, updated_at = ?6
+             WHERE instance_id = ?1",
+            params![instance_id, normalized, digest, host, slug, now],
+        )?;
+        transaction.execute(
+            "DELETE FROM instance_quality WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO instance_events (occurred_at, event_kind, instance_id, previous_value, current_value, reason_codes_json)
+             VALUES (?1, 'instance_url_changed', ?2, ?3, ?4, ?5)",
+            params![
+                now,
+                instance_id,
+                previous,
+                normalized,
+                json!(["operator.url_changed"]).to_string()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(normalized)
+    }
+
+    pub fn set_manual_priority(&self, instance_id: i64, priority: i64) -> Result<()> {
+        let now = now_rfc3339();
+        self.write_atomic(|connection| {
+            connection.execute(
+                "UPDATE instances SET manual_priority = ?2, updated_at = ?3 WHERE instance_id = ?1",
+                params![instance_id, priority, now],
+            )?;
+            Store::append_event_on(
+                connection,
+                &EventRecord {
+                    kind: "priority_changed".to_owned(),
+                    instance_id: Some(instance_id),
+                    run_id: None,
+                    probe_id: None,
+                    old_value: None,
+                    new_value: Some(priority.to_string()),
+                    reasons: vec!["operator.priority".to_owned()],
+                    payload: None,
+                },
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn delete_instance(&self, instance_id: i64) -> Result<()> {
+        let mut connection = self.writer_conn()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let url: String = transaction.query_row(
+            "SELECT normalized_url FROM instances WHERE instance_id = ?1",
+            params![instance_id],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            "UPDATE instances SET current_capability_id = NULL, current_tls_observation_id = NULL WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM engine_stats WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM instance_auth WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM instance_policy_overrides WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM instance_quality WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM capability_engines WHERE capability_id IN (SELECT capability_id FROM capability_snapshots WHERE instance_id = ?1)",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM capability_categories WHERE capability_id IN (SELECT capability_id FROM capability_snapshots WHERE instance_id = ?1)",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM capability_snapshots WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM tls_observations WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM probes WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM instance_events WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM instances WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO instance_events (occurred_at, event_kind, instance_id, previous_value, reason_codes_json)
+             VALUES (?1, 'instance_deleted', NULL, ?2, ?3)",
+            params![now_rfc3339(), url, json!(["operator.deleted"]).to_string()],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn set_instance_auth(
+        &self,
+        instance_id: i64,
+        record: &crate::auth::AuthRecord,
+    ) -> Result<()> {
+        let now = now_rfc3339();
+        self.write_atomic(|connection| {
+            connection.execute(
+                "INSERT INTO instance_auth (instance_id, auth_kind, header_name, user_name, secret_env, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                 ON CONFLICT(instance_id) DO UPDATE SET
+                    auth_kind = excluded.auth_kind,
+                    header_name = excluded.header_name,
+                    user_name = excluded.user_name,
+                    secret_env = excluded.secret_env,
+                    updated_at = excluded.updated_at",
+                params![
+                    instance_id,
+                    record.kind.as_str(),
+                    record.header_name,
+                    record.user_name,
+                    record.secret_env,
+                    now
+                ],
+            )?;
+            Store::append_event_on(
+                connection,
+                &EventRecord {
+                    kind: "auth_changed".to_owned(),
+                    instance_id: Some(instance_id),
+                    run_id: None,
+                    probe_id: None,
+                    old_value: None,
+                    new_value: Some(record.kind.as_str().to_owned()),
+                    reasons: vec!["operator.auth_changed".to_owned()],
+                    payload: Some(json!({
+                        "header": record.header_name,
+                        "user": record.user_name,
+                        "secretEnv": record.secret_env,
+                    })),
+                },
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn clear_instance_auth(&self, instance_id: i64) -> Result<bool> {
+        self.write_atomic(|connection| {
+            let removed = connection.execute(
+                "DELETE FROM instance_auth WHERE instance_id = ?1",
+                params![instance_id],
+            )?;
+            if removed > 0 {
+                Store::append_event_on(
+                    connection,
+                    &EventRecord {
+                        kind: "auth_cleared".to_owned(),
+                        instance_id: Some(instance_id),
+                        run_id: None,
+                        probe_id: None,
+                        old_value: None,
+                        new_value: None,
+                        reasons: vec!["operator.auth_cleared".to_owned()],
+                        payload: None,
+                    },
+                )?;
+            }
+            Ok(removed > 0)
+        })
+    }
+
+    pub fn auth_for(
+        &self,
+        ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, crate::auth::AuthRecord>> {
+        let mut out: std::collections::HashMap<i64, crate::auth::AuthRecord> =
+            std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "SELECT instance_id, auth_kind, header_name, user_name, secret_env
+               FROM instance_auth WHERE instance_id IN ({placeholders})"
+        );
+        let reader = self.reader_conn()?;
+        let mut statement = reader.prepare(&sql)?;
+        let values: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let rows = statement.query_map(values.as_slice(), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                crate::auth::AuthRecord {
+                    kind: row
+                        .get::<_, String>(1)
+                        .ok()
+                        .and_then(|raw| crate::auth::AuthKind::parse(&raw))
+                        .unwrap_or(crate::auth::AuthKind::Header),
+                    header_name: row.get(2)?,
+                    user_name: row.get(3)?,
+                    secret_env: row.get(4)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (instance_id, record) = row?;
+            out.insert(instance_id, record);
+        }
+        Ok(out)
+    }
+
+    pub fn mark_json_throttled(&self, instance_id: i64, until: &str) -> Result<()> {
+        let now = now_rfc3339();
+        self.write_atomic(|connection| {
+            connection.execute(
+                "UPDATE instances SET json_throttled_until = ?2, updated_at = ?3 WHERE instance_id = ?1",
+                params![instance_id, until, now],
+            )?;
+            Store::append_event_on(
+                connection,
+                &EventRecord {
+                    kind: "json_throttled".to_owned(),
+                    instance_id: Some(instance_id),
+                    run_id: None,
+                    probe_id: None,
+                    old_value: None,
+                    new_value: Some(until.to_owned()),
+                    reasons: vec!["limiter.json_throttled".to_owned()],
+                    payload: None,
+                },
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn clear_json_throttled(&self, instance_id: i64) -> Result<()> {
+        let now = now_rfc3339();
+        self.write_atomic(|connection| {
+            connection.execute(
+                "UPDATE instances SET json_throttled_until = NULL, updated_at = ?2 WHERE instance_id = ?1",
+                params![instance_id, now],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn probe_kind_count_since(&self, instance_id: i64, kind: &str, since: &str) -> Result<i64> {
+        let reader = self.reader_conn()?;
+        let count = reader.query_row(
+            "SELECT COUNT(*) FROM probes WHERE instance_id = ?1 AND probe_kind = ?2 AND started_at >= ?3",
+            params![instance_id, kind, since],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    pub fn probe_count_since(&self, instance_id: i64, since: &str) -> Result<i64> {
+        let reader = self.reader_conn()?;
+        let count = reader.query_row(
+            "SELECT COUNT(*) FROM probes WHERE instance_id = ?1 AND started_at >= ?2",
+            params![instance_id, since],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    pub fn count_instances(&self, filter: &InstanceFilter) -> Result<usize> {
+        Ok(self.list_instances_unbounded(filter)?.len())
     }
 
     pub fn counts(&self) -> Result<StatusCounts> {
@@ -2061,7 +2524,8 @@ impl Store {
         let reader = self.reader_conn()?;
         let mut statement = reader.prepare(
             "SELECT o.instance_id, i.normalized_url, o.is_scan_enabled, o.is_html_fallback_allowed,
-                    o.is_pinned, o.is_denied, o.reason_codes_json, o.created_at, o.updated_at
+                    o.is_pinned, o.is_denied, o.reason_codes_json, o.created_at, o.updated_at,
+                    o.is_trusted
                FROM instance_policy_overrides AS o
                JOIN instances AS i ON i.instance_id = o.instance_id
               ORDER BY o.instance_id",
@@ -2075,6 +2539,7 @@ impl Store {
                 "htmlFallbackAllowed": row.get::<_, Option<i64>>(3)?.map(|value| value != 0),
                 "pinned": row.get::<_, i64>(4)? != 0,
                 "denied": row.get::<_, i64>(5)? != 0,
+                "trusted": row.get::<_, i64>(9)? != 0,
                 "reasons": serde_json::from_str::<Value>(&reasons).unwrap_or(Value::Null),
                 "createdAt": row.get::<_, String>(7)?,
                 "updatedAt": row.get::<_, String>(8)?,
@@ -2219,14 +2684,16 @@ impl Store {
             let html_allowed = fields.get("htmlFallbackAllowed").and_then(Value::as_bool);
             let pinned = fields.get("pinned").and_then(Value::as_bool);
             let denied = fields.get("denied").and_then(Value::as_bool);
+            let trusted = fields.get("trusted").and_then(Value::as_bool);
             transaction.execute(
-                "INSERT INTO instance_policy_overrides (instance_id, is_scan_enabled, is_html_fallback_allowed, is_pinned, is_denied, reason_codes_json, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, COALESCE(?4, 0), COALESCE(?5, 0), ?6, ?7, ?7)
+                "INSERT INTO instance_policy_overrides (instance_id, is_scan_enabled, is_html_fallback_allowed, is_pinned, is_denied, reason_codes_json, created_at, updated_at, is_trusted)
+                 VALUES (?1, ?2, ?3, COALESCE(?4, 0), COALESCE(?5, 0), ?6, ?7, ?7, COALESCE(?8, 0))
                  ON CONFLICT(instance_id) DO UPDATE SET
                     is_scan_enabled = COALESCE(excluded.is_scan_enabled, instance_policy_overrides.is_scan_enabled),
                     is_html_fallback_allowed = COALESCE(excluded.is_html_fallback_allowed, instance_policy_overrides.is_html_fallback_allowed),
                     is_pinned = COALESCE(?4, instance_policy_overrides.is_pinned),
                     is_denied = COALESCE(?5, instance_policy_overrides.is_denied),
+                    is_trusted = COALESCE(?8, instance_policy_overrides.is_trusted),
                     reason_codes_json = excluded.reason_codes_json,
                     updated_at = excluded.updated_at",
                 params![
@@ -2236,7 +2703,8 @@ impl Store {
                     pinned.map(i64::from),
                     denied.map(i64::from),
                     json!(reasons).to_string(),
-                    now
+                    now,
+                    trusted.map(i64::from)
                 ],
             )?;
             if let Some(html) = html_allowed {
@@ -2849,6 +3317,34 @@ fn collect_counts(connection: &Connection, sql: &str) -> Result<Vec<(String, i64
     Ok(out)
 }
 
+fn bump_engine(
+    connection: &Connection,
+    instance_id: i64,
+    engine: &str,
+    success: bool,
+    now: &str,
+) -> Result<()> {
+    if engine.is_empty() || engine.chars().count() > 64 {
+        return Ok(());
+    }
+    connection.execute(
+        "INSERT INTO engine_stats (instance_id, engine_name, success_count, failure_count, last_seen_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(instance_id, engine_name) DO UPDATE SET
+            success_count = engine_stats.success_count + excluded.success_count,
+            failure_count = engine_stats.failure_count + excluded.failure_count,
+            last_seen_at = excluded.last_seen_at",
+        params![
+            instance_id,
+            engine,
+            i64::from(success),
+            i64::from(!success),
+            now
+        ],
+    )?;
+    Ok(())
+}
+
 fn upsert_name(
     connection: &Connection,
     table: &str,
@@ -2925,6 +3421,10 @@ fn map_instance_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstanceRow> {
         added_at: row.get(24)?,
         pinned: row.get::<_, i64>(25)? != 0,
         denied: row.get::<_, i64>(26)? != 0,
+        trusted: row.get::<_, i64>(28)? != 0,
+        source: row.get(29)?,
+        json_throttled_until: row.get(30)?,
+        manual_priority: row.get(31)?,
     })
 }
 
@@ -2957,6 +3457,10 @@ pub fn instance_to_json(row: &InstanceRow) -> Value {
         "networkGroup": row.network_group,
         "pinned": row.pinned,
         "denied": row.denied,
+        "trusted": row.trusted,
+        "source": row.source,
+        "jsonThrottledUntil": row.json_throttled_until,
+        "priority": row.manual_priority,
         "addedAt": row.added_at,
     })
 }

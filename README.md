@@ -45,7 +45,7 @@ OwnSearch runs on your machine. It stores its fleet in a local SQLite database, 
 - It does not call a paid search API.
 - It does not make your queries anonymous. The operator of each public instance sees them.
 - It does not run JavaScript on a search answer. The headless browser runs for the fetch tool, on the page you name. It also runs for a search when an instance denies JSON, as a fallback that proves the instance can still answer.
-- It does not get past a bot check. Many public instances answer automated clients with `429`, a challenge page, or a CAPTCHA. OwnSearch records that and moves on. With `OWNSEARCH_CAPSOLVER_KEY` set, a challenge that appears only in a rendered page can be sent to the CapSolver service to solve.
+- It passes the header checks a SearXNG limiter runs, because every request carries a browser-like `Accept` header. A CAPTCHA or a challenge page is still not solved, and OwnSearch records it; with `OWNSEARCH_CAPSOLVER_KEY` set, a challenge that appears only in a rendered page can be sent to the CapSolver service.
 
 ## Requirements
 
@@ -314,7 +314,7 @@ Eight tools, described in full in [docs/tools.md](docs/tools.md):
 
 Queries go to the public instances you selected and to the engines behind them. OwnSearch stores no raw query text. The ledger records a keyed hash of the arguments, the tool name, the status, the upstream HTTP status class, timing, byte counts, parser, and instance ids. There is no telemetry.
 
-One more destination exists, and only when you set it: with `OWNSEARCH_CAPSOLVER_KEY` set, a detected captcha sends the page URL and the site key to `https://api.capsolver.com` to solve the challenge. With `OWNSEARCH_PROXY` set, every outbound HTTP request goes through the proxy you name. Nothing else leaves the machine.
+One more destination exists, and only when you set it: with `OWNSEARCH_CAPSOLVER_KEY` set, a detected captcha sends the page URL and the site key to `https://api.capsolver.com` to solve the challenge. With `OWNSEARCH_PROXY` set, every outbound HTTP request goes through the proxy you name. A per-instance credential is stored as an environment variable name and sent only to that instance's own origin, never to another host. Nothing else leaves the machine.
 
 [SECURITY.md](SECURITY.md) lists everything OwnSearch stores and every host it contacts.
 
