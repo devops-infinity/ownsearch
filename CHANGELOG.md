@@ -4,6 +4,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-30
+
 ### Added
 
 - Every instance request sends `Accept: text/html,application/json;q=0.9,*/*;q=0.8` by default, from the new `OWNSEARCH_ACCEPT` setting, so a SearXNG limiter's bot checks pass on probes, searches, and fetches.
@@ -279,7 +281,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - PDF text is read with `lopdf`, so the tree no longer pulls the unmaintained `pdf-extract` dependency.
 - Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.
 
-[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/devops-infinity/ownsearch/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/devops-infinity/ownsearch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/devops-infinity/ownsearch/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/devops-infinity/ownsearch/compare/v0.2.0...v0.3.0

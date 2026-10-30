@@ -2,7 +2,7 @@
 
 Self-hosted MCP and HTTP search over a scored fleet of public SearXNG instances.
 
-Status: released, version 0.5.0.
+Status: released, version 0.6.0.
 
 `mcp-name: io.github.devops-infinity/ownsearch` is the identifier the MCP Registry reads when it verifies this repository.
 
