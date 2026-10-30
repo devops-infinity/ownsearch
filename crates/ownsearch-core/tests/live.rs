@@ -56,6 +56,7 @@ async fn a_live_scan_and_search_returns_attributed_results() {
         instance_ids: Vec::new(),
         engine_weights: std::collections::BTreeMap::new(),
         exclude_engines: Vec::new(),
+        freshness_days: None,
     };
     let outcome = search(&context, &request, &cancellation)
         .await

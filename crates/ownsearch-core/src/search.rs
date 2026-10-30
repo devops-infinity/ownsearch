@@ -41,6 +41,7 @@ pub struct SearchRequest {
     pub instance_ids: Vec<i64>,
     pub engine_weights: BTreeMap<String, f64>,
     pub exclude_engines: Vec<String>,
+    pub freshness_days: Option<u64>,
 }
 
 impl SearchRequest {
@@ -73,6 +74,7 @@ impl SearchRequest {
             "instanceIds": self.instance_ids,
             "engineWeights": self.engine_weights,
             "excludeEngines": self.exclude_engines,
+            "freshnessDays": self.freshness_days,
         })
     }
 }
@@ -166,7 +168,13 @@ pub async fn search(
     }
     let target = target_instances(request.mode, ctx.settings.exhaustive_max());
     let selection_ms = elapsed_ms(selection_started);
-    let query = request.to_query();
+    let freshness_days = request
+        .freshness_days
+        .unwrap_or_else(|| ctx.settings.freshness_days());
+    let mut query = request.to_query();
+    if query.time_range.is_none() {
+        query.time_range = mapped_range(freshness_days);
+    }
     let upstream_started = Instant::now();
     let hard_deadline = tokio::time::Instant::now() + Duration::from_millis(deadline_ms);
     let mut attempted_ids: Vec<i64> = Vec::new();
@@ -279,6 +287,8 @@ pub async fn search(
             min_engines: request
                 .min_engines
                 .unwrap_or_else(|| ctx.settings.min_engines()),
+            max_age_days: (freshness_days > 0).then_some(freshness_days),
+            now_unix: crate::time::now_unix(),
             engine_weights: &engine_weights,
             exclude_engines: &exclude_engines,
             exclude_domains: ctx.settings.exclude_domains(),
@@ -668,6 +678,17 @@ where
             context: "waiting for a storage task",
             source: std::io::Error::other(error),
         })?
+}
+
+fn mapped_range(days: u64) -> Option<TimeRange> {
+    match days {
+        0 => None,
+        1 => Some(TimeRange::Day),
+        2..=7 => Some(TimeRange::Week),
+        8..=31 => Some(TimeRange::Month),
+        32..=365 => Some(TimeRange::Year),
+        _ => None,
+    }
 }
 
 fn target_instances(mode: SearchMode, exhaustive_max: usize) -> usize {

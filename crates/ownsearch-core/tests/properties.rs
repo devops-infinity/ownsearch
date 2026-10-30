@@ -25,6 +25,8 @@ fn merge_with(observations: Vec<Observation>) -> MergeOutput {
             snippet_chars: 300,
             dedupe: true,
             min_engines: 1,
+            max_age_days: None,
+            now_unix: 1_790_000_000,
             engine_weights: &EMPTY_WEIGHTS,
             exclude_engines: NO_NAMES,
             exclude_domains: NO_NAMES,

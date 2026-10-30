@@ -124,6 +124,7 @@ fn request() -> SearchRequest {
         instance_ids: Vec::new(),
         engine_weights: std::collections::BTreeMap::new(),
         exclude_engines: Vec::new(),
+        freshness_days: None,
     }
 }
 

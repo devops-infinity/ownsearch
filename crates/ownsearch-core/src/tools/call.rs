@@ -248,6 +248,7 @@ async fn run_search(
         instance_ids: Vec::new(),
         engine_weights,
         exclude_engines,
+        freshness_days: validated.freshness_days,
     };
     let deadline = validated
         .timeout_secs

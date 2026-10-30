@@ -111,6 +111,7 @@ pub struct Settings {
     exclude_domains: Vec<String>,
     min_engines: usize,
     engine_yield_threshold: f64,
+    freshness_days: u64,
     accept: String,
     search_presets: BTreeMap<String, PresetConfig>,
     capsolver_key: Option<SecretString>,
@@ -188,6 +189,7 @@ struct Profile {
     exclude_domains: Option<Vec<String>>,
     min_engines: Option<usize>,
     engine_yield_threshold: Option<f64>,
+    freshness_days: Option<u64>,
     accept: Option<String>,
     search_presets: Option<BTreeMap<String, PresetConfig>>,
     capsolver_timeout_secs: Option<u64>,
@@ -397,6 +399,14 @@ impl Settings {
         let engine_yield_threshold = bounded_ratio(
             profile.engine_yield_threshold.unwrap_or(0.5),
             "engine_yield_threshold",
+        )?;
+        let freshness_days = bounded_u64(
+            env_parse(&env, "OWNSEARCH_FRESHNESS_DAYS")?
+                .or(profile.freshness_days)
+                .unwrap_or(365),
+            0,
+            3_650,
+            "freshness_days",
         )?;
         let accept = clean_accept(
             non_empty_env(&env, "OWNSEARCH_ACCEPT")
@@ -664,6 +674,7 @@ impl Settings {
             exclude_domains,
             min_engines,
             engine_yield_threshold,
+            freshness_days,
             accept,
             search_presets,
             capsolver_key,
@@ -964,6 +975,10 @@ impl Settings {
         self.engine_yield_threshold
     }
 
+    pub fn freshness_days(&self) -> u64 {
+        self.freshness_days
+    }
+
     pub fn accept(&self) -> &str {
         &self.accept
     }
@@ -1184,6 +1199,7 @@ impl Settings {
                 "engine_yield_threshold".to_owned(),
                 self.engine_yield_threshold.to_string(),
             ),
+            ("freshness_days".to_owned(), self.freshness_days.to_string()),
             (
                 "search_presets".to_owned(),
                 if self.search_presets.is_empty() {
@@ -1798,6 +1814,7 @@ mod tests {
         assert!(settings.capsolver_key().is_none());
         assert_eq!(settings.capsolver_timeout_secs(), 45);
         assert!(settings.proxy().is_none());
+        assert_eq!(settings.freshness_days(), 365);
     }
 
     #[test]

@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- `OWNSEARCH_FRESHNESS_DAYS` and the per-call `freshness_days` argument set a freshness window for search results. The default is one year. A result whose `publishedDate` is known and older than the window is dropped, and a call without `time_range` asks SearXNG for the closest covering range. A result with no date is kept, and an explicit `time_range` wins.
+
 ## [0.6.0] - 2026-10-30
 
 ### Added

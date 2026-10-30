@@ -64,6 +64,8 @@ pub struct MergeOptions<'a> {
     pub snippet_chars: usize,
     pub dedupe: bool,
     pub min_engines: usize,
+    pub max_age_days: Option<u64>,
+    pub now_unix: i64,
     pub engine_weights: &'a BTreeMap<String, f64>,
     pub exclude_engines: &'a [String],
     pub exclude_domains: &'a [String],
@@ -80,6 +82,7 @@ pub fn merge(observations: Vec<Observation>, options: &MergeOptions<'_>) -> Merg
         if observation.title.trim().is_empty()
             || excluded_domain(&observation.url, options.exclude_domains)
             || (had_engines && observation.engines.is_empty())
+            || is_stale(&observation, options)
         {
             continue;
         }
@@ -120,6 +123,33 @@ pub fn merge(observations: Vec<Observation>, options: &MergeOptions<'_>) -> Merg
         results_before_merge,
         truncated,
     }
+}
+
+fn is_stale(observation: &Observation, options: &MergeOptions<'_>) -> bool {
+    let Some(max_age) = options.max_age_days.filter(|days| *days > 0) else {
+        return false;
+    };
+    let Some(published) = observation.published_date.as_deref() else {
+        return false;
+    };
+    let Some(days) = date_days(published) else {
+        return false;
+    };
+    let today = options.now_unix.div_euclid(86_400);
+    let age = today.saturating_sub(days);
+    age > i64::try_from(max_age).unwrap_or(i64::MAX)
+}
+
+pub(crate) fn date_days(raw: &str) -> Option<i64> {
+    let head = raw.trim().get(..10)?;
+    let mut parts = head.split('-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: u32 = parts.next()?.parse().ok()?;
+    let day: u32 = parts.next()?.parse().ok()?;
+    if !(1900..=2200).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(crate::time::days_from_civil(year, month, day))
 }
 
 fn filter_engines(engines: &[String], excluded: &[String]) -> Vec<String> {
@@ -477,6 +507,8 @@ mod tests {
             snippet_chars: 300,
             dedupe: true,
             min_engines: 1,
+            max_age_days: None,
+            now_unix: 1_790_000_000,
             engine_weights: weights,
             exclude_engines: excludes,
             exclude_domains: domains,
@@ -726,6 +758,56 @@ mod tests {
         );
         assert_eq!(output.results.len(), 2);
         assert!(output.results.iter().all(|result| result.merged_from == 1));
+    }
+
+    #[test]
+    fn a_result_known_to_be_older_than_the_window_is_dropped() {
+        let weights = BTreeMap::new();
+        let mut settings = options(&weights, &[], &[]);
+        settings.max_age_days = Some(365);
+        let mut old = observation(1, "https://old.example/", "Old", "x", &["google"], &[1]);
+        old.published_date = Some("2020-01-01".to_owned());
+        let mut fresh = observation(2, "https://new.example/", "New", "y", &["bing"], &[1]);
+        fresh.published_date = Some("2026-10-01T12:00:00".to_owned());
+        let undated = observation(
+            3,
+            "https://undated.example/",
+            "Undated",
+            "z",
+            &["brave"],
+            &[1],
+        );
+        let output = merge(vec![old, fresh, undated], &settings);
+        let urls: Vec<&str> = output
+            .results
+            .iter()
+            .map(|result| result.url.as_str())
+            .collect();
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains(&"https://new.example/"));
+        assert!(urls.contains(&"https://undated.example/"));
+        assert!(!urls.contains(&"https://old.example/"));
+    }
+
+    #[test]
+    fn a_zero_window_keeps_an_old_result() {
+        let weights = BTreeMap::new();
+        let mut settings = options(&weights, &[], &[]);
+        settings.max_age_days = Some(0);
+        let mut old = observation(1, "https://old.example/", "Old", "x", &["google"], &[1]);
+        old.published_date = Some("2020-01-01".to_owned());
+        let output = merge(vec![old], &settings);
+        assert_eq!(output.results.len(), 1);
+    }
+
+    #[test]
+    fn a_date_prefix_parses_in_the_shapes_searxng_returns() {
+        assert!(date_days("2026-10-14T12:30:13").is_some());
+        assert!(date_days("2026-10-14 12:30:13").is_some());
+        assert!(date_days("2026-10-14").is_some());
+        assert_eq!(date_days("2026-13-01"), None);
+        assert_eq!(date_days("not a date"), None);
+        assert_eq!(date_days(""), None);
     }
 
     #[test]
