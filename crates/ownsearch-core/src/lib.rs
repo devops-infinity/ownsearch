@@ -8,6 +8,7 @@
     )
 )]
 
+mod auth;
 mod browser;
 mod cache;
 mod capsolver;
@@ -27,6 +28,8 @@ mod instances;
 mod ledger;
 mod merge;
 mod network_guard;
+mod parser_sample;
+mod presets;
 mod projection;
 mod quality;
 mod response;
@@ -38,10 +41,15 @@ mod server;
 mod time;
 mod tls_probe;
 mod tools;
+mod transport;
 mod types;
 mod update;
 mod watchdog;
 
+pub use auth::{
+    AuthKind, AuthRecord, InstanceAuth, origin_of, validate_env_name, validate_header_name,
+    validate_user_name,
+};
 pub use browser::{RenderConfig, Renderer};
 pub use cache::ResponseCache;
 pub use cleanup::{CleanupReport, clean};
@@ -53,7 +61,7 @@ pub use config::{
 pub use context::ToolContext;
 pub use crud::{CrudRequest, CrudService};
 pub use db::{
-    CapabilityRecord, EventRecord, FleetRow, InstanceFilter, InstanceRow, KeepWindow,
+    CapabilityRecord, EngineStat, EventRecord, FleetRow, InstanceFilter, InstanceRow, KeepWindow,
     OperatorAction, ProbeRecord, ScanTarget, ScanUpdate, StatusCounts, Store, TlsRecord,
     instance_to_json, serving_state,
 };
@@ -64,10 +72,15 @@ pub use instances::{BootstrapSnapshot, DiscoveredInstance};
 pub use ledger::{
     CallRecord, Ledger, archive_unverified, existing_key, load_or_create_key, rotate, verify,
 };
-pub use merge::{MergeOutput, MergedResult, Observation, merge};
+pub use merge::{
+    MergeOptions, MergeOutput, MergedResult, Observation, dedupe_key as result_key, merge,
+};
+pub use presets::{ResolvedPreset, SearchPreset};
 pub use response::ScanOutput;
 pub use sanitize::{cap, sanitize};
-pub use scanner::{ScanOptions, refresh_discovery, run_scan};
+pub use scanner::{
+    InstanceHealthProbe, ScanOptions, probe_instance_health, refresh_discovery, run_scan,
+};
 pub use search::{SearchOutcome, SearchRequest, search};
 pub use searxng::{ProbeReport, SearchQuery, config_client, search_html, search_json};
 pub use server::{OwnsearchHandler, serve_http, serve_stdio};
@@ -76,6 +89,9 @@ pub use tls_probe::TlsProber;
 pub use tools::call as call_tool;
 pub use tools::definitions as tool_definitions;
 pub use tools::specs::{SPECS, ToolSpec};
+pub use transport::{
+    PLAIN_HTTP_REFUSED, PLAIN_HTTP_REMEDY, plain_http_refusal, plain_http_refusal_for_url,
+};
 pub use types::{
     AiDbMode, CrudEntity, CrudOperation, FetchFormat, InstanceStatus, InstanceType, Preset,
     ProbeKind, ProbeOutcome, QueryEntity, SafeSearch, SearchMode, TextMode, TimeRange,

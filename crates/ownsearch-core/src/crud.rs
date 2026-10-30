@@ -11,16 +11,26 @@ use crate::error::{Error, Result};
 use crate::response::DbCrudOutput;
 use crate::types::{AiDbMode, CrudEntity, CrudOperation, InstanceStatus, InstanceType};
 
-const INSTANCE_FIELDS: [&str; 6] = [
+const INSTANCE_FIELDS: [&str; 11] = [
+    "url",
+    "domain",
     "status",
     "type",
+    "priority",
+    "scanEnabled",
+    "htmlFallbackAllowed",
+    "pinned",
+    "trusted",
+    "denied",
+    "auth",
+];
+pub(crate) const OVERRIDE_FIELDS: [&str; 5] = [
     "scanEnabled",
     "htmlFallbackAllowed",
     "pinned",
     "denied",
+    "trusted",
 ];
-pub(crate) const OVERRIDE_FIELDS: [&str; 4] =
-    ["scanEnabled", "htmlFallbackAllowed", "pinned", "denied"];
 
 #[derive(Debug, Clone)]
 pub struct CrudRequest {
@@ -341,6 +351,7 @@ impl CrudService {
             (CrudEntity::PolicyOverride, CrudOperation::Create | CrudOperation::Update)
             | (CrudEntity::PolicyOverride, CrudOperation::Delete)
             | (CrudEntity::Instance, CrudOperation::Create | CrudOperation::Update)
+            | (CrudEntity::Instance, CrudOperation::Delete)
             | (CrudEntity::Instance, CrudOperation::Retire | CrudOperation::Restore) => {}
             (entity, operation) => {
                 return Err(Error::PolicyRefused(format!(
@@ -363,6 +374,9 @@ impl CrudService {
                 )));
             }
             validate_value(key, value)?;
+            if key == "auth" {
+                parse_auth(value)?;
+            }
             fields.insert(key.clone(), value.clone());
         }
         if fields.len() > self.max_changes {
@@ -416,9 +430,17 @@ impl CrudService {
                     .unwrap_or(Value::Null),
             }
         };
+        if validated.operation == CrudOperation::Delete
+            && validated.entity == CrudEntity::Instance
+            && self.store.get_instance(validated.instance_id)?.is_none()
+        {
+            return Err(Error::InvalidArgs("instance missing".into()));
+        }
         let mut after = match validated.operation {
             CrudOperation::Delete => {
-                if self.store.get_override(validated.instance_id)?.is_none() {
+                if validated.entity == CrudEntity::PolicyOverride
+                    && self.store.get_override(validated.instance_id)?.is_none()
+                {
                     return Err(Error::PolicyRefused(
                         "there is no policy override on this instance to remove".into(),
                     ));
@@ -461,6 +483,20 @@ impl CrudService {
                 {
                     for (key, value) in source {
                         target.insert(key.clone(), value.clone());
+                    }
+                    if let Some(url) = validated
+                        .fields
+                        .get("url")
+                        .or_else(|| validated.fields.get("domain"))
+                        .and_then(Value::as_str)
+                    {
+                        target.insert(
+                            "url".to_owned(),
+                            json!(crate::types::normalize_url(url).unwrap_or_default()),
+                        );
+                    }
+                    if let Some(auth) = validated.fields.get("auth") {
+                        target.insert("auth".to_owned(), auth_preview(auth));
                     }
                 }
                 preview
@@ -533,11 +569,17 @@ impl CrudService {
         let reasons = vec![format!("ai.reason:{}", crate::sanitize::cap(reason, 80).0)];
         let mut instance_id = instance_id;
         match operation {
-            CrudOperation::Delete => {
-                if !self.store.delete_override(instance_id)? {
-                    return Ok((instance_id, false));
+            CrudOperation::Delete => match entity {
+                CrudEntity::Instance => {
+                    self.store.delete_instance(instance_id)?;
+                    return Ok((instance_id, true));
                 }
-            }
+                CrudEntity::PolicyOverride => {
+                    if !self.store.delete_override(instance_id)? {
+                        return Ok((instance_id, false));
+                    }
+                }
+            },
             CrudOperation::Retire => {
                 self.store
                     .apply_operator_action(instance_id, OperatorAction::Retire, &reasons)?;
@@ -551,6 +593,24 @@ impl CrudService {
                     instance_id =
                         self.store
                             .add_manual_instance(url, false, &crate::time::now_rfc3339())?;
+                }
+                if let Some(url) = fields
+                    .get("url")
+                    .or_else(|| fields.get("domain"))
+                    .and_then(Value::as_str)
+                {
+                    self.store.update_instance_url(instance_id, url)?;
+                }
+                if let Some(priority) = fields.get("priority").and_then(Value::as_i64) {
+                    self.store.set_manual_priority(instance_id, priority)?;
+                }
+                if let Some(auth) = fields.get("auth") {
+                    match parse_auth(auth)? {
+                        Some(record) => self.store.set_instance_auth(instance_id, &record)?,
+                        None => {
+                            self.store.clear_instance_auth(instance_id)?;
+                        }
+                    }
                 }
                 let status = match fields.get("status").and_then(Value::as_str) {
                     Some(raw) => {
@@ -649,7 +709,16 @@ fn validate_value(key: &str, value: &Value) -> Result<()> {
         "type" => value
             .as_str()
             .is_some_and(|raw| matches!(raw, "normal" | "tor" | "unknown")),
-        "scanEnabled" | "htmlFallbackAllowed" | "pinned" | "denied" => value.is_boolean(),
+        "scanEnabled" | "htmlFallbackAllowed" | "pinned" | "denied" | "trusted" => {
+            value.is_boolean()
+        }
+        "url" | "domain" => value
+            .as_str()
+            .is_some_and(|raw| crate::types::normalize_url(raw).is_ok()),
+        "priority" => value
+            .as_i64()
+            .is_some_and(|priority| (-1_000..=1_000).contains(&priority)),
+        "auth" => value.is_null() || value.is_object(),
         _ => false,
     };
     if accepted {
@@ -659,6 +728,78 @@ fn validate_value(key: &str, value: &Value) -> Result<()> {
             "{key} has an invalid value; check the field type and allowed values"
         )))
     }
+}
+
+fn parse_auth(value: &Value) -> Result<Option<crate::auth::AuthRecord>> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| Error::InvalidArgs("auth is an object or null".into()))?;
+    if object.get("clear").and_then(Value::as_bool) == Some(true) {
+        return Ok(None);
+    }
+    let kind_raw = object
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::InvalidArgs("auth needs kind header or basic".into()))?;
+    let kind = crate::auth::AuthKind::parse(kind_raw)
+        .ok_or_else(|| Error::InvalidArgs("auth kind is header or basic".into()))?;
+    let secret_env = object
+        .get("envVar")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::InvalidArgs("auth needs envVar".into()))?;
+    let secret_env = crate::auth::validate_env_name(secret_env)?;
+    let present = std::env::var(&secret_env)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty());
+    if !present {
+        return Err(Error::InvalidArgs(format!(
+            "the environment variable {secret_env} is unset or empty; export it before this change"
+        )));
+    }
+    let (header_name, user_name) = match kind {
+        crate::auth::AuthKind::Header => {
+            let name = object
+                .get("headerName")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::InvalidArgs("a header auth needs headerName".into()))?;
+            (Some(crate::auth::validate_header_name(name)?), None)
+        }
+        crate::auth::AuthKind::Basic => {
+            let user = object
+                .get("user")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::InvalidArgs("a basic auth needs user".into()))?;
+            (None, Some(crate::auth::validate_user_name(user)?))
+        }
+    };
+    Ok(Some(crate::auth::AuthRecord {
+        kind,
+        header_name,
+        user_name,
+        secret_env,
+    }))
+}
+
+fn auth_preview(value: &Value) -> Value {
+    if value.is_null() {
+        return Value::Null;
+    }
+    let Some(object) = value.as_object() else {
+        return Value::Null;
+    };
+    if object.get("clear").and_then(Value::as_bool) == Some(true) {
+        return Value::Null;
+    }
+    let mut shown = Map::new();
+    for key in ["kind", "headerName", "user", "envVar"] {
+        if let Some(value) = object.get(key) {
+            shown.insert(key.to_owned(), value.clone());
+        }
+    }
+    Value::Object(shown)
 }
 
 fn fingerprint(validated: &Validated) -> String {

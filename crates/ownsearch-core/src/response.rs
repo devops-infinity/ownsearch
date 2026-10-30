@@ -8,12 +8,21 @@ pub struct SourceObservation {
     pub instance_id: i64,
     pub instance_slug: String,
     pub instance_url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub engine: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub engines: Vec<String>,
     pub parser: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank: Option<u32>,
     pub score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct UnresponsiveEngine {
+    pub instance_id: i64,
+    pub engine: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -30,8 +39,14 @@ pub struct SearchResultItem {
     pub sources: Option<Vec<SourceObservation>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     pub score: f64,
     pub rank: u32,
+    #[serde(default)]
+    pub merged_from: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_position: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -46,6 +61,8 @@ pub struct SourceFailure {
     pub url: String,
     pub code: String,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -60,6 +77,8 @@ pub struct SourcesInfo {
     pub failed: Vec<SourceFailure>,
     #[serde(default)]
     pub fallbacks: Vec<i64>,
+    #[serde(default)]
+    pub unresponsive_engines: Vec<UnresponsiveEngine>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -89,6 +108,16 @@ pub struct CacheInfo {
 pub struct SearchTiming {
     pub elapsed_ms: u64,
     pub deadline_ms: u64,
+    #[serde(default)]
+    pub queue_ms: u64,
+    #[serde(default)]
+    pub selection_ms: u64,
+    #[serde(default)]
+    pub upstream_ms: u64,
+    #[serde(default)]
+    pub parse_ms: u64,
+    #[serde(default)]
+    pub merge_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -106,6 +135,15 @@ pub struct SearchOutput {
     #[serde(default)]
     pub errors: Vec<SourceFailure>,
     pub timing: SearchTiming,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub(crate) struct EngineStatInfo {
+    pub engine: String,
+    pub successes: i64,
+    pub failures: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -136,10 +174,17 @@ pub(crate) struct InstanceInfo {
     #[serde(default)]
     pub categories: Vec<String>,
     #[serde(default)]
+    pub engine_stats: Vec<EngineStatInfo>,
+    #[serde(default)]
+    pub priority: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
+    #[serde(default)]
     pub reasons: Vec<String>,
     pub denied: bool,
     pub scan_enabled: bool,
     pub pinned: bool,
+    pub trusted: bool,
     pub serving: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serving_reason: Option<String>,
@@ -182,6 +227,13 @@ pub(crate) struct HealthItem {
     pub consecutive_failures: i64,
     #[serde(default)]
     pub consecutive_successes: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_yield: Option<f64>,
+    #[serde(default)]
+    pub engine_degraded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_throttled_until: Option<String>,
+    pub trusted: bool,
     pub denied: bool,
     pub scan_enabled: bool,
     pub pinned: bool,
@@ -219,6 +271,8 @@ pub struct StatusChange {
 #[non_exhaustive]
 pub struct ScanOutput {
     pub dry_run: bool,
+    #[serde(default)]
+    pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     pub discovered: usize,

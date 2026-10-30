@@ -23,7 +23,7 @@ Version 0.4.x receives security fixes. A release outside that line gets a fix on
 - An optional CapSolver key (`OWNSEARCH_CAPSOLVER_KEY`): when set, the page URL and site key of a rendered challenge go to `api.capsolver.com`, and the key is held as a secret and never printed.
 - Search results, treated as untrusted data and sanitized before they reach a client.
 
-OwnSearch stores no credentials for the searched instances, sends no telemetry, and holds no user accounts.
+OwnSearch stores an optional per-instance credential as an environment variable name only. The value is read at request time, sent only to that instance's own origin, and never stored, logged, printed, or written to the ledger. It sends no telemetry and holds no user accounts.
 
 At startup, when local discovery state is older than the refresh window, and on each discovery window after that, it fetches `https://searx.space/data/instances.json`, unless offline mode or `OWNSEARCH_DISCOVERY_URL` changes that. Other requests go to an instance you scan or to a URL you pass to a fetch, and the public-address guard is off when `OWNSEARCH_ALLOW_PRIVATE_INSTANCES=true`.
 
@@ -54,4 +54,4 @@ Out of scope:
 - The operator of a public instance sees your query. This is how public instances work.
 - A search snippet can still be written to persuade a model. OwnSearch sanitizes text, caps length, keeps attribution, and never treats result text as an instruction, but it cannot make the text true.
 - No penetration test has been performed on this service. It binds to loopback by default, has a single operator, and holds no accounts. That decision reopens the moment the port is exposed beyond loopback or a second party receives a token.
-- A bot check, a CAPTCHA, or a rate limit is a control set by the operator. OwnSearch records it and stops. It runs no proof of work and adds no header, proxy, or user agent to get past one. With `OWNSEARCH_CAPSOLVER_KEY` set, a challenge that appears only in a rendered page is sent to CapSolver to solve, and the page URL and site key go with it.
+- A bot check, a CAPTCHA, or a rate limit is a control set by the operator. OwnSearch records it and stops. It runs no proof of work and makes no attempt to defeat one. Every request carries a standard browser-like `Accept` header and the configured credential for that instance, which are ordinary request headers, not a bypass. With `OWNSEARCH_CAPSOLVER_KEY` set, a challenge that appears only in a rendered page is sent to CapSolver to solve, and the page URL and site key go with it.

@@ -20,7 +20,7 @@ fn imported(name: &str) -> (Store, std::path::PathBuf) {
 #[test]
 fn a_fresh_database_lands_on_schema_one_with_wal_and_foreign_keys() {
     let (store, dir) = imported("schema");
-    assert_eq!(store.schema_version().expect("version"), 4);
+    assert_eq!(store.schema_version().expect("version"), 5);
     store.quick_check().expect("quick check");
     store.foreign_key_check().expect("foreign keys");
     assert!(dir.join("instances.db").exists());
@@ -353,7 +353,7 @@ fn deleting_an_override_restores_the_instance_policy_flags() {
     assert!(restored.scan_enabled);
     assert!(!restored.html_fallback_allowed);
     let targets = store
-        .scan_targets(500, &now_rfc3339(), false)
+        .scan_targets(500, &now_rfc3339(), false, false)
         .expect("targets");
     assert!(
         targets

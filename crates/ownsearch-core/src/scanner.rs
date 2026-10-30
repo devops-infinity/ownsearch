@@ -24,10 +24,13 @@ use crate::tls_probe::TlsReport;
 use crate::types::{InstanceStatus, ProbeKind, ProbeOutcome};
 
 pub(crate) const PROBE_QUERY: &str = "ownsearch connectivity probe";
+const PROBE_JSON_KIND: &str = "json_search";
 const SUCCESS_NEXT_SCAN_SECS: i64 = 3_600;
 const FAILURE_NEXT_SCAN_SECS: i64 = 900;
 const PROBE_STEP_COUNT: u64 = 5;
 const QUARANTINE_NEXT_SCAN_SECS: i64 = 21_600;
+const RATE_LIMIT_COOLDOWN_FACTOR: u64 = 4;
+const MAX_COOLDOWN_SECS: u64 = 604_800;
 const SCAN_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 const RESOLVE_CONCURRENCY: usize = 8;
 const RESOLVE_PASS_SECS: u64 = 60;
@@ -117,6 +120,12 @@ pub async fn refresh_discovery(
             ..DiscoveryOutcome::default()
         });
     }
+    if !ctx.settings.public_fleet() {
+        return Ok(DiscoveryOutcome {
+            skipped: true,
+            ..DiscoveryOutcome::default()
+        });
+    }
     let _gate = DISCOVERY_GATE.lock().await;
     let last_run = {
         let store = Arc::clone(&ctx.store);
@@ -146,7 +155,7 @@ pub async fn refresh_discovery(
     };
     let url = Url::parse(ctx.settings.discovery_url())
         .map_err(|error| Error::Config(format!("discovery_url: {error}")))?;
-    let fetched = match ctx.client.get(&url, "application/json", cancellation).await {
+    let fetched = match ctx.client.get(&url, cancellation, None).await {
         Ok(fetched) => fetched,
         Err(error) => {
             let message = error.to_string();
@@ -296,6 +305,16 @@ pub async fn refresh_discovery(
     })
 }
 
+fn scan_summary(dry_run: bool, status_changes: usize, fleet: usize) -> String {
+    if dry_run {
+        format!(
+            "dry run: {status_changes} status changes and a fleet of {fleet} would be written; nothing was stored"
+        )
+    } else {
+        format!("scan applied: {status_changes} status changes and a fleet of {fleet} were written")
+    }
+}
+
 fn u32_len(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
@@ -438,20 +457,38 @@ pub async fn run_scan(
         warnings.push(format!("discovery refresh failed: {error}"));
     }
     if discovery.skipped && !options.force_discovery {
-        warnings.push("discovery state is fresh; the existing fleet was used".to_owned());
+        warnings.push(if ctx.settings.public_fleet() {
+            "discovery state is fresh; the existing fleet was used".to_owned()
+        } else {
+            "public_fleet is off; discovery and public probes were skipped".to_owned()
+        });
     }
     let targets = match options.instance_id {
         Some(instance_id) => {
             let context = Arc::clone(ctx);
             let force = options.force;
-            vec![blocking_store(move || explicit_target(&context, instance_id, force)).await?]
+            vec![blocking_store(move || explicit_target(&context, instance_id, force, true)).await?]
         }
         None => {
             let store = Arc::clone(&ctx.store);
             let now = now_rfc3339();
             let limit = options.limit;
             let force = options.force;
-            blocking_store(move || store.scan_targets(limit, &now, force)).await?
+            let manual_only = !ctx.settings.public_fleet();
+            blocking_store(move || store.scan_targets(limit, &now, force, manual_only)).await?
+        }
+    };
+    let targets = match options.instance_id {
+        Some(_) => targets,
+        None => {
+            let (kept, capped) = within_daily_cap(ctx, targets).await;
+            if capped > 0 {
+                warnings.push(format!(
+                    "{capped} instances reached the daily probe cap of {}; they were not probed this run",
+                    ctx.settings.probe_daily_cap()
+                ));
+            }
+            kept
         }
     };
     let mut probes: Vec<InstanceProbe> = Vec::new();
@@ -531,6 +568,7 @@ pub async fn run_scan(
         warnings.push("the scan was cancelled; nothing was written".to_owned());
         return Ok(ScanOutput {
             dry_run: options.dry_run,
+            summary: "the scan was cancelled; nothing was written".to_owned(),
             run_id: discovery.run_id,
             discovered: discovery.discovered,
             added: discovery.added,
@@ -593,18 +631,29 @@ pub async fn run_scan(
             Err(error) => warnings.push(format!("the cleanup task failed: {error}")),
         }
         if selection.short_of_minimum {
-            warnings.push(format!(
-                "the active fleet holds fewer than the {} instance minimum",
-                ctx.settings.fleet_min()
-            ));
+            let store = Arc::clone(&ctx.store);
+            let public_fleet = ctx.settings.public_fleet();
+            let detail = blocking_store(move || shortfall_detail(&store, public_fleet)).await;
+            match detail {
+                Ok(detail) => warnings.push(format!(
+                    "the active fleet holds fewer than the {} expected instances: {detail}",
+                    selection.expected
+                )),
+                Err(error) => warnings.push(format!(
+                    "the active fleet holds fewer than the {} expected instances; the reason could not be read: {error}",
+                    selection.expected
+                )),
+            }
         }
         selection.ranks.into_iter().map(|(id, _)| id).collect()
     };
     let probed = probes.len();
+    let summary = scan_summary(options.dry_run, status_changes.len(), fleet.len());
     ctx.bump_fleet_generation();
     guard.mark_completed();
     Ok(ScanOutput {
         dry_run: options.dry_run,
+        summary,
         run_id: discovery.run_id,
         discovered: discovery.discovered,
         added: discovery.added,
@@ -615,6 +664,57 @@ pub async fn run_scan(
         fleet,
         warnings,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceHealthProbe {
+    pub instance_id: i64,
+    pub url: String,
+    pub ok: bool,
+    pub outcome: String,
+    pub status: String,
+    pub reasons: Vec<String>,
+    pub detail: Option<String>,
+}
+
+pub async fn probe_instance_health(
+    ctx: &Arc<ToolContext>,
+    instance_id: i64,
+    cancellation: &CancellationToken,
+) -> Result<InstanceHealthProbe> {
+    let target = {
+        let context = Arc::clone(ctx);
+        blocking_store(move || explicit_target(&context, instance_id, false, false)).await?
+    };
+    let options = ScanOptions {
+        dry_run: true,
+        instance_id: Some(instance_id),
+        limit: 1,
+        force_discovery: false,
+        probe_search: true,
+        probe_google: true,
+        force: false,
+    };
+    let probe = probe_one(ctx, &target, &options, cancellation).await;
+    let ok = probe.succeeded();
+    Ok(InstanceHealthProbe {
+        instance_id,
+        url: probe.url.clone(),
+        ok,
+        outcome: probe.json_outcome.as_str().to_owned(),
+        status: probe.next_status.as_str().to_owned(),
+        reasons: probe.reasons.clone(),
+        detail: (!ok)
+            .then(|| {
+                probe
+                    .json_report
+                    .as_ref()
+                    .and_then(|report| report.error_message.clone())
+            })
+            .flatten()
+            .or_else(|| (!ok).then(|| probe.tls.error_message.clone()).flatten()),
     })
 }
 
@@ -630,20 +730,26 @@ async fn dry_run_scan(
         warnings.push(format!("discovery refresh failed: {error}"));
     }
     if discovery.skipped && !options.force_discovery {
-        warnings.push("discovery state is fresh; the existing fleet was used".to_owned());
+        warnings.push(if ctx.settings.public_fleet() {
+            "discovery state is fresh; the existing fleet was used".to_owned()
+        } else {
+            "public_fleet is off; discovery and public probes were skipped".to_owned()
+        });
     }
     let targets = match options.instance_id {
         Some(instance_id) => {
             let context = Arc::clone(ctx);
             let force = options.force;
-            vec![blocking_store(move || explicit_target(&context, instance_id, force)).await?]
+            vec![blocking_store(move || explicit_target(&context, instance_id, force, true)).await?]
         }
         None => {
             let store = Arc::clone(&ctx.store);
             let now = now_rfc3339();
             let limit = options.limit;
             let force = options.force;
-            let stored = blocking_store(move || store.scan_targets(limit, &now, force)).await?;
+            let manual_only = !ctx.settings.public_fleet();
+            let stored =
+                blocking_store(move || store.scan_targets(limit, &now, force, manual_only)).await?;
             if stored.is_empty() {
                 if ctx.settings.offline() {
                     warnings.push(
@@ -701,8 +807,10 @@ async fn dry_run_scan(
         })
         .collect();
     let fleet = dry_run_fleet(&probes, ctx);
+    let summary = scan_summary(true, status_changes.len(), fleet.len());
     Ok(ScanOutput {
         dry_run: true,
+        summary,
         run_id: None,
         discovered: discovery.discovered,
         added: discovery.added,
@@ -732,6 +840,9 @@ fn bootstrap_targets(limit: usize) -> Result<Vec<ScanTarget>> {
             html_fallback_allowed: false,
             consecutive_successes: 0,
             consecutive_failures: 0,
+            trusted: false,
+            json_throttled_until: None,
+            source: "bootstrap".to_owned(),
         })
         .collect())
 }
@@ -741,7 +852,7 @@ async fn discovery_preview(
     force: bool,
     cancellation: &CancellationToken,
 ) -> Result<DiscoveryOutcome> {
-    if ctx.settings.offline() {
+    if ctx.settings.offline() || !ctx.settings.public_fleet() {
         return Ok(DiscoveryOutcome {
             skipped: true,
             ..DiscoveryOutcome::default()
@@ -762,7 +873,7 @@ async fn discovery_preview(
     }
     let url = Url::parse(ctx.settings.discovery_url())
         .map_err(|error| Error::Config(format!("discovery_url: {error}")))?;
-    let fetched = match ctx.client.get(&url, "application/json", cancellation).await {
+    let fetched = match ctx.client.get(&url, cancellation, None).await {
         Ok(fetched) => fetched,
         Err(error) => {
             return Ok(DiscoveryOutcome {
@@ -900,7 +1011,12 @@ fn cap_records(records: &mut Vec<crate::instances::DiscoveredInstance>) {
     }
 }
 
-fn explicit_target(ctx: &ToolContext, instance_id: i64, force: bool) -> Result<ScanTarget> {
+fn explicit_target(
+    ctx: &ToolContext,
+    instance_id: i64,
+    force: bool,
+    respect_schedule: bool,
+) -> Result<ScanTarget> {
     let row = ctx
         .store
         .get_instance(instance_id)?
@@ -942,7 +1058,8 @@ fn explicit_target(ctx: &ToolContext, instance_id: i64, force: bool) -> Result<S
         ctx.store
             .clear_cooldown(instance_id, &["operator.force_scan".to_owned()])?;
     }
-    if !force
+    if respect_schedule
+        && !force
         && let Some(next) = row.next_scan_at.as_deref()
         && next > now.as_str()
     {
@@ -958,6 +1075,9 @@ fn explicit_target(ctx: &ToolContext, instance_id: i64, force: bool) -> Result<S
         html_fallback_allowed: row.html_fallback_allowed,
         consecutive_successes: row.consecutive_successes,
         consecutive_failures: row.consecutive_failures,
+        trusted: row.trusted,
+        json_throttled_until: row.json_throttled_until.clone(),
+        source: row.source.clone(),
     })
 }
 
@@ -1006,20 +1126,48 @@ async fn probe_one_inner(
             return failed_probe(ctx, target, ProbeOutcome::Refused, format!("url: {error}"));
         }
     };
+    if let Some(reason) = crate::transport::plain_http_refusal(
+        &base,
+        ctx.settings.allow_private_instances(),
+        ctx.settings.allow_plain_http_private(),
+    ) {
+        return policy_refused_probe(target, reason);
+    }
+    let auth = match probe_auth(ctx, target.instance_id, &target.url) {
+        Ok(auth) => auth,
+        Err(error) => {
+            return auth_unavailable_probe(ctx, target, error.to_string());
+        }
+    };
+    let auth = auth.as_ref();
     let tls = ctx.tls.probe(&base, cancellation).await;
-    let config_report = config_client::fetch(&ctx.probe_client, &base, cancellation).await;
+    let config_report = config_client::fetch(&ctx.probe_client, &base, cancellation, auth).await;
+    let mut retry_after_secs = config_report.retry_after_secs;
+    let config_rate_limited = config_report.rate_limited;
     let mut rate_limited = config_report.rate_limited;
     let mut blocked = config_report.blocked;
     let config = config_report.value.clone();
     let config_outcome = config_report.outcome;
+    let now = now_rfc3339();
+    let json_throttled = target
+        .json_throttled_until
+        .as_deref()
+        .is_some_and(|until| until > now.as_str());
+    let json_probe_skipped = options.probe_search
+        && !config_rate_limited
+        && (json_throttled || (target.trusted && json_probe_recent(ctx, target.instance_id).await));
     let mut json_report = None;
     let mut json_outcome = ProbeOutcome::Refused;
-    if options.probe_search && !rate_limited {
+    if options.probe_search && !config_rate_limited && !json_probe_skipped {
         let query = SearchQuery::new(PROBE_QUERY);
-        let report = search_json::fetch(&ctx.probe_client, &base, &query, cancellation).await;
+        let report = search_json::fetch(&ctx.probe_client, &base, &query, cancellation, auth).await;
         rate_limited |= report.rate_limited;
         blocked |= report.blocked;
         json_outcome = report.outcome;
+        retry_after_secs = retry_after_secs.or(report.retry_after_secs);
+        if json_outcome == ProbeOutcome::ParserError {
+            save_parser_sample(ctx, target.instance_id, config.as_ref(), &report.sample);
+        }
         json_report = Some(report);
     }
     let mut html_report = None;
@@ -1028,21 +1176,47 @@ async fn probe_one_inner(
         json_outcome,
         ProbeOutcome::Refused | ProbeOutcome::ParserError | ProbeOutcome::HttpError
     );
+    let json_limited = json_outcome == ProbeOutcome::RateLimited;
+    let mut limiter_throttled = json_throttled || json_probe_skipped;
+    let mut html_rate_limited = false;
     let html_allowed = target.html_fallback_allowed || ctx.settings.html_fallback();
-    if options.probe_search && json_denied && html_allowed && !rate_limited {
+    let want_html = options.probe_search
+        && (json_denied || json_limited || json_probe_skipped)
+        && html_allowed
+        && !config_rate_limited
+        && !blocked;
+    if want_html {
         let query = SearchQuery::new(PROBE_QUERY);
-        let report = search_html::fetch(&ctx.probe_client, &base, &query, cancellation).await;
-        rate_limited |= report.rate_limited;
+        let report = search_html::fetch(&ctx.probe_client, &base, &query, cancellation, auth).await;
         blocked |= report.blocked;
         html_outcome = Some(report.outcome);
+        retry_after_secs = retry_after_secs.or(report.retry_after_secs);
+        if report.outcome == ProbeOutcome::ParserError {
+            save_parser_sample(ctx, target.instance_id, config.as_ref(), &report.sample);
+        }
+        if report.outcome == ProbeOutcome::Success && json_limited {
+            rate_limited = false;
+            limiter_throttled = true;
+            let retry_after = json_report
+                .as_ref()
+                .and_then(|report| report.retry_after_secs);
+            note_json_throttled(ctx, target.instance_id, retry_after).await;
+        } else if report.outcome != ProbeOutcome::Success {
+            html_rate_limited = report.rate_limited;
+            rate_limited |= report.rate_limited;
+        }
         html_report = Some(report);
+    }
+    if limiter_throttled && !html_rate_limited {
+        rate_limited = false;
     }
     let mut formats_ok = false;
     if options.probe_search && json_denied && !rate_limited && !blocked {
         let query = SearchQuery::new(PROBE_QUERY);
         for format in ["rss", "csv"] {
             if let Ok(entries) =
-                crate::formats::fetch(&ctx.probe_client, &base, &query, format, cancellation).await
+                crate::formats::fetch(&ctx.probe_client, &base, &query, format, cancellation, auth)
+                    .await
                 && !entries.is_empty()
             {
                 formats_ok = true;
@@ -1056,6 +1230,8 @@ async fn probe_one_inner(
         && !rate_limited
         && !blocked
         && ctx.browser.enabled()
+        && !target.trusted
+        && auth.is_none()
         && let Ok(url) = crate::client::search_url(&base, &[("q", PROBE_QUERY.to_owned())])
         && let Ok((html, _)) = ctx
             .browser
@@ -1075,7 +1251,7 @@ async fn probe_one_inner(
     {
         let mut query = SearchQuery::new(PROBE_QUERY);
         query.engines = vec!["google".to_owned()];
-        let report = search_json::fetch(&ctx.probe_client, &base, &query, cancellation).await;
+        let report = search_json::fetch(&ctx.probe_client, &base, &query, cancellation, auth).await;
         rate_limited |= report.rate_limited;
         blocked |= report.blocked;
         google_outcome = Some(report.outcome);
@@ -1099,6 +1275,17 @@ async fn probe_one_inner(
             .ok()
             .flatten()
     };
+    let engine_yield = {
+        let store = Arc::clone(&ctx.store);
+        let instance_id = target.instance_id;
+        blocking_store(move || {
+            let mut yields = store.engine_yield_for(&[instance_id])?;
+            Ok(yields.remove(&instance_id))
+        })
+        .await
+        .ok()
+        .flatten()
+    };
     let evidence = build_evidence(ProbeEvidence {
         metrics: metrics.as_ref(),
         tls: &tls,
@@ -1110,14 +1297,16 @@ async fn probe_one_inner(
         parser_drift,
         successes: target.consecutive_successes,
         failures: target.consecutive_failures,
-        trusted_local: ctx.settings.allow_private_instances()
+        tls_gate_skipped: ctx.settings.allow_private_instances()
             && crate::network_guard::host_is_local(&base),
+        engine_yield,
     });
     let assessment = assess(
         &evidence,
         crate::quality::Policy {
             cert_min_days: ctx.settings.cert_min_days(),
             google_required: ctx.settings.google_required(),
+            engine_yield_threshold: ctx.settings.engine_yield_threshold(),
         },
     );
     let succeeded = assessment.hard_gate_passed
@@ -1152,9 +1341,19 @@ async fn probe_one_inner(
         quarantine_failures: ctx.settings.quarantine_failures(),
     });
     let now = now_unix();
+    let cooldown_secs = if rate_limited {
+        ctx.settings
+            .cooldown_secs()
+            .saturating_mul(RATE_LIMIT_COOLDOWN_FACTOR)
+            .min(MAX_COOLDOWN_SECS)
+    } else {
+        ctx.settings.cooldown_secs()
+    }
+    .max(retry_after_secs.unwrap_or(0))
+    .min(MAX_COOLDOWN_SECS);
     let next_scan_at = if rate_limited || blocked {
         Some(rfc3339(now.saturating_add(
-            i64::try_from(ctx.settings.cooldown_secs()).unwrap_or(604_800),
+            i64::try_from(cooldown_secs).unwrap_or(604_800),
         )))
     } else if transition.status == InstanceStatus::Quarantined {
         Some(rfc3339(now.saturating_add(QUARANTINE_NEXT_SCAN_SECS)))
@@ -1163,9 +1362,8 @@ async fn probe_one_inner(
     } else {
         Some(rfc3339(now.saturating_add(FAILURE_NEXT_SCAN_SECS)))
     };
-    let cooldown_until = (rate_limited || blocked).then(|| {
-        rfc3339(now.saturating_add(i64::try_from(ctx.settings.cooldown_secs()).unwrap_or(604_800)))
-    });
+    let cooldown_until = (rate_limited || blocked)
+        .then(|| rfc3339(now.saturating_add(i64::try_from(cooldown_secs).unwrap_or(604_800))));
     let version = config
         .as_ref()
         .and_then(|document| document.version.clone())
@@ -1180,6 +1378,9 @@ async fn probe_one_inner(
     }
     if blocked {
         reasons.push("probe.blocked".to_owned());
+    }
+    if limiter_throttled {
+        reasons.push("limiter.json_throttled".to_owned());
     }
     let reasons = unique_reasons(reasons);
     InstanceProbe {
@@ -1270,6 +1471,74 @@ fn failed_probe(
     }
 }
 
+fn auth_unavailable_probe(ctx: &ToolContext, target: &ScanTarget, reason: String) -> InstanceProbe {
+    let mut probe = failed_probe(ctx, target, ProbeOutcome::Refused, reason);
+    probe.reasons = vec!["policy.auth_unavailable".to_owned()];
+    probe.failures = target.consecutive_failures;
+    probe.next_status = target.status;
+    probe
+}
+
+fn policy_refused_probe(target: &ScanTarget, reason: String) -> InstanceProbe {
+    let now = now_unix();
+    InstanceProbe {
+        instance_id: target.instance_id,
+        url: target.url.clone(),
+        previous: target.status,
+        tls: TlsReport::failed(ProbeOutcome::Refused, reason),
+        config_outcome: ProbeOutcome::Refused,
+        config: None,
+        config_status: None,
+        json_outcome: ProbeOutcome::Refused,
+        json_report: None,
+        html_outcome: None,
+        html_report: None,
+        google_outcome: None,
+        google_report: None,
+        rate_limited: false,
+        blocked: false,
+        parser_drift: false,
+        successes: 0,
+        failures: target.consecutive_failures,
+        score: 0.0,
+        reasons: vec![crate::transport::PLAIN_HTTP_REFUSED.to_owned()],
+        hard_gate_passed: false,
+        next_status: InstanceStatus::Quarantined,
+        next_scan_at: Some(rfc3339(now.saturating_add(QUARANTINE_NEXT_SCAN_SECS))),
+        cooldown_until: None,
+        version: None,
+    }
+}
+
+async fn within_daily_cap(
+    ctx: &Arc<ToolContext>,
+    targets: Vec<ScanTarget>,
+) -> (Vec<ScanTarget>, usize) {
+    let cap = i64::try_from(ctx.settings.probe_daily_cap()).unwrap_or(i64::MAX);
+    let since = rfc3339(now_unix().saturating_sub(86_400));
+    let mut kept = Vec::with_capacity(targets.len());
+    let mut capped = 0usize;
+    for target in targets {
+        let store = Arc::clone(&ctx.store);
+        let instance_id = target.instance_id;
+        let since = since.clone();
+        let used = blocking_store(move || store.probe_count_since(instance_id, &since)).await;
+        match used {
+            Ok(count) if count >= cap => capped = capped.saturating_add(1),
+            Ok(_) => kept.push(target),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    instance_id = target.instance_id,
+                    "the daily probe count could not be read; the instance was probed"
+                );
+                kept.push(target);
+            }
+        }
+    }
+    (kept, capped)
+}
+
 struct ProbeEvidence<'a> {
     metrics: Option<&'a DiscoveredInstance>,
     tls: &'a TlsReport,
@@ -1281,7 +1550,8 @@ struct ProbeEvidence<'a> {
     parser_drift: bool,
     successes: i64,
     failures: i64,
-    trusted_local: bool,
+    tls_gate_skipped: bool,
+    engine_yield: Option<f64>,
 }
 
 fn evidence_value(outcome: ProbeOutcome) -> Option<bool> {
@@ -1304,13 +1574,14 @@ fn build_evidence(input: ProbeEvidence<'_>) -> Evidence {
         parser_drift,
         successes,
         failures,
-        trusted_local,
+        tls_gate_skipped,
+        engine_yield,
     } = input;
     let version = config
         .and_then(|document| document.version.clone())
         .or_else(|| metrics.and_then(|item| item.version.clone()));
     Evidence {
-        trusted_local,
+        tls_gate_skipped,
         tls_ok: tls.is_ok(),
         certificate_days: tls
             .days_remaining
@@ -1354,6 +1625,7 @@ fn build_evidence(input: ProbeEvidence<'_>) -> Evidence {
         consecutive_successes: u32::try_from(successes).unwrap_or(0),
         consecutive_failures: u32::try_from(failures).unwrap_or(0),
         parser_drift,
+        engine_yield,
     }
 }
 
@@ -1710,6 +1982,7 @@ fn select_and_rank(ctx: &ToolContext) -> Result<FleetSelection> {
                 && row.kind != crate::types::InstanceType::Tor
                 && !row.denied
                 && row.scan_enabled
+                && (ctx.settings.public_fleet() || row.source == "manual")
                 && row
                     .cooldown_until
                     .as_deref()
@@ -1731,18 +2004,121 @@ fn select_and_rank(ctx: &ToolContext) -> Result<FleetSelection> {
             network_group: row.network_group.clone(),
             google_exact: row.google_exact,
             pinned: row.pinned,
+            trusted: row.trusted,
+            manual_priority: row.manual_priority,
             active: row.status == InstanceStatus::Active,
         })
         .collect();
+    let expected = if ctx.settings.public_fleet() {
+        ctx.settings.fleet_min()
+    } else {
+        rows.iter()
+            .filter(|row| {
+                row.source == "manual"
+                    && !row.denied
+                    && !matches!(
+                        row.status,
+                        InstanceStatus::Retired | InstanceStatus::Excluded
+                    )
+            })
+            .count()
+            .max(1)
+    };
     let selection = select_fleet(
         &candidates,
-        ctx.settings.fleet_min(),
+        expected,
         ctx.settings.fleet_max(),
         ctx.settings.max_per_network(),
         ctx.settings.google_required(),
     );
     ctx.store.update_fleet_ranks(&selection.ranks)?;
     Ok(selection)
+}
+
+fn probe_auth(
+    ctx: &ToolContext,
+    instance_id: i64,
+    instance_url: &str,
+) -> Result<Option<crate::auth::InstanceAuth>> {
+    let mut records = ctx.store.auth_for(&[instance_id])?;
+    let Some(record) = records.remove(&instance_id) else {
+        return Ok(None);
+    };
+    crate::auth::InstanceAuth::resolve(instance_url, record).map(Some)
+}
+
+async fn json_probe_recent(ctx: &ToolContext, instance_id: i64) -> bool {
+    let since = rfc3339(now_unix().saturating_sub(3_600));
+    let store = Arc::clone(&ctx.store);
+    let counted =
+        blocking_store(move || store.probe_kind_count_since(instance_id, PROBE_JSON_KIND, &since))
+            .await;
+    counted.is_ok_and(|count| count > 0)
+}
+
+async fn note_json_throttled(ctx: &ToolContext, instance_id: i64, retry_after_secs: Option<u64>) {
+    let secs = retry_after_secs.unwrap_or(3_600).min(604_800);
+    let until = rfc3339(now_unix().saturating_add(i64::try_from(secs).unwrap_or(3_600)));
+    let store = Arc::clone(&ctx.store);
+    if let Err(error) = blocking_store(move || store.mark_json_throttled(instance_id, &until)).await
+    {
+        tracing::warn!(%error, instance_id, "the json throttle was not recorded");
+    }
+}
+
+fn save_parser_sample(
+    ctx: &ToolContext,
+    instance_id: i64,
+    config: Option<&config_client::ConfigDocument>,
+    sample: &Option<Vec<u8>>,
+) {
+    if let Some(sample) = sample {
+        crate::parser_sample::save(
+            &ctx.settings,
+            instance_id,
+            config.and_then(|document| document.version.as_deref()),
+            sample,
+        );
+    }
+}
+
+fn shortfall_detail(store: &crate::db::Store, public_fleet: bool) -> Result<String> {
+    let now = now_rfc3339();
+    let rows = store.list_instances_unbounded(&crate::db::InstanceFilter::default())?;
+    let mut cooling = 0usize;
+    let mut quarantined = 0usize;
+    let mut gate = 0usize;
+    let mut unprobed = 0usize;
+    let mut public = 0usize;
+    let mut other = 0usize;
+    for row in &rows {
+        if row.status == InstanceStatus::Active && row.hard_gate_passed == Some(true) {
+            continue;
+        }
+        if !public_fleet && row.source != "manual" {
+            public = public.saturating_add(1);
+            continue;
+        }
+        if row
+            .cooldown_until
+            .as_deref()
+            .is_some_and(|until| until > now.as_str())
+        {
+            cooling = cooling.saturating_add(1);
+            continue;
+        }
+        match row.status {
+            InstanceStatus::Quarantined => quarantined = quarantined.saturating_add(1),
+            InstanceStatus::Retired | InstanceStatus::Excluded => {
+                other = other.saturating_add(1);
+            }
+            _ if row.hard_gate_passed == Some(false) => gate = gate.saturating_add(1),
+            _ => unprobed = unprobed.saturating_add(1),
+        }
+    }
+    Ok(format!(
+        "{cooling} cooling down, {quarantined} quarantined, {gate} failing a hard gate, {unprobed} not yet probed, {public} public instances excluded by public_fleet, {other} retired or excluded"
+    ))
 }
 
 fn dry_run_fleet(probes: &[InstanceProbe], ctx: &ToolContext) -> Vec<i64> {
@@ -1759,6 +2135,8 @@ fn dry_run_fleet(probes: &[InstanceProbe], ctx: &ToolContext) -> Vec<i64> {
                 .map(config_client::ConfigDocument::exact_google)
                 .unwrap_or(false),
             pinned: false,
+            trusted: false,
+            manual_priority: 0,
             active: probe.next_status == InstanceStatus::Active,
         })
         .collect();

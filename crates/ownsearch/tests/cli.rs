@@ -48,6 +48,11 @@ fn env_dir(dir: &std::path::Path) -> Vec<(String, String)> {
             dir.join("ledger").display().to_string(),
         ),
         ("OWNSEARCH_OFFLINE".to_owned(), "true".to_owned()),
+        (
+            "XDG_CONFIG_HOME".to_owned(),
+            dir.join("config").display().to_string(),
+        ),
+        ("HOME".to_owned(), dir.join("home").display().to_string()),
     ]
 }
 
@@ -166,7 +171,7 @@ fn the_database_commands_work_on_a_fresh_state() {
     let verify = run(&["db", "verify"]);
     assert!(verify.status.success());
     let text = String::from_utf8_lossy(&verify.stdout);
-    assert!(text.contains("schema version: 4"));
+    assert!(text.contains("schema version: 5"));
     let counts = run(&["db", "counts", "--json"]);
     assert!(counts.status.success());
     let export = run(&["db", "export"]);
@@ -638,6 +643,9 @@ fn the_state_dir_flag_is_read_before_the_subcommand() {
     let output = {
         let mut command = Command::new(binary());
         command.args(["--state-dir", &state.display().to_string(), "db", "path"]);
+        for (key, value) in env_dir(&dir) {
+            command.env(key, value);
+        }
         command.env("OWNSEARCH_OFFLINE", "true");
         command.output().expect("run")
     };
@@ -791,4 +799,256 @@ fn a_json_scan_prints_a_report() {
         serde_json::from_slice(&output.stdout).expect("the report is json");
     assert!(parsed.get("discovered").is_some(), "{parsed}");
     assert!(parsed.get("probed").is_some(), "{parsed}");
+}
+
+fn spawn_auth_stub(
+    expected: &'static str,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let addr = listener.local_addr().expect("addr");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = std::sync::Arc::clone(&stop);
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !flag.load(std::sync::atomic::Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    let mut buffer = [0u8; 8192];
+                    let read = stream.read(&mut buffer).unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buffer[..read]).to_ascii_lowercase();
+                    let body = if request.starts_with("get /config") {
+                        r#"{"categories":[],"engines":[],"locales":{},"plugins":[],"safe_search":1,"version":"2026.10.27"}"#
+                    } else {
+                        r#"{"query":"x","results":[{"url":"https://a.example/","title":"A","content":"one","engine":"duckduckgo","positions":[1]}]}"#
+                    };
+                    let authorized = request.contains(&format!("x-api-key: {expected}"));
+                    let (status, payload) = if authorized {
+                        ("200 OK", body)
+                    } else {
+                        ("401 Unauthorized", r#"{"error":"no key"}"#)
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
+                        payload.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+        }
+    });
+    (format!("http://{}", addr), stop)
+}
+
+#[test]
+fn credentials_come_from_the_environment_and_never_reach_the_output() {
+    let dir = temp_dir("cli-auth");
+    let (url, stop) = spawn_auth_stub("s3cret-value");
+    let base = |extra: &[(&str, &str)]| {
+        let mut env = env_dir(&dir);
+        env.push((
+            "OWNSEARCH_ALLOW_PRIVATE_INSTANCES".to_owned(),
+            "true".to_owned(),
+        ));
+        env.push((
+            "OWNSEARCH_ALLOW_PLAIN_HTTP_PRIVATE".to_owned(),
+            "true".to_owned(),
+        ));
+        env.push(("OWNSEARCH_BROWSER".to_owned(), "false".to_owned()));
+        for (key, value) in extra {
+            env.push(((*key).to_owned(), (*value).to_owned()));
+        }
+        env
+    };
+    let run = |args: &[&str], extra: &[(&str, &str)]| {
+        Command::new(binary())
+            .args(args)
+            .envs(base(extra))
+            .output()
+            .expect("run")
+    };
+    let added = run(&["instances", "add", &url, "--json"], &[]);
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let added_row: serde_json::Value =
+        serde_json::from_slice(&added.stdout).expect("the add output is json");
+    let id = added_row
+        .get("instanceId")
+        .and_then(serde_json::Value::as_i64)
+        .expect("instance id")
+        .to_string();
+
+    let stored = run(
+        &[
+            "instances",
+            "set-auth",
+            &id,
+            "--header",
+            "x-api-key=OWNSEARCH_TEST_KEY",
+        ],
+        &[("OWNSEARCH_TEST_KEY", "s3cret-value")],
+    );
+    assert!(
+        stored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stored.stderr)
+    );
+    let text = String::from_utf8_lossy(&stored.stdout);
+    assert!(text.contains("OWNSEARCH_TEST_KEY"), "{text}");
+    assert!(
+        !text.contains("s3cret-value"),
+        "the value must never be printed"
+    );
+
+    let shown = run(&["instances", "show", &id], &[]);
+    let shown_text = String::from_utf8_lossy(&shown.stdout);
+    assert!(shown_text.contains("OWNSEARCH_TEST_KEY"), "{shown_text}");
+    assert!(!shown_text.contains("s3cret-value"), "{shown_text}");
+
+    let missing = run(&["health", "--instance", &id], &[]);
+    assert!(!missing.status.success());
+    let error = String::from_utf8_lossy(&missing.stderr);
+    assert!(error.contains("OWNSEARCH_TEST_KEY"), "{error}");
+    assert!(!error.contains("s3cret-value"), "{error}");
+
+    let healthy = run(
+        &["health", "--instance", &id],
+        &[("OWNSEARCH_TEST_KEY", "s3cret-value")],
+    );
+    assert!(
+        healthy.status.success(),
+        "{}",
+        String::from_utf8_lossy(&healthy.stderr)
+    );
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+struct HttpsStub {
+    url: String,
+    ca_pem: String,
+}
+
+fn spawn_https_searxng() -> HttpsStub {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+
+    ownsearch_core::install_crypto_provider();
+    let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("ca params");
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_key = rcgen::KeyPair::generate().expect("ca key");
+    let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
+    let server_key = rcgen::KeyPair::generate().expect("server key");
+    let server_params =
+        rcgen::CertificateParams::new(vec!["localhost".to_owned()]).expect("server params");
+    let server_cert = server_params
+        .signed_by(
+            &server_key,
+            &rcgen::Issuer::from_params(&ca_params, &ca_key),
+        )
+        .expect("server cert");
+    let config = Arc::new(
+        rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![server_cert.der().clone()],
+                rustls::pki_types::PrivateKeyDer::Pkcs8(server_key.serialize_der().into()),
+            )
+            .expect("server config"),
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            let Ok(connection) = rustls::ServerConnection::new(Arc::clone(&config)) else {
+                continue;
+            };
+            let mut tls = rustls::StreamOwned::new(connection, stream);
+            let mut buffer = [0u8; 8192];
+            let read = tls.read(&mut buffer).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..read]).to_ascii_lowercase();
+            let body = if request.starts_with("get /config") {
+                r#"{"categories":[],"engines":[],"locales":{},"plugins":[],"safe_search":1,"version":"2026.10.27"}"#
+            } else {
+                r#"{"query":"x","results":[{"url":"https://a.example/","title":"A","content":"one","engine":"duckduckgo","positions":[1]}]}"#
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = tls.write_all(response.as_bytes());
+        }
+    });
+    HttpsStub {
+        url: format!("https://localhost:{}", addr.port()),
+        ca_pem: ca_cert.pem(),
+    }
+}
+
+#[test]
+fn an_https_name_that_resolves_to_a_private_address_passes_the_hard_gates() {
+    let dir = temp_dir("cli-private-tls");
+    let stub = spawn_https_searxng();
+    let ca_path = dir.join("ca.pem");
+    std::fs::write(&ca_path, &stub.ca_pem).expect("write ca");
+    let run = |extra: &[(&str, &str)]| {
+        let mut command = Command::new(binary());
+        command.envs(env_dir(&dir));
+        command.env("OWNSEARCH_BROWSER", "false");
+        command.env("SSL_CERT_FILE", &ca_path);
+        for (key, value) in extra {
+            command.env(key, value);
+        }
+        command
+    };
+    let mut add = run(&[
+        ("OWNSEARCH_ALLOW_PRIVATE_INSTANCES", "true"),
+        ("OWNSEARCH_ALLOW_PLAIN_HTTP_PRIVATE", "true"),
+    ]);
+    let added = add
+        .args(["instances", "add", &stub.url, "--json"])
+        .output()
+        .expect("add");
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let row: serde_json::Value = serde_json::from_slice(&added.stdout).expect("json");
+    let id = row
+        .get("instanceId")
+        .and_then(serde_json::Value::as_i64)
+        .expect("id")
+        .to_string();
+
+    let healthy = run(&[("OWNSEARCH_ALLOW_PRIVATE_INSTANCES", "true")])
+        .args(["health", "--instance", &id])
+        .output()
+        .expect("health");
+    assert!(
+        healthy.status.success(),
+        "{}",
+        String::from_utf8_lossy(&healthy.stderr)
+    );
+    let text = String::from_utf8_lossy(&healthy.stdout);
+    assert!(text.contains("healthy"), "{text}");
+
+    let refused = run(&[("OWNSEARCH_ALLOW_PRIVATE_INSTANCES", "false")])
+        .args(["health", "--instance", &id])
+        .output()
+        .expect("health");
+    assert!(!refused.status.success());
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(error.contains("gate.tls_invalid"), "{error}");
+    assert!(error.contains("non-public"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

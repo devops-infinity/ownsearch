@@ -39,6 +39,10 @@ pub(crate) fn settings_with(dir: &Path, extra: &[(&str, &str)]) -> Settings {
             "OWNSEARCH_ALLOW_PRIVATE_INSTANCES".to_owned(),
             "true".to_owned(),
         ),
+        (
+            "OWNSEARCH_ALLOW_PLAIN_HTTP_PRIVATE".to_owned(),
+            "true".to_owned(),
+        ),
     ]
     .into_iter()
     .collect();
@@ -68,6 +72,10 @@ pub(crate) fn settings_live(dir: &Path) -> Settings {
         ("OWNSEARCH_HTML_FALLBACK".to_owned(), "true".to_owned()),
         (
             "OWNSEARCH_ALLOW_PRIVATE_INSTANCES".to_owned(),
+            "true".to_owned(),
+        ),
+        (
+            "OWNSEARCH_ALLOW_PLAIN_HTTP_PRIVATE".to_owned(),
             "true".to_owned(),
         ),
     ]

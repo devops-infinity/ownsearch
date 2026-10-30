@@ -95,6 +95,11 @@ fn request() -> SearchRequest {
         limit: 10,
         mode: SearchMode::Balanced,
         deadline_override_secs: None,
+        dedupe: true,
+        min_engines: None,
+        instance_ids: Vec::new(),
+        engine_weights: std::collections::BTreeMap::new(),
+        exclude_engines: Vec::new(),
     }
 }
 
@@ -161,7 +166,7 @@ async fn one_failing_instance_does_not_fail_the_search() {
         .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
         .mount(&bad)
         .await;
-    let dir = common::temp_dir("flow-partial");
+    let dir = common::temp_dir("flow-one-fails");
     let settings = common::settings(&dir);
     let ctx = context(&settings);
     let good_id = insert(&ctx.store, &format!("{}/", good.uri()));
@@ -314,7 +319,11 @@ async fn a_rate_limited_instance_is_reported_and_not_retried() {
             .map(|item| item.code.as_str()),
         Some("ownsearch.rate_limited")
     );
-    assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+    assert_eq!(
+        server.received_requests().await.expect("requests").len(),
+        2,
+        "one json attempt and one html attempt, with no retry"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -576,14 +585,15 @@ async fn a_slow_discovery_document_does_not_hold_the_search_past_its_budget() {
     let outcome = search(&ctx, &request(), &CancellationToken::new())
         .await
         .expect("search");
-    assert!(started.elapsed() < Duration::from_secs(12));
+    assert!(started.elapsed() < Duration::from_secs(2));
     assert!(!outcome.output.results.is_empty());
     assert!(
-        outcome
+        !outcome
             .output
             .warnings
             .iter()
-            .any(|warning| warning.contains("discovery refresh took longer"))
+            .any(|warning| warning.contains("discovery")),
+        "a background refresh must not surface as a search warning"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -650,7 +660,7 @@ fn every_feature_is_on_in_the_built_in_defaults() {
     assert!(settings.cache_ttl_secs() > 0, "the response cache is on");
     assert_eq!(settings.ai_db_mode().as_str(), "read-write");
     assert_eq!(settings.exhaustive_max(), 16);
-    assert_eq!(settings.search_deadline_secs(), 30);
+    assert_eq!(settings.search_deadline_secs(SearchMode::Balanced), 30);
     assert_eq!(settings.result_cap(), 25);
     assert!(settings.html_fallback());
     assert!(settings.search_failover());
@@ -794,5 +804,70 @@ async fn the_cache_answers_the_second_identical_search_by_default() {
         .expect("second");
     assert!(second.cache_hit, "the built-in cache is on");
     assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_slow_instance_returns_partial_results_at_the_deadline() {
+    use std::time::{Duration, Instant};
+    let fast = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [{"url": "https://fast.example/x", "title": "Fast", "content": "one", "engine": "duckduckgo", "positions": [1]}]
+        })))
+        .mount(&fast)
+        .await;
+    let slow = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(3))
+                .set_body_json(json!({
+                    "results": [{"url": "https://slow.example/x", "title": "Slow", "content": "late", "engine": "duckduckgo", "positions": [1]}]
+                })),
+        )
+        .mount(&slow)
+        .await;
+    let dir = common::temp_dir("flow-partial");
+    let settings = common::settings_with(
+        &dir,
+        &[
+            ("OWNSEARCH_ROUND_ROBIN", "false"),
+            ("OWNSEARCH_SEARCH_ATTEMPTS", "1"),
+        ],
+    );
+    let ctx = context(&settings);
+    let fast_id = insert(&ctx.store, &format!("{}/", fast.uri()));
+    let slow_id = insert(&ctx.store, &format!("{}/", slow.uri()));
+    activate(&ctx.store, fast_id, false, 90.0);
+    activate(&ctx.store, slow_id, false, 80.0);
+    let mut request = request();
+    request.mode = SearchMode::Exhaustive;
+    request.deadline_override_secs = Some(1);
+    let started = Instant::now();
+    let outcome = search(&ctx, &request, &CancellationToken::new())
+        .await
+        .expect("search");
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(!outcome.output.results.is_empty());
+    assert!(outcome.output.coverage.partial);
+    assert!(
+        outcome
+            .output
+            .errors
+            .iter()
+            .any(|failure| failure.instance_id == slow_id && failure.code == "ownsearch.timeout"),
+        "errors {:?}",
+        outcome.output.errors
+    );
+    assert!(
+        outcome
+            .output
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("sources.failed"))
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

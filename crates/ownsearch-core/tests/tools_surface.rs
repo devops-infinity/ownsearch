@@ -217,12 +217,7 @@ async fn instance_info_and_health_read_the_stored_state() {
         structured(&info).get("count").and_then(Value::as_u64),
         Some(1)
     );
-    let by_id = call(
-        &ctx,
-        "ownsearch_instance_info",
-        json!({"instance_id": id, "include_capabilities": true}),
-    )
-    .await;
+    let by_id = call(&ctx, "ownsearch_instance_info", json!({"instance_id": id})).await;
     assert_eq!(
         structured(&by_id).get("count").and_then(Value::as_u64),
         Some(1)
@@ -750,5 +745,51 @@ async fn the_fetch_tool_renders_a_javascript_page_when_chrome_is_present() {
             .and_then(Value::as_str)
             .unwrap_or_default()
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_dry_run_scan_says_it_wrote_nothing() {
+    let dir = common::temp_dir("tools-scan-dry");
+    let settings = common::settings(&dir);
+    let ctx = Arc::new(ToolContext::new(settings).expect("context"));
+    let result = call(&ctx, "ownsearch_scan", json!({"limit": 5})).await;
+    assert_eq!(result.is_error, Some(false));
+    let summary = structured(&result)
+        .get("summary")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(summary.contains("nothing was stored"), "{summary}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_writing_scan_from_the_tool_needs_a_reason() {
+    let dir = common::temp_dir("tools-scan-reason");
+    let settings = common::settings(&dir);
+    let ctx = Arc::new(ToolContext::new(settings).expect("context"));
+    let refused = call(
+        &ctx,
+        "ownsearch_scan",
+        json!({"dry_run": false, "limit": 5}),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true));
+    assert_eq!(
+        error_body(&refused).get("code").and_then(Value::as_str),
+        Some("ownsearch.bad_request")
+    );
+    let applied = call(
+        &ctx,
+        "ownsearch_scan",
+        json!({"dry_run": false, "limit": 5, "reason": "operator asked for a refresh"}),
+    )
+    .await;
+    assert_eq!(applied.is_error, Some(false));
+    let summary = structured(&applied)
+        .get("summary")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(summary.contains("scan applied"), "{summary}");
     let _ = std::fs::remove_dir_all(&dir);
 }

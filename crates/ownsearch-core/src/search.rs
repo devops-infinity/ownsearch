@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -8,10 +10,10 @@ use url::Url;
 use crate::context::ToolContext;
 use crate::db::InstanceRow;
 use crate::error::{Error, Result};
-use crate::merge::{Observation, merge};
+use crate::merge::{MergeOptions, Observation, merge};
 use crate::response::{
     CacheInfo, Coverage, SearchOutput, SearchResultItem, SearchTiming, SourceFailure,
-    SourceObservation, SourcesInfo,
+    SourceObservation, SourcesInfo, UnresponsiveEngine,
 };
 use crate::sanitize::{cap, sanitize};
 use crate::searxng::{ProbeReport, SearchQuery, search_html, search_json};
@@ -20,7 +22,7 @@ use crate::types::{InstanceStatus, ProbeOutcome, SafeSearch, SearchMode, TimeRan
 const SNIPPET_CHARS: usize = 300;
 const TITLE_CHARS: usize = 300;
 const UNSCORED_FALLBACK_INSTANCES: usize = 32;
-const SEARCH_DISCOVERY_BUDGET_SECS: u64 = 5;
+const INLINE_REFRESH_BUDGET_SECS: u64 = 2;
 
 #[derive(Debug, Clone)]
 pub struct SearchRequest {
@@ -34,6 +36,11 @@ pub struct SearchRequest {
     pub limit: usize,
     pub mode: SearchMode,
     pub deadline_override_secs: Option<u64>,
+    pub dedupe: bool,
+    pub min_engines: Option<usize>,
+    pub instance_ids: Vec<i64>,
+    pub engine_weights: BTreeMap<String, f64>,
+    pub exclude_engines: Vec<String>,
 }
 
 impl SearchRequest {
@@ -61,6 +68,11 @@ impl SearchRequest {
             "limit": self.limit,
             "mode": self.mode,
             "deadline": self.deadline_override_secs,
+            "dedupe": self.dedupe,
+            "minEngines": self.min_engines,
+            "instanceIds": self.instance_ids,
+            "engineWeights": self.engine_weights,
+            "excludeEngines": self.exclude_engines,
         })
     }
 }
@@ -83,6 +95,7 @@ struct SourceOutcome {
     observations: Vec<Observation>,
     failure: Option<SourceFailure>,
     http_class: Option<String>,
+    unresponsive: Vec<(String, String)>,
 }
 
 pub async fn search(
@@ -105,7 +118,7 @@ pub async fn search(
     }
     let deadline_secs = request
         .deadline_override_secs
-        .unwrap_or_else(|| ctx.settings.search_deadline_secs());
+        .unwrap_or_else(|| ctx.settings.search_deadline_secs(request.mode));
     let deadline_ms = deadline_secs.saturating_mul(1_000);
     let cache_key = format!(
         "ownsearch_search:{}:{}",
@@ -115,21 +128,46 @@ pub async fn search(
     if let Some(outcome) = cached_search(ctx, &cache_key)? {
         return Ok(outcome);
     }
+    let queue_started = Instant::now();
     let _search_slot = ctx.acquire_search().await?;
+    let queue_ms = elapsed_ms(queue_started);
+    let selection_started = Instant::now();
     let mut warnings: Vec<String> = Vec::new();
-    let rows = prepare_fleet(ctx, cancellation, &mut warnings).await?;
-    let rotation = ctx.settings.round_robin().then(|| {
-        ctx.next_rotation(rotation_span(
-            rows.len(),
-            target_instances(request.mode, ctx.settings.exhaustive_max()),
-        ))
-    });
-    let ordered = order_instances(&rows, request.mode, ctx.settings.exhaustive_max(), rotation);
+    let rows = prepare_fleet(ctx, &mut warnings).await?;
+    let ordered = if request.instance_ids.is_empty() {
+        let rotation = ctx.settings.round_robin().then(|| {
+            ctx.next_rotation(rotation_span(
+                rows.len(),
+                target_instances(request.mode, ctx.settings.exhaustive_max()),
+            ))
+        });
+        order_instances(&rows, request.mode, ctx.settings.exhaustive_max(), rotation)
+    } else {
+        let ids = request.instance_ids.clone();
+        let store = Arc::clone(&ctx.store);
+        let chosen = blocking_store(move || {
+            store.list_instances(&crate::db::InstanceFilter {
+                ids,
+                limit: 64,
+                ..crate::db::InstanceFilter::default()
+            })
+        })
+        .await?;
+        let chosen: Vec<InstanceRow> = chosen
+            .into_iter()
+            .filter(|row| {
+                !row.denied && row.scan_enabled && row.kind != crate::types::InstanceType::Tor
+            })
+            .collect();
+        order_instances(&chosen, request.mode, ctx.settings.exhaustive_max(), None)
+    };
     if ordered.is_empty() {
         return Err(Error::NoFleet);
     }
     let target = target_instances(request.mode, ctx.settings.exhaustive_max());
+    let selection_ms = elapsed_ms(selection_started);
     let query = request.to_query();
+    let upstream_started = Instant::now();
     let hard_deadline = tokio::time::Instant::now() + Duration::from_millis(deadline_ms);
     let mut attempted_ids: Vec<i64> = Vec::new();
     let mut outcomes: Vec<SourceOutcome> = Vec::new();
@@ -161,7 +199,13 @@ pub async fn search(
             && cools_down(&failure.code)
             && tokio::time::Instant::now() < hard_deadline
         {
-            cool_down(ctx, outcome.instance_id, &failure.code).await;
+            cool_down(
+                ctx,
+                outcome.instance_id,
+                &failure.code,
+                failure.retry_after_secs,
+            )
+            .await;
         }
     }
     if ctx.settings.search_failover() {
@@ -187,20 +231,63 @@ pub async fn search(
             } else if let Some(failure) = &outcome.failure
                 && cools_down(&failure.code)
             {
-                cool_down(ctx, row.instance_id, &failure.code).await;
+                cool_down(
+                    ctx,
+                    row.instance_id,
+                    &failure.code,
+                    failure.retry_after_secs,
+                )
+                .await;
             }
             outcomes.push(outcome);
         }
     }
+    let upstream_ms = elapsed_ms(upstream_started);
     let OutcomeSummary {
         observations,
         failed,
         succeeded,
         parser,
         http_class,
+        engines,
+        unresponsive,
     } = summarise_outcomes(outcomes);
-    let merged = merge(observations, request.limit, SNIPPET_CHARS);
+    record_engine_stats(ctx, engines, &unresponsive).await;
+    let merge_started = Instant::now();
+    let mut engine_weights = ctx.settings.engine_weights().clone();
+    engine_weights.extend(
+        request
+            .engine_weights
+            .iter()
+            .map(|(engine, weight)| (engine.clone(), *weight)),
+    );
+    let mut exclude_engines = ctx.settings.exclude_engines().to_vec();
+    for engine in &request.exclude_engines {
+        if !exclude_engines
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(engine))
+        {
+            exclude_engines.push(engine.clone());
+        }
+    }
+    let merged = merge(
+        observations,
+        &MergeOptions {
+            cap: request.limit,
+            snippet_chars: SNIPPET_CHARS,
+            dedupe: request.dedupe,
+            min_engines: request
+                .min_engines
+                .unwrap_or_else(|| ctx.settings.min_engines()),
+            engine_weights: &engine_weights,
+            exclude_engines: &exclude_engines,
+            exclude_domains: ctx.settings.exclude_domains(),
+        },
+    );
+    let merge_ms = elapsed_ms(merge_started);
+    let parse_started = Instant::now();
     let results = result_items(&merged);
+    let parse_ms = elapsed_ms(parse_started);
     let attempted = attempted_ids.len();
     let succeeded_count = succeeded.len();
     let partial = !failed.is_empty();
@@ -221,6 +308,7 @@ pub async fn search(
             succeeded,
             failed: failed.clone(),
             fallbacks,
+            unresponsive_engines: unresponsive,
         },
         coverage: Coverage {
             attempted,
@@ -240,6 +328,11 @@ pub async fn search(
         timing: SearchTiming {
             elapsed_ms,
             deadline_ms,
+            queue_ms,
+            selection_ms,
+            upstream_ms,
+            parse_ms,
+            merge_ms,
         },
     };
     if ctx.cache.enabled()
@@ -288,38 +381,35 @@ fn cached_search(ctx: &Arc<ToolContext>, cache_key: &str) -> Result<Option<Searc
 
 async fn prepare_fleet(
     ctx: &Arc<ToolContext>,
-    cancellation: &CancellationToken,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<InstanceRow>> {
     {
         let ctx = Arc::clone(ctx);
         blocking_store(move || ctx.ensure_bootstrap()).await?;
     }
-    if !ctx.settings.offline() {
-        let budget = Duration::from_secs(SEARCH_DISCOVERY_BUDGET_SECS);
-        match tokio::time::timeout(
-            budget,
-            crate::scanner::refresh_discovery(ctx, false, cancellation),
-        )
-        .await
-        {
-            Ok(Ok(outcome)) => {
-                if let Some(error) = outcome.error {
-                    warnings.push(format!("discovery refresh failed: {error}"));
-                }
-            }
-            Ok(Err(error)) => warnings.push(format!("discovery refresh failed: {error}")),
-            Err(_) => warnings.push(format!(
-                "discovery refresh took longer than {SEARCH_DISCOVERY_BUDGET_SECS} seconds and was skipped; the stored fleet answered this search"
-            )),
-        }
-    }
+    let refresh = (!ctx.settings.offline() && ctx.settings.public_fleet())
+        .then(|| ctx.spawn_discovery_refresh())
+        .flatten();
     let (rows, fleet_warning) = {
         let ctx = Arc::clone(ctx);
         blocking_store(move || resolve_fleet(&ctx)).await?
     };
     if let Some(warning) = fleet_warning {
         warnings.push(warning);
+    }
+    if rows.is_empty()
+        && let Some(handle) = refresh
+    {
+        let budget = std::time::Duration::from_secs(INLINE_REFRESH_BUDGET_SECS);
+        let _ = tokio::time::timeout(budget, handle).await;
+        let (rows, fleet_warning) = {
+            let ctx = Arc::clone(ctx);
+            blocking_store(move || resolve_fleet(&ctx)).await?
+        };
+        if let Some(warning) = fleet_warning {
+            warnings.push(warning);
+        }
+        return Ok(rows);
     }
     Ok(rows)
 }
@@ -330,6 +420,8 @@ struct OutcomeSummary {
     succeeded: Vec<i64>,
     parser: Option<String>,
     http_class: Option<String>,
+    engines: std::collections::BTreeMap<i64, Vec<String>>,
+    unresponsive: Vec<UnresponsiveEngine>,
 }
 
 fn summarise_outcomes(outcomes: Vec<SourceOutcome>) -> OutcomeSummary {
@@ -339,22 +431,88 @@ fn summarise_outcomes(outcomes: Vec<SourceOutcome>) -> OutcomeSummary {
         succeeded: Vec::new(),
         parser: None,
         http_class: None,
+        engines: std::collections::BTreeMap::new(),
+        unresponsive: Vec::new(),
     };
     for outcome in outcomes {
-        if let Some(failure) = outcome.failure {
+        let SourceOutcome {
+            instance_id,
+            parser,
+            observations,
+            failure,
+            http_class,
+            unresponsive,
+        } = outcome;
+        for (engine, reason) in unresponsive {
+            summary.unresponsive.push(UnresponsiveEngine {
+                instance_id,
+                engine,
+                reason,
+            });
+        }
+        if let Some(failure) = failure {
             summary.failed.push(failure);
             continue;
         }
-        summary.succeeded.push(outcome.instance_id);
+        summary.succeeded.push(instance_id);
         if summary.parser.is_none() {
-            summary.parser.clone_from(&outcome.parser);
+            summary.parser.clone_from(&parser);
         }
         if summary.http_class.is_none() {
-            summary.http_class.clone_from(&outcome.http_class);
+            summary.http_class.clone_from(&http_class);
         }
-        summary.observations.extend(outcome.observations);
+        let entry = summary.engines.entry(instance_id).or_default();
+        for observation in &observations {
+            for engine in &observation.engines {
+                if !entry
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(engine))
+                {
+                    entry.push(engine.clone());
+                }
+            }
+        }
+        summary.observations.extend(observations);
     }
     summary
+}
+
+async fn record_engine_stats(
+    ctx: &Arc<ToolContext>,
+    engines: std::collections::BTreeMap<i64, Vec<String>>,
+    unresponsive: &[UnresponsiveEngine],
+) {
+    let mut failures: std::collections::BTreeMap<i64, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for item in unresponsive {
+        let entry = failures.entry(item.instance_id).or_default();
+        if !entry.iter().any(|engine| engine == &item.engine) {
+            entry.push(item.engine.clone());
+        }
+    }
+    let mut ids: Vec<i64> = engines.keys().copied().collect();
+    for id in failures.keys() {
+        if !ids.contains(id) {
+            ids.push(*id);
+        }
+    }
+    for id in ids {
+        let ok = engines.get(&id).cloned().unwrap_or_default();
+        let bad = failures.get(&id).cloned().unwrap_or_default();
+        if ok.is_empty() && bad.is_empty() {
+            continue;
+        }
+        let store = Arc::clone(&ctx.store);
+        match tokio::task::spawn_blocking(move || store.record_engine_stats(id, &ok, &bad)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, instance_id = id, "the engine counters could not be written");
+            }
+            Err(error) => {
+                tracing::warn!(%error, instance_id = id, "the engine counter task failed");
+            }
+        }
+    }
 }
 
 fn result_items(merged: &crate::merge::MergeOutput) -> Vec<SearchResultItem> {
@@ -374,7 +532,7 @@ fn result_items(merged: &crate::merge::MergeOutput) -> Vec<SearchResultItem> {
                         instance_id: source.instance_id,
                         instance_slug: crate::types::instance_slug(&source.instance_url),
                         instance_url: source.instance_url.clone(),
-                        engine: source.engine.clone(),
+                        engines: source.engines.clone(),
                         parser: source.parser.clone(),
                         rank: source.rank,
                         score: source.instance_score,
@@ -382,8 +540,11 @@ fn result_items(merged: &crate::merge::MergeOutput) -> Vec<SearchResultItem> {
                     .collect(),
             ),
             published_date: result.published_date.clone(),
+            category: result.category.clone(),
             score: result.score,
             rank: result.rank,
+            merged_from: result.merged_from,
+            best_position: result.best_position,
             kind: Some(result.kind.clone()),
             truncated: Some(result.truncated),
         })
@@ -392,11 +553,13 @@ fn result_items(merged: &crate::merge::MergeOutput) -> Vec<SearchResultItem> {
 
 fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)> {
     let now = crate::time::now_rfc3339();
+    let public_fleet = ctx.settings.public_fleet();
     let not_cooling = |row: &InstanceRow| {
         row.cooldown_until
             .as_deref()
             .is_none_or(|until| until <= now.as_str())
     };
+    let allowed = |row: &InstanceRow| public_fleet || row.source == "manual";
     let fleet = ctx.store.fleet(64, &now)?;
     if !fleet.is_empty() {
         let ids: Vec<i64> = fleet.iter().map(|row| row.instance_id).collect();
@@ -405,7 +568,11 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
             limit: 64,
             ..crate::db::InstanceFilter::default()
         })?;
-        let rows: Vec<InstanceRow> = rows.into_iter().filter(not_cooling).collect();
+        let rows: Vec<InstanceRow> = rows
+            .into_iter()
+            .filter(not_cooling)
+            .filter(allowed)
+            .collect();
         if !rows.is_empty() {
             return Ok((rows, None));
         }
@@ -420,6 +587,7 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
         })?
         .into_iter()
         .filter(not_cooling)
+        .filter(allowed)
         .filter(|row| row.scan_enabled && !row.denied)
         .collect();
     if !probation.is_empty() {
@@ -438,6 +606,7 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
         })?
         .into_iter()
         .filter(not_cooling)
+        .filter(allowed)
         .filter(|row| row.scan_enabled && !row.denied)
         .filter(|row| row.hard_gate_passed == Some(true))
         .collect();
@@ -460,6 +629,7 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
         .filter(|row| {
             !row.denied
                 && row.scan_enabled
+                && allowed(row)
                 && not_cooling(row)
                 && row.hard_gate_passed == Some(true)
                 && row.kind != crate::types::InstanceType::Tor
@@ -471,7 +641,12 @@ fn resolve_fleet(ctx: &ToolContext) -> Result<(Vec<InstanceRow>, Option<String>)
         .take(UNSCORED_FALLBACK_INSTANCES)
         .collect();
     if unscored.is_empty() {
-        return Ok((Vec::new(), None));
+        let hint = if public_fleet {
+            "run `ownsearch scan` to score the fleet"
+        } else {
+            "public_fleet is off and no instance was added; run `ownsearch instances add URL` for your own SearXNG"
+        };
+        return Ok((Vec::new(), Some(format!("no instance can answer: {hint}"))));
     }
     Ok((
         unscored,
@@ -529,8 +704,11 @@ fn order_instances(
         .cloned()
         .collect();
     ordered.sort_by(|left, right| {
-        capability_rank(left)
-            .cmp(&capability_rank(right))
+        right
+            .trusted
+            .cmp(&left.trusted)
+            .then_with(|| right.manual_priority.cmp(&left.manual_priority))
+            .then_with(|| capability_rank(left).cmp(&capability_rank(right)))
             .then_with(|| {
                 right
                     .score
@@ -570,10 +748,17 @@ fn cools_down(code: &str) -> bool {
     )
 }
 
-async fn cool_down(ctx: &Arc<ToolContext>, instance_id: i64, code: &str) {
+async fn cool_down(
+    ctx: &Arc<ToolContext>,
+    instance_id: i64,
+    code: &str,
+    retry_after_secs: Option<u64>,
+) {
+    let wait = retry_after_secs
+        .unwrap_or_else(|| ctx.settings.cooldown_secs())
+        .min(604_800);
     let until = crate::time::rfc3339(
-        crate::time::now_unix()
-            .saturating_add(i64::try_from(ctx.settings.cooldown_secs()).unwrap_or(3_600)),
+        crate::time::now_unix().saturating_add(i64::try_from(wait).unwrap_or(3_600)),
     );
     let store = Arc::clone(&ctx.store);
     let code = code.to_owned();
@@ -668,8 +853,20 @@ async fn run_batch(
             Err(_) => {
                 set.abort_all();
                 while set.join_next().await.is_some() {}
+                let answered: Vec<i64> =
+                    outcomes.iter().map(|outcome| outcome.instance_id).collect();
+                for row in rows {
+                    if !answered.contains(&row.instance_id) {
+                        outcomes.push(failure(
+                            row,
+                            "ownsearch.timeout",
+                            "the search deadline passed before this instance answered".to_owned(),
+                        ));
+                    }
+                }
                 warnings.push(
-                    "the search deadline passed; unfinished instances were dropped".to_owned(),
+                    "the search deadline passed; the instances that did not answer are listed in sources.failed"
+                        .to_owned(),
                 );
                 break;
             }
@@ -684,14 +881,50 @@ async fn search_instance(
     query: &SearchQuery,
     cancellation: &CancellationToken,
 ) -> SourceOutcome {
+    let _permit = ctx.acquire_instance(row.instance_id, row.trusted).await;
     let base = match Url::parse(&row.url) {
         Ok(base) => base,
         Err(error) => {
             return failure(row, "ownsearch.bad_request", format!("url: {error}"));
         }
     };
-    let report = search_json::fetch(&ctx.client, &base, query, cancellation).await;
+    let auth = match instance_auth(ctx, row) {
+        Ok(auth) => auth,
+        Err(error) => return failure(row, error.code(), error.to_string()),
+    };
+    let auth = auth.as_ref();
+    let now = crate::time::now_rfc3339();
+    let throttled = row
+        .json_throttled_until
+        .as_deref()
+        .is_some_and(|until| until > now.as_str());
+    let report = if throttled {
+        ProbeReport::failed(
+            ProbeOutcome::RateLimited,
+            "json is throttled by the instance limiter until its window passes".to_owned(),
+        )
+    } else {
+        search_json::fetch(&ctx.client, &base, query, cancellation, auth).await
+    };
+    if report.outcome == ProbeOutcome::ParserError
+        && let Some(sample) = &report.sample
+    {
+        crate::parser_sample::save(
+            &ctx.settings,
+            row.instance_id,
+            row.version.as_deref(),
+            sample,
+        );
+    }
+    let unresponsive = report
+        .value
+        .as_ref()
+        .map(unresponsive_entries)
+        .unwrap_or_default();
     if report.outcome.is_success() {
+        if row.json_throttled_until.is_some() {
+            clear_json_throttled(ctx, row.instance_id).await;
+        }
         let observations = observations_from_json(row, &report);
         if observations.is_empty()
             && report
@@ -711,12 +944,13 @@ async fn search_instance(
             observations,
             failure: None,
             http_class: report.http_status.map(http_class),
+            unresponsive,
         };
     }
     if report.outcome == ProbeOutcome::ParserError {
         for format in ["rss", "csv"] {
             if let Ok(entries) =
-                crate::formats::fetch(&ctx.client, &base, query, format, cancellation).await
+                crate::formats::fetch(&ctx.client, &base, query, format, cancellation, auth).await
                 && !entries.is_empty()
             {
                 let observations = observations_from_formats(row, format, &entries);
@@ -727,6 +961,7 @@ async fn search_instance(
                         observations,
                         failure: None,
                         http_class: None,
+                        unresponsive: Vec::new(),
                     };
                 }
             }
@@ -734,6 +969,8 @@ async fn search_instance(
     }
     if report.outcome == ProbeOutcome::ParserError
         && ctx.browser.enabled()
+        && !row.trusted
+        && auth.is_none()
         && let Ok(url) = crate::client::search_url(&base, &[("q", query.query.clone())])
         && let Ok((html, _)) = ctx
             .browser
@@ -750,18 +987,23 @@ async fn search_instance(
                     observations,
                     failure: None,
                     http_class: Some(http_class(200)),
+                    unresponsive: Vec::new(),
                 };
             }
         }
     }
     let html_allowed = row.html_fallback_allowed || ctx.settings.html_fallback();
+    let limiter_throttled = report.outcome == ProbeOutcome::RateLimited;
     let denied = matches!(
         report.outcome,
         ProbeOutcome::Refused | ProbeOutcome::ParserError | ProbeOutcome::HttpError
-    );
+    ) || limiter_throttled;
     if denied && html_allowed {
-        let html = search_html::fetch(&ctx.client, &base, query, cancellation).await;
+        let html = search_html::fetch(&ctx.client, &base, query, cancellation, auth).await;
         if html.outcome.is_success() {
+            if limiter_throttled && !throttled {
+                mark_json_throttled(ctx, row.instance_id, report.retry_after_secs).await;
+            }
             let observations = observations_from_html(row, &html);
             return SourceOutcome {
                 instance_id: row.instance_id,
@@ -769,19 +1011,49 @@ async fn search_instance(
                 observations,
                 failure: None,
                 http_class: html.http_status.map(http_class),
+                unresponsive: Vec::new(),
             };
         }
-        return failure(
+        let retry_after = html.retry_after_secs.or(report.retry_after_secs);
+        return failure_after(
             row,
             code_for(html.outcome, html.http_status),
             error_text(&html.error_message, html.outcome),
+            retry_after,
         );
     }
-    failure(
+    failure_after(
         row,
         code_for(report.outcome, report.http_status),
         error_text(&report.error_message, report.outcome),
+        report.retry_after_secs,
     )
+}
+
+const DEFAULT_JSON_THROTTLE_SECS: u64 = 3_600;
+
+async fn mark_json_throttled(ctx: &ToolContext, instance_id: i64, retry_after: Option<u64>) {
+    let secs = retry_after
+        .unwrap_or(DEFAULT_JSON_THROTTLE_SECS)
+        .min(604_800);
+    let until = crate::time::rfc3339(
+        crate::time::now_unix().saturating_add(i64::try_from(secs).unwrap_or(3600)),
+    );
+    let store = Arc::clone(&ctx.store);
+    if let Err(error) =
+        tokio::task::spawn_blocking(move || store.mark_json_throttled(instance_id, &until)).await
+    {
+        tracing::warn!(%error, instance_id, "the json throttle was not recorded");
+    }
+}
+
+async fn clear_json_throttled(ctx: &ToolContext, instance_id: i64) {
+    let store = Arc::clone(&ctx.store);
+    if let Err(error) =
+        tokio::task::spawn_blocking(move || store.clear_json_throttled(instance_id)).await
+    {
+        tracing::warn!(%error, instance_id, "the json throttle was not cleared");
+    }
 }
 
 fn clean_url(raw: &str) -> Option<String> {
@@ -822,19 +1094,37 @@ fn observations_from_json(
             .as_deref()
             .map(sanitize)
             .filter(|text| !text.is_empty());
-        let engine = item
+        let engines: Vec<String> = item
             .engine_names()
-            .first()
-            .map(|name| clean_short_text(name));
+            .iter()
+            .map(|name| clean_short_text(name))
+            .filter(|name| !name.is_empty())
+            .collect();
+        let fallback = u32::try_from(index).unwrap_or(0).saturating_add(1);
+        let positions: Vec<u32> = (0..engines.len())
+            .map(|position| {
+                item.positions
+                    .get(position)
+                    .copied()
+                    .or_else(|| item.positions.first().copied())
+                    .unwrap_or(fallback)
+            })
+            .collect();
+        let rank = positions.iter().copied().min();
         out.push(Observation {
             instance_id: row.instance_id,
             instance_url: row.url.clone(),
             instance_score: row.score.unwrap_or(0.0),
             parser: "json".to_owned(),
-            engine,
-            rank: item
-                .observed_rank()
-                .or_else(|| Some(u32::try_from(index).unwrap_or(0).saturating_add(1))),
+            engines,
+            positions,
+            upstream_score: item.score,
+            category: item
+                .category
+                .as_deref()
+                .map(clean_short_text)
+                .filter(|category| !category.is_empty()),
+            rank,
             title,
             url,
             snippet,
@@ -860,12 +1150,26 @@ fn observations_from_page(
                 let (text, _) = cap(&sanitize(raw), 300);
                 text
             });
+            let engines: Vec<String> = item
+                .engine
+                .as_deref()
+                .map(|names| {
+                    names
+                        .split(',')
+                        .map(|name| clean_short_text(name.trim()))
+                        .filter(|name| !name.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
             Some(Observation {
                 instance_id: row.instance_id,
                 instance_url: row.url.clone(),
                 instance_score: row.score.unwrap_or(0.0),
                 parser: "browser".to_owned(),
-                engine: item.engine.clone(),
+                engines,
+                positions: vec![item.position],
+                upstream_score: None,
+                category: None,
                 rank: Some(item.position),
                 title,
                 url,
@@ -894,13 +1198,23 @@ fn observations_from_formats(
                 let (text, _) = cap(&sanitize(&entry.snippet), 300);
                 text
             });
+            let position = u32::try_from(index + 1).unwrap_or(u32::MAX);
             Some(Observation {
                 instance_id: row.instance_id,
                 instance_url: row.url.clone(),
                 instance_score: row.score.unwrap_or(0.0),
                 parser: parser.to_owned(),
-                engine: entry.engine.clone(),
-                rank: Some(u32::try_from(index + 1).unwrap_or(u32::MAX)),
+                engines: entry
+                    .engine
+                    .as_deref()
+                    .map(clean_short_text)
+                    .filter(|name| !name.is_empty())
+                    .into_iter()
+                    .collect(),
+                positions: vec![position],
+                upstream_score: None,
+                category: None,
+                rank: Some(position),
                 title,
                 url,
                 snippet,
@@ -931,12 +1245,26 @@ fn observations_from_html(
             .as_deref()
             .map(|text| cap(&sanitize(text), SNIPPET_CHARS).0)
             .filter(|text| !text.is_empty());
+        let engines: Vec<String> = item
+            .engine
+            .as_deref()
+            .map(|names| {
+                names
+                    .split(',')
+                    .map(|name| clean_short_text(name.trim()))
+                    .filter(|name| !name.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
         out.push(Observation {
             instance_id: row.instance_id,
             instance_url: row.url.clone(),
             instance_score: row.score.unwrap_or(0.0),
             parser: "html".to_owned(),
-            engine: item.engine.as_deref().map(clean_short_text),
+            engines,
+            positions: vec![item.position],
+            upstream_score: None,
+            category: None,
             rank: Some(item.position),
             title,
             url,
@@ -947,7 +1275,47 @@ fn observations_from_html(
     out
 }
 
+fn unresponsive_entries(search: &search_json::JsonSearch) -> Vec<(String, String)> {
+    search
+        .unresponsive_engines
+        .iter()
+        .filter_map(|entry| {
+            let list = entry.as_array()?;
+            let engine = list.first()?.as_str()?;
+            let reason = list
+                .get(1)
+                .and_then(Value::as_str)
+                .unwrap_or("no reason given");
+            Some((clean_short_text(engine), clean_short_text(reason)))
+        })
+        .collect()
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn instance_auth(
+    ctx: &ToolContext,
+    row: &InstanceRow,
+) -> Result<Option<crate::auth::InstanceAuth>> {
+    let mut records = ctx.store.auth_for(&[row.instance_id])?;
+    let Some(record) = records.remove(&row.instance_id) else {
+        return Ok(None);
+    };
+    crate::auth::InstanceAuth::resolve(&row.url, record).map(Some)
+}
+
 fn failure(row: &InstanceRow, code: &str, reason: String) -> SourceOutcome {
+    failure_after(row, code, reason, None)
+}
+
+fn failure_after(
+    row: &InstanceRow,
+    code: &str,
+    reason: String,
+    retry_after_secs: Option<u64>,
+) -> SourceOutcome {
     SourceOutcome {
         instance_id: row.instance_id,
         parser: None,
@@ -957,8 +1325,10 @@ fn failure(row: &InstanceRow, code: &str, reason: String) -> SourceOutcome {
             url: row.url.clone(),
             code: code.to_owned(),
             reason: cap(&sanitize(&reason), 200).0,
+            retry_after_secs,
         }),
         http_class: None,
+        unresponsive: Vec::new(),
     }
 }
 
@@ -1029,6 +1399,10 @@ mod tests {
             network_group: None,
             pinned: false,
             denied: false,
+            trusted: false,
+            source: "test".to_owned(),
+            json_throttled_until: None,
+            manual_priority: 0,
             added_at: String::new(),
         }
     }

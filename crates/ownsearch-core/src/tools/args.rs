@@ -40,6 +40,12 @@ pub(crate) struct SearchArgs {
     pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub result_text: Option<TextMode>,
+    #[serde(default)]
+    pub dedupe: Option<bool>,
+    #[serde(default)]
+    pub min_engines: Option<u8>,
+    #[serde(default)]
+    pub preset: Option<crate::presets::SearchPreset>,
 }
 
 impl SearchArgs {
@@ -80,6 +86,13 @@ impl SearchArgs {
                 "timeout_secs {timeout} is outside 1..120"
             )));
         }
+        if let Some(min_engines) = self.min_engines
+            && !(1..=16).contains(&min_engines)
+        {
+            return Err(Error::InvalidArgs(format!(
+                "min_engines {min_engines} is outside 1..16"
+            )));
+        }
         Ok(ValidatedSearch {
             query,
             categories,
@@ -93,6 +106,9 @@ impl SearchArgs {
             mode: self.mode.unwrap_or_default(),
             timeout_secs: self.timeout_secs,
             text_mode: self.result_text.unwrap_or_default(),
+            dedupe: self.dedupe.unwrap_or(true),
+            min_engines: self.min_engines.map(usize::from),
+            search_preset: self.preset,
         })
     }
 }
@@ -111,6 +127,9 @@ pub(crate) struct ValidatedSearch {
     pub mode: SearchMode,
     pub timeout_secs: Option<u64>,
     pub text_mode: TextMode,
+    pub dedupe: bool,
+    pub min_engines: Option<usize>,
+    pub search_preset: Option<crate::presets::SearchPreset>,
 }
 
 fn bounded_list(values: Option<Vec<String>>, field: &str) -> Result<Vec<String>> {
@@ -216,8 +235,6 @@ pub(crate) struct InstanceInfoArgs {
     pub status: Option<InstanceStatus>,
     #[serde(default)]
     pub limit: Option<u16>,
-    #[serde(default)]
-    pub include_capabilities: Option<bool>,
 }
 
 impl InstanceInfoArgs {
@@ -272,6 +289,8 @@ pub(crate) struct ScanArgs {
     pub probe_google: Option<bool>,
     #[serde(default)]
     pub force: Option<bool>,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 impl ScanArgs {
@@ -411,6 +430,9 @@ mod tests {
             mode: None,
             timeout_secs: None,
             result_text: None,
+            dedupe: None,
+            min_engines: None,
+            preset: None,
         }
     }
 
@@ -459,6 +481,7 @@ mod tests {
             probe_search: None,
             probe_google: None,
             force: None,
+            reason: None,
         };
         assert!(args.options().dry_run);
         assert!(!args.options().force_discovery);

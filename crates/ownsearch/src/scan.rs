@@ -36,11 +36,7 @@ pub(crate) fn run(args: ScanArgs, common: &crate::cli::CommonArgs) -> anyhow::Re
     }
     println!(
         "{} {}",
-        if report.dry_run {
-            "dry run"
-        } else {
-            "scan applied"
-        },
+        report.summary,
         report
             .run_id
             .as_deref()

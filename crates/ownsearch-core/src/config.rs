@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
@@ -19,9 +20,12 @@ pub(crate) const MAX_RETENTION_SECS: u64 = 7_776_000;
 pub(crate) const DEFAULT_USER_AGENT: &str =
     "OwnSearch (MCP fleet scanner; +https://github.com/devops-infinity/ownsearch)";
 
+pub(crate) const DEFAULT_ACCEPT: &str = "text/html,application/json;q=0.9,*/*;q=0.8";
+
 const MAX_PROFILE_BYTES: u64 = 64 * 1024;
 const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_TIMEOUT_SECS: u64 = 600;
+const MAX_SEARCH_DEADLINE_SECS: u64 = 300;
 const MAX_FLEET: usize = 64;
 
 #[derive(Debug, Clone, Default)]
@@ -77,7 +81,9 @@ pub struct Settings {
     html_fallback: bool,
     google_required: bool,
     cert_min_days: i64,
-    search_deadline_secs: u64,
+    search_deadline_fast_secs: u64,
+    search_deadline_balanced_secs: u64,
+    search_deadline_exhaustive_secs: u64,
     exhaustive_max: usize,
     search_attempts: u32,
     search_failover: bool,
@@ -96,6 +102,17 @@ pub struct Settings {
     keep_window_secs: u64,
     maintenance_interval_secs: u64,
     allow_private_instances: bool,
+    allow_plain_http_private: bool,
+    public_fleet: bool,
+    instance_max_concurrent: usize,
+    probe_daily_cap: usize,
+    engine_weights: BTreeMap<String, f64>,
+    exclude_engines: Vec<String>,
+    exclude_domains: Vec<String>,
+    min_engines: usize,
+    engine_yield_threshold: f64,
+    accept: String,
+    search_presets: BTreeMap<String, PresetConfig>,
     capsolver_key: Option<SecretString>,
     capsolver_timeout_secs: u64,
     proxy: Option<String>,
@@ -141,7 +158,9 @@ struct Profile {
     html_fallback: Option<bool>,
     google_required: Option<bool>,
     cert_min_days: Option<i64>,
-    search_deadline_secs: Option<u64>,
+    search_deadline_fast_secs: Option<u64>,
+    search_deadline_balanced_secs: Option<u64>,
+    search_deadline_exhaustive_secs: Option<u64>,
     exhaustive_max: Option<usize>,
     search_attempts: Option<u32>,
     search_failover: Option<bool>,
@@ -160,6 +179,17 @@ struct Profile {
     keep_window: Option<String>,
     maintenance_interval_secs: Option<u64>,
     allow_private_instances: Option<bool>,
+    allow_plain_http_private: Option<bool>,
+    public_fleet: Option<bool>,
+    instance_max_concurrent: Option<usize>,
+    probe_daily_cap: Option<usize>,
+    engine_weights: Option<BTreeMap<String, f64>>,
+    exclude_engines: Option<Vec<String>>,
+    exclude_domains: Option<Vec<String>>,
+    min_engines: Option<usize>,
+    engine_yield_threshold: Option<f64>,
+    accept: Option<String>,
+    search_presets: Option<BTreeMap<String, PresetConfig>>,
     capsolver_timeout_secs: Option<u64>,
 }
 
@@ -360,6 +390,20 @@ impl Settings {
             "capsolver_timeout_secs",
         )?;
         let proxy = non_empty_env(&env, "OWNSEARCH_PROXY");
+        let engine_weights = clean_weights(profile.engine_weights.unwrap_or_default())?;
+        let exclude_engines = clean_names(profile.exclude_engines, "exclude_engines")?;
+        let exclude_domains = clean_names(profile.exclude_domains, "exclude_domains")?;
+        let min_engines = bounded_usize(profile.min_engines.unwrap_or(1), 1, 16, "min_engines")?;
+        let engine_yield_threshold = bounded_ratio(
+            profile.engine_yield_threshold.unwrap_or(0.5),
+            "engine_yield_threshold",
+        )?;
+        let accept = clean_accept(
+            non_empty_env(&env, "OWNSEARCH_ACCEPT")
+                .or(profile.accept)
+                .unwrap_or_else(|| DEFAULT_ACCEPT.to_owned()),
+        )?;
+        let search_presets = clean_presets(profile.search_presets.unwrap_or_default())?;
         Ok(Self {
             http: overrides
                 .http
@@ -404,7 +448,7 @@ impl Settings {
             )?,
             scan_jitter_ms: env_parse::<u64>(&env, "OWNSEARCH_SCAN_JITTER_MS")?
                 .or(profile.scan_jitter_ms)
-                .unwrap_or(250)
+                .unwrap_or(750)
                 .min(10_000),
             probe_timeout_secs,
             scan_deadline_secs,
@@ -475,13 +519,29 @@ impl Settings {
                 "cert_min_days",
             )?)
             .unwrap_or(365),
-            search_deadline_secs: bounded_u64(
-                env_parse(&env, "OWNSEARCH_SEARCH_DEADLINE_SECS")?
-                    .or(profile.search_deadline_secs)
+            search_deadline_fast_secs: bounded_u64(
+                env_parse(&env, "OWNSEARCH_SEARCH_DEADLINE_FAST_SECS")?
+                    .or(profile.search_deadline_fast_secs)
+                    .unwrap_or(10),
+                1,
+                MAX_SEARCH_DEADLINE_SECS,
+                "search_deadline_fast_secs",
+            )?,
+            search_deadline_balanced_secs: bounded_u64(
+                env_parse(&env, "OWNSEARCH_SEARCH_DEADLINE_BALANCED_SECS")?
+                    .or(profile.search_deadline_balanced_secs)
                     .unwrap_or(30),
                 1,
-                MAX_TIMEOUT_SECS,
-                "search_deadline_secs",
+                MAX_SEARCH_DEADLINE_SECS,
+                "search_deadline_balanced_secs",
+            )?,
+            search_deadline_exhaustive_secs: bounded_u64(
+                env_parse(&env, "OWNSEARCH_SEARCH_DEADLINE_EXHAUSTIVE_SECS")?
+                    .or(profile.search_deadline_exhaustive_secs)
+                    .unwrap_or(60),
+                1,
+                MAX_SEARCH_DEADLINE_SECS,
+                "search_deadline_exhaustive_secs",
             )?,
             exhaustive_max: bounded_usize(
                 env_parse(&env, "OWNSEARCH_EXHAUSTIVE_MAX")?
@@ -577,6 +637,35 @@ impl Settings {
             allow_private_instances: env_parse(&env, "OWNSEARCH_ALLOW_PRIVATE_INSTANCES")?
                 .or(profile.allow_private_instances)
                 .unwrap_or(false),
+            allow_plain_http_private: env_parse(&env, "OWNSEARCH_ALLOW_PLAIN_HTTP_PRIVATE")?
+                .or(profile.allow_plain_http_private)
+                .unwrap_or(false),
+            public_fleet: env_parse(&env, "OWNSEARCH_PUBLIC_FLEET")?
+                .or(profile.public_fleet)
+                .unwrap_or(true),
+            instance_max_concurrent: bounded_usize(
+                env_parse(&env, "OWNSEARCH_INSTANCE_MAX_CONCURRENT")?
+                    .or(profile.instance_max_concurrent)
+                    .unwrap_or(4),
+                1,
+                64,
+                "instance_max_concurrent",
+            )?,
+            probe_daily_cap: bounded_usize(
+                env_parse(&env, "OWNSEARCH_PROBE_DAILY_CAP")?
+                    .or(profile.probe_daily_cap)
+                    .unwrap_or(96),
+                1,
+                10_000,
+                "probe_daily_cap",
+            )?,
+            engine_weights,
+            exclude_engines,
+            exclude_domains,
+            min_engines,
+            engine_yield_threshold,
+            accept,
+            search_presets,
             capsolver_key,
             capsolver_timeout_secs,
             proxy,
@@ -763,8 +852,12 @@ impl Settings {
         self.cert_min_days
     }
 
-    pub fn search_deadline_secs(&self) -> u64 {
-        self.search_deadline_secs
+    pub fn search_deadline_secs(&self, mode: crate::types::SearchMode) -> u64 {
+        match mode {
+            crate::types::SearchMode::Fast => self.search_deadline_fast_secs,
+            crate::types::SearchMode::Balanced => self.search_deadline_balanced_secs,
+            crate::types::SearchMode::Exhaustive => self.search_deadline_exhaustive_secs,
+        }
     }
 
     pub fn exhaustive_max(&self) -> usize {
@@ -833,6 +926,50 @@ impl Settings {
 
     pub fn allow_private_instances(&self) -> bool {
         self.allow_private_instances
+    }
+
+    pub fn allow_plain_http_private(&self) -> bool {
+        self.allow_plain_http_private
+    }
+
+    pub fn public_fleet(&self) -> bool {
+        self.public_fleet
+    }
+
+    pub fn instance_max_concurrent(&self) -> usize {
+        self.instance_max_concurrent
+    }
+
+    pub fn probe_daily_cap(&self) -> usize {
+        self.probe_daily_cap
+    }
+
+    pub fn engine_weights(&self) -> &BTreeMap<String, f64> {
+        &self.engine_weights
+    }
+
+    pub fn exclude_engines(&self) -> &[String] {
+        &self.exclude_engines
+    }
+
+    pub fn exclude_domains(&self) -> &[String] {
+        &self.exclude_domains
+    }
+
+    pub fn min_engines(&self) -> usize {
+        self.min_engines
+    }
+
+    pub fn engine_yield_threshold(&self) -> f64 {
+        self.engine_yield_threshold
+    }
+
+    pub fn accept(&self) -> &str {
+        &self.accept
+    }
+
+    pub fn search_presets(&self) -> &BTreeMap<String, PresetConfig> {
+        &self.search_presets
     }
 
     pub fn capsolver_key(&self) -> Option<&SecretString> {
@@ -967,8 +1104,16 @@ impl Settings {
             ),
             ("cert_min_days".to_owned(), self.cert_min_days.to_string()),
             (
-                "search_deadline_secs".to_owned(),
-                self.search_deadline_secs.to_string(),
+                "search_deadline_fast_secs".to_owned(),
+                self.search_deadline_fast_secs.to_string(),
+            ),
+            (
+                "search_deadline_balanced_secs".to_owned(),
+                self.search_deadline_balanced_secs.to_string(),
+            ),
+            (
+                "search_deadline_exhaustive_secs".to_owned(),
+                self.search_deadline_exhaustive_secs.to_string(),
             ),
             ("exhaustive_max".to_owned(), self.exhaustive_max.to_string()),
             (
@@ -1007,6 +1152,61 @@ impl Settings {
             (
                 "allow_private_instances".to_owned(),
                 self.allow_private_instances.to_string(),
+            ),
+            (
+                "allow_plain_http_private".to_owned(),
+                self.allow_plain_http_private.to_string(),
+            ),
+            ("public_fleet".to_owned(), self.public_fleet.to_string()),
+            (
+                "instance_max_concurrent".to_owned(),
+                self.instance_max_concurrent.to_string(),
+            ),
+            (
+                "probe_daily_cap".to_owned(),
+                self.probe_daily_cap.to_string(),
+            ),
+            ("min_engines".to_owned(), self.min_engines.to_string()),
+            (
+                "exclude_engines".to_owned(),
+                list_text(
+                    (!self.exclude_engines.is_empty()).then_some(self.exclude_engines.as_slice()),
+                ),
+            ),
+            (
+                "exclude_domains".to_owned(),
+                list_text(
+                    (!self.exclude_domains.is_empty()).then_some(self.exclude_domains.as_slice()),
+                ),
+            ),
+            ("accept".to_owned(), self.accept.clone()),
+            (
+                "engine_yield_threshold".to_owned(),
+                self.engine_yield_threshold.to_string(),
+            ),
+            (
+                "search_presets".to_owned(),
+                if self.search_presets.is_empty() {
+                    "<defaults>".to_owned()
+                } else {
+                    self.search_presets
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(",")
+                },
+            ),
+            (
+                "engine_weights".to_owned(),
+                match self.engine_weights.is_empty() {
+                    true => "<none>".to_owned(),
+                    false => self
+                        .engine_weights
+                        .iter()
+                        .map(|(engine, weight)| format!("{engine}={weight}"))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                },
             ),
             (
                 "capsolver".to_owned(),
@@ -1240,6 +1440,119 @@ fn clean_list(values: Vec<String>) -> Result<Vec<String>> {
     Ok(cleaned)
 }
 
+fn clean_names(values: Option<Vec<String>>, field: &str) -> Result<Vec<String>> {
+    let Some(values) = values else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<String> = Vec::new();
+    for value in values {
+        let name = value.trim().to_ascii_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        if name.chars().count() > 128 || name.chars().any(char::is_control) {
+            return Err(Error::Config(format!(
+                "{field} holds a value that is not a name"
+            )));
+        }
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PresetConfig {
+    #[serde(default)]
+    pub categories: Option<Vec<String>>,
+    #[serde(default)]
+    pub engines_allow: Option<Vec<String>>,
+    #[serde(default)]
+    pub engines_deny: Option<Vec<String>>,
+    #[serde(default)]
+    pub engine_weights: Option<BTreeMap<String, f64>>,
+    #[serde(default)]
+    pub min_engines: Option<usize>,
+}
+
+fn clean_accept(raw: String) -> Result<String> {
+    let accept = raw.trim().to_owned();
+    if accept.is_empty() || accept.chars().count() > 512 || accept.chars().any(char::is_control) {
+        return Err(Error::Config(
+            "accept must be a header value of 1 to 512 characters".into(),
+        ));
+    }
+    Ok(accept)
+}
+
+fn bounded_ratio(value: f64, name: &str) -> Result<f64> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(Error::Config(format!("{name} is {value}; use 0 to 1")))
+    }
+}
+
+fn clean_presets(values: BTreeMap<String, PresetConfig>) -> Result<BTreeMap<String, PresetConfig>> {
+    let mut out: BTreeMap<String, PresetConfig> = BTreeMap::new();
+    for (raw_name, mut preset) in values {
+        let name = raw_name.trim().to_ascii_lowercase();
+        if name.is_empty() || name.chars().count() > 32 || name.chars().any(char::is_control) {
+            return Err(Error::Config(
+                "search_presets holds a name that is not a word".into(),
+            ));
+        }
+        preset.categories = preset.categories.map(|list| {
+            list.into_iter()
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .collect()
+        });
+        preset.engines_allow = preset
+            .engines_allow
+            .map(|list| clean_names(Some(list), "search_presets.engines_allow"))
+            .transpose()?;
+        preset.engines_deny = preset
+            .engines_deny
+            .map(|list| clean_names(Some(list), "search_presets.engines_deny"))
+            .transpose()?;
+        preset.engine_weights = preset.engine_weights.map(clean_weights).transpose()?;
+        if let Some(min_engines) = preset.min_engines
+            && !(1..=16).contains(&min_engines)
+        {
+            return Err(Error::Config(format!(
+                "search_presets.{name}.min_engines is {min_engines}; use 1 to 16"
+            )));
+        }
+        out.insert(name, preset);
+    }
+    Ok(out)
+}
+
+fn clean_weights(values: BTreeMap<String, f64>) -> Result<BTreeMap<String, f64>> {
+    let mut out: BTreeMap<String, f64> = BTreeMap::new();
+    for (raw_engine, weight) in values {
+        let engine = raw_engine.trim().to_ascii_lowercase();
+        if engine.is_empty() {
+            continue;
+        }
+        if engine.chars().count() > 64 || engine.chars().any(char::is_control) {
+            return Err(Error::Config(
+                "engine_weights holds an engine name that is not a name".into(),
+            ));
+        }
+        if !weight.is_finite() || !(0.0..=10.0).contains(&weight) {
+            return Err(Error::Config(format!(
+                "engine_weights.{engine} is {weight}; use 0 to 10"
+            )));
+        }
+        out.insert(engine, weight);
+    }
+    Ok(out)
+}
+
 const fn profile_version() -> u32 {
     1
 }
@@ -1461,7 +1774,18 @@ mod tests {
         assert!(settings.html_fallback());
         assert!(!settings.google_required());
         assert_eq!(settings.ai_db_mode(), AiDbMode::ReadWrite);
-        assert_eq!(settings.search_deadline_secs(), 30);
+        assert_eq!(
+            settings.search_deadline_secs(crate::types::SearchMode::Fast),
+            10
+        );
+        assert_eq!(
+            settings.search_deadline_secs(crate::types::SearchMode::Balanced),
+            30
+        );
+        assert_eq!(
+            settings.search_deadline_secs(crate::types::SearchMode::Exhaustive),
+            60
+        );
         assert_eq!(settings.exhaustive_max(), 16);
         assert_eq!(settings.result_cap(), 25);
         assert_eq!(settings.cache_ttl_secs(), 300);

@@ -39,7 +39,7 @@ async fn a_config_answer_is_read_into_capabilities() {
     let settings = common::settings(&dir);
     let client = FleetClient::new(&settings).expect("client");
     let base = Url::parse(&format!("{}/", server.uri())).expect("url");
-    let report = config_client::fetch(&client, &base, &CancellationToken::new()).await;
+    let report = config_client::fetch(&client, &base, &CancellationToken::new(), None).await;
     assert_eq!(report.outcome, ProbeOutcome::Success);
     let document = report.value.expect("config");
     assert!(document.exact_google());
@@ -61,7 +61,7 @@ async fn a_config_answer_that_is_not_json_is_a_parser_error() {
     let settings = common::settings(&dir);
     let client = FleetClient::new(&settings).expect("client");
     let base = Url::parse(&format!("{}/", server.uri())).expect("url");
-    let report = config_client::fetch(&client, &base, &CancellationToken::new()).await;
+    let report = config_client::fetch(&client, &base, &CancellationToken::new(), None).await;
     assert_eq!(report.outcome, ProbeOutcome::ParserError);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -86,7 +86,8 @@ async fn a_json_search_answer_yields_results() {
     let settings = common::settings(&dir);
     let client = FleetClient::new(&settings).expect("client");
     let base = Url::parse(&format!("{}/", server.uri())).expect("url");
-    let report = search_json::fetch(&client, &base, &query(), &CancellationToken::new()).await;
+    let report =
+        search_json::fetch(&client, &base, &query(), &CancellationToken::new(), None).await;
     assert_eq!(report.outcome, ProbeOutcome::Success);
     assert_eq!(
         report.value.as_ref().map(|search| search.result_count()),
@@ -107,7 +108,8 @@ async fn a_403_marks_json_as_refused_and_never_retries() {
     let settings = common::settings(&dir);
     let client = FleetClient::new(&settings).expect("client");
     let base = Url::parse(&format!("{}/", server.uri())).expect("url");
-    let report = search_json::fetch(&client, &base, &query(), &CancellationToken::new()).await;
+    let report =
+        search_json::fetch(&client, &base, &query(), &CancellationToken::new(), None).await;
     assert_eq!(report.outcome, ProbeOutcome::Refused);
     assert_eq!(report.http_status, Some(403));
     assert_eq!(server.received_requests().await.expect("requests").len(), 1);
@@ -128,7 +130,8 @@ async fn a_200_that_is_not_json_marks_the_format_as_denied() {
     let settings = common::settings(&dir);
     let client = FleetClient::new(&settings).expect("client");
     let base = Url::parse(&format!("{}/", server.uri())).expect("url");
-    let report = search_json::fetch(&client, &base, &query(), &CancellationToken::new()).await;
+    let report =
+        search_json::fetch(&client, &base, &query(), &CancellationToken::new(), None).await;
     assert_eq!(report.outcome, ProbeOutcome::Refused);
     assert_eq!(report.error_code.as_deref(), Some("format.json_disabled"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -153,7 +156,8 @@ async fn the_html_fallback_parses_a_plain_theme() {
     let settings = common::settings(&dir);
     let client = FleetClient::new(&settings).expect("client");
     let base = Url::parse(&format!("{}/", server.uri())).expect("url");
-    let report = search_html::fetch(&client, &base, &query(), &CancellationToken::new()).await;
+    let report =
+        search_html::fetch(&client, &base, &query(), &CancellationToken::new(), None).await;
     assert_eq!(report.outcome, ProbeOutcome::Success);
     let parsed = report.value.expect("html");
     assert_eq!(parsed.results.len(), 1);
@@ -179,7 +183,8 @@ async fn a_captcha_page_is_blocked() {
     let settings = common::settings(&dir);
     let client = FleetClient::new(&settings).expect("client");
     let base = Url::parse(&format!("{}/", server.uri())).expect("url");
-    let report = search_html::fetch(&client, &base, &query(), &CancellationToken::new()).await;
+    let report =
+        search_html::fetch(&client, &base, &query(), &CancellationToken::new(), None).await;
     assert_eq!(report.outcome, ProbeOutcome::Blocked);
     assert!(report.blocked);
     let _ = std::fs::remove_dir_all(&dir);
@@ -197,7 +202,8 @@ async fn a_429_stops_after_one_request() {
     let settings = common::settings(&dir);
     let client = FleetClient::new(&settings).expect("client");
     let base = Url::parse(&format!("{}/", server.uri())).expect("url");
-    let report = search_json::fetch(&client, &base, &query(), &CancellationToken::new()).await;
+    let report =
+        search_json::fetch(&client, &base, &query(), &CancellationToken::new(), None).await;
     assert_eq!(report.outcome, ProbeOutcome::RateLimited);
     assert!(report.rate_limited);
     assert_eq!(server.received_requests().await.expect("requests").len(), 1);
@@ -222,7 +228,8 @@ async fn an_oversized_body_is_cut_at_the_cap() {
     let settings = common::settings_with(&dir, &[("OWNSEARCH_MAX_UPSTREAM_BYTES", "131072")]);
     let client = FleetClient::new(&settings).expect("client");
     let base = Url::parse(&format!("{}/", server.uri())).expect("url");
-    let report = search_json::fetch(&client, &base, &query(), &CancellationToken::new()).await;
+    let report =
+        search_json::fetch(&client, &base, &query(), &CancellationToken::new(), None).await;
     assert!(report.truncated);
     assert!(report.bytes <= 128 * 1024);
     let _ = std::fs::remove_dir_all(&dir);
@@ -247,7 +254,8 @@ async fn a_json_answer_that_mentions_a_challenge_is_still_a_success() {
     let settings = common::settings(&dir);
     let client = FleetClient::new(&settings).expect("client");
     let base = Url::parse(&format!("{}/", server.uri())).expect("url");
-    let report = search_json::fetch(&client, &base, &query(), &CancellationToken::new()).await;
+    let report =
+        search_json::fetch(&client, &base, &query(), &CancellationToken::new(), None).await;
     assert_eq!(report.outcome, ProbeOutcome::Success);
     let _ = std::fs::remove_dir_all(&dir);
 }

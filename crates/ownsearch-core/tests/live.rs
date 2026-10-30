@@ -51,6 +51,11 @@ async fn a_live_scan_and_search_returns_attributed_results() {
         limit: 10,
         mode: SearchMode::Balanced,
         deadline_override_secs: None,
+        dedupe: true,
+        min_engines: None,
+        instance_ids: Vec::new(),
+        engine_weights: std::collections::BTreeMap::new(),
+        exclude_engines: Vec::new(),
     };
     let outcome = search(&context, &request, &cancellation)
         .await
