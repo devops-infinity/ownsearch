@@ -7,51 +7,51 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    #[error("invalid arguments: {0}")]
+    #[error("the request has a bad argument: {0}")]
     InvalidArgs(String),
-    #[error("configuration: {0}")]
+    #[error("a setting is wrong: {0}")]
     Config(String),
-    #[error("policy refused the request: {0}")]
+    #[error("the operator policy refused the request: {0}")]
     PolicyRefused(String),
-    #[error("upstream returned {status}: {message}")]
+    #[error("the host returned HTTP {status}: {message}")]
     Upstream { status: u16, message: String },
-    #[error("upstream rate limit: {message}")]
+    #[error("the host is limiting requests: {message}")]
     RateLimited { message: String },
     #[error("the service is busy: {message}")]
     Busy { message: String },
-    #[error("upstream answer could not be parsed as {format}")]
+    #[error("the answer could not be read as {format}")]
     ParserFailed {
         format: &'static str,
         #[source]
         source: Box<dyn StdError + Send + Sync + 'static>,
     },
-    #[error("network failure while {context}")]
+    #[error("a network call failed while {context}")]
     Network {
         context: &'static str,
         #[source]
         source: Box<dyn StdError + Send + Sync + 'static>,
     },
-    #[error("local state failure: {0}")]
+    #[error("the local state failed: {0}")]
     State(String),
-    #[error("database failure while {context}")]
+    #[error("the database call failed while {context}")]
     Database {
         context: &'static str,
         #[source]
         source: Box<dyn StdError + Send + Sync + 'static>,
     },
-    #[error("local state is corrupt: {0}")]
+    #[error("the local state is damaged: {0}")]
     StateCorrupted(String),
-    #[error("the database records schema {found}, newer than this binary reads ({supported})")]
+    #[error("the database uses schema {found}, newer than this build reads ({supported})")]
     StateNewer { found: i64, supported: u32 },
-    #[error("ledger: {0}")]
+    #[error("the call ledger failed: {0}")]
     Ledger(String),
-    #[error("input or output failure while {context}")]
+    #[error("a file operation failed while {context}")]
     Io {
         context: &'static str,
         #[source]
         source: std::io::Error,
     },
-    #[error("json failure while {context}")]
+    #[error("a JSON step failed while {context}")]
     Json {
         context: &'static str,
         #[source]
@@ -67,11 +67,11 @@ pub enum Error {
     Cancelled,
     #[error("the request deadline of {deadline_ms} ms passed")]
     Timeout { deadline_ms: u64 },
-    #[error("browser failure: {0}")]
+    #[error("the browser step failed: {0}")]
     Browser(String),
-    #[error("the search found no usable instance")]
+    #[error("no instance in the fleet could answer")]
     NoFleet,
-    #[error("update: {0}")]
+    #[error("the update failed: {0}")]
     Update(String),
 }
 
@@ -127,67 +127,69 @@ impl Error {
                 "Fix the argument named in the message and call the tool again."
             }
             Self::Config(_) => {
-                "Fix the setting named in the message; `ownsearch doctor` prints every resolved value."
+                "Fix the setting named in the message. `ownsearch doctor` prints every value it resolved."
             }
             Self::PolicyRefused(_) => {
-                "Honor the operator policy named in the message; OwnSearch will not bypass it."
+                "The operator set this rule, and the message names it. Follow the rule, or ask the operator to change it."
             }
             Self::Upstream { status, .. } => match status {
                 400 | 422 => "Fix the request named in the message, then try again.",
                 401 | 403 => {
-                    "The host refused this request. For a search instance, enable HTML fallback only if the operator policy allows it; for a page, try another url or a browser render."
+                    "The host refused this request. For a search instance, turn on HTML fallback only if the operator allows it. For a page, try another url or a browser render."
                 }
                 404 => {
-                    "The host does not serve this path. For a search instance the scan marks it and moves on; for a page, check the url."
+                    "The host does not serve this path. For a search instance, the scan marks it and moves on. For a page, check the url."
                 }
-                429 => "Wait for the rate window the host reports before retrying.",
-                _ => "Retry later; for a search, run `ownsearch scan` to refresh the fleet.",
+                429 => "Wait for the rate window the host reports, then retry.",
+                _ => {
+                    "Retry later. If a search keeps failing, run `ownsearch scan` to refresh the fleet."
+                }
             },
             Self::RateLimited { .. } => {
-                "Wait for the rate window the host reports; OwnSearch never retries a 429 in the same run."
+                "Wait for the rate window the host reports. OwnSearch does not retry a 429 in the same run."
             }
             Self::Busy { .. } => {
-                "Retry shortly; the local state database or the search queue is saturated."
+                "Retry in a moment. The local database or the search queue is full."
             }
             Self::ParserFailed { .. } => {
-                "The content was read but not understood. Try another format or another URL, and report the source if it repeats."
+                "The content came back but could not be read. Try another format or another url, and report the source if it keeps happening."
             }
-            Self::Network { .. } => "Check network reachability, then retry.",
+            Self::Network { .. } => "Check that the network can reach the host, then retry.",
             Self::State(_) | Self::Database { .. } => {
-                "Run `ownsearch db verify` and restore the newest backup if it reports damage."
+                "Run `ownsearch db verify`. If it reports damage, restore the newest backup."
             }
-            Self::StateCorrupted(_) => {
-                "Restore the newest verified backup with `ownsearch db backup` output beside it, then scan again."
-            }
+            Self::StateCorrupted(_) => "Restore the newest verified backup, then scan again.",
             Self::StateNewer { .. } => {
-                "This state database was written by a newer OwnSearch; run the newer release against it, or point OWNSEARCH_STATE_DIR at a different directory."
+                "This state database was written by a newer OwnSearch. Run the newer release against it, or point OWNSEARCH_STATE_DIR at another directory."
             }
             Self::Ledger(_) => {
-                "Run `ownsearch audit verify` to see which row failed. Restore args.key when you have it, or archive the chain with `ownsearch audit rotate --force` and let the next call start a fresh one."
+                "Run `ownsearch audit verify` to see which row failed. Restore `args.key` if you have it, or archive the chain with `ownsearch audit rotate --force` and let the next call start a new one."
             }
-            Self::Io { .. } => "Check the state and ledger directory permissions and free space.",
-            Self::Json { .. } => "Retry; if it repeats, run `ownsearch db verify`.",
+            Self::Io { .. } => {
+                "Check the permissions and the free space on the state and ledger directories."
+            }
+            Self::Json { .. } => "Retry. If it repeats, run `ownsearch db verify`.",
             Self::UnknownTool { .. } => {
-                "Call tools/list and use only the names it returns for this configuration."
+                "Call tools/list and use a name it returns for this configuration."
             }
             Self::WriteDisabled => {
-                "Database writes are disabled by the operator. Ask the operator to set OWNSEARCH_AI_DB_MODE=read-write and restart, or run the change through the ownsearch CLI."
+                "Writes are off for this session. Ask the operator to set OWNSEARCH_AI_DB_MODE=read-write and restart, or make the change with the ownsearch CLI."
             }
             Self::ConfirmationExpired => {
-                "Call the tool again with dry_run true to receive a fresh preview and token."
+                "Call the tool again with dry_run true to get a fresh preview and token."
             }
-            Self::Cancelled => "Call the tool again if the work is still needed.",
+            Self::Cancelled => "Call the tool again if you still need the work.",
             Self::Timeout { .. } => {
                 "Retry with a longer deadline where the tool accepts one, or narrow the request: fewer instances for a search, a smaller page or fewer links for a fetch."
             }
             Self::Browser(_) => {
-                "Retry; if it repeats, check that the headless browser can launch, or set OWNSEARCH_BROWSER=false and stay on the HTTP path."
+                "Retry. If it repeats, check that the headless browser can start, or set OWNSEARCH_BROWSER=false and stay on the HTTP path."
             }
             Self::NoFleet => {
-                "Call the ownsearch_scan tool, or run `ownsearch scan`, to refresh the fleet. If every instance is cooling down, `ownsearch instances list` shows the status and an operator can clear it with `ownsearch scan --force --instance <id>`."
+                "Call the ownsearch_scan tool, or run `ownsearch scan`, to refresh the fleet. If every instance is cooling down, `ownsearch instances list` shows the status, and an operator can clear it with `ownsearch scan --force --instance <id>`."
             }
             Self::Update(_) => {
-                "Follow the command named in the message: the install channel owns this update. For the install script, rerun `ownsearch update`."
+                "Follow the command named in the message. When the install script is the channel, rerun `ownsearch update`."
             }
         }
     }
@@ -335,7 +337,7 @@ mod tests {
         );
         assert_eq!(
             error.to_string(),
-            "network failure while probing an instance"
+            "a network call failed while probing an instance"
         );
         assert_eq!(error.causes(), vec!["connection reset".to_owned()]);
         assert_eq!(error.code(), "ownsearch.upstream_failed");

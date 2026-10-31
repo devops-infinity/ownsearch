@@ -383,7 +383,7 @@ async fn an_index_page_is_reported_as_refused_not_as_a_parser_error() {
     assert_eq!(failure.parser.as_deref(), Some("html"));
     assert_eq!(
         failure.reason.as_str(),
-        "the instance answered its index page instead of results"
+        "the instance sent its landing page instead of results"
     );
     assert_eq!(outcome.output.outcome, "failed");
     let notice = outcome
@@ -425,7 +425,7 @@ async fn an_index_page_under_a_json_content_type_is_refused() {
     assert_eq!(failure.parser.as_deref(), Some("html"));
     assert_eq!(
         failure.reason.as_str(),
-        "the instance answered its index page instead of results"
+        "the instance sent its landing page instead of results"
     );
     assert_eq!(outcome.output.outcome, "failed");
     let notice = outcome

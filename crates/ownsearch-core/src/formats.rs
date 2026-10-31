@@ -18,7 +18,7 @@ pub(crate) async fn fetch(
     if !fetched.is_success() {
         return Err(Error::Upstream {
             status: fetched.status,
-            message: format!("the instance answered HTTP {}", fetched.status),
+            message: format!("the instance returned HTTP {}", fetched.status),
         });
     }
     parse(format, &fetched.text())
@@ -49,7 +49,7 @@ pub(crate) fn parse_rss(body: &str) -> Result<Vec<Entry>> {
         }
         return Err(Error::parser(
             "searxng rss",
-            std::io::Error::other("the answer is not an rss document"),
+            std::io::Error::other("the answer is not an RSS document"),
         ));
     }
     let mut entries = Vec::new();
@@ -81,7 +81,7 @@ pub(crate) fn parse_csv(body: &str) -> Result<Vec<Entry>> {
     let Some(header) = lines.next() else {
         return Err(Error::parser(
             "searxng csv",
-            std::io::Error::other("the answer is empty"),
+            std::io::Error::other("the answer had no content"),
         ));
     };
     let names: Vec<String> = split_csv(header)

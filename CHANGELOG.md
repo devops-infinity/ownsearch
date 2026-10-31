@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Changed
+
+- Every error message, remedy, notice, tool description, and failure reason now reads as a plain sentence, and the wording names the page case beside the search instance case. The stable `ownsearch.*` codes and the RFC 9457 problem details body are unchanged.
+
 ### Fixed
 
 - A search that loses a source adds a `search.sources_failed` warning with the count and the retry step, so a client reading `outcome` and `messages` learns why the result is partial.

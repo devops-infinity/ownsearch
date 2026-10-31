@@ -65,7 +65,7 @@ impl JsonSearch {
         if !is_document {
             return Err(Error::parser(
                 "searxng json search",
-                std::io::Error::other("the answer holds no results array"),
+                std::io::Error::other("the answer has no results list"),
             ));
         }
         let mut search: Self = serde_json::from_value(answer)
@@ -136,13 +136,13 @@ pub async fn fetch(
     let outcome = classify_outcome(&fetched);
     if outcome != crate::types::ProbeOutcome::Success {
         let mut report = ProbeReport::from_fetch(&fetched, outcome);
-        report.error_message = Some(format!("the instance answered HTTP {}", fetched.status));
+        report.error_message = Some(format!("the instance returned HTTP {}", fetched.status));
         return report;
     }
     if !fetched.is_json() {
         let mut report = ProbeReport::from_fetch(&fetched, crate::types::ProbeOutcome::Refused);
         report.error_code = Some("format.json_disabled".to_owned());
-        report.error_message = Some("the instance answered with a non-JSON body".to_owned());
+        report.error_message = Some("the instance did not return JSON".to_owned());
         return report;
     }
     match JsonSearch::parse(&fetched.body) {
@@ -165,7 +165,7 @@ pub async fn fetch(
                 let mut report =
                     ProbeReport::from_fetch(&fetched, crate::types::ProbeOutcome::Refused);
                 report.error_message =
-                    Some("the instance answered its index page instead of results".to_owned());
+                    Some("the instance sent its landing page instead of results".to_owned());
                 return report;
             }
             ProbeReport {
