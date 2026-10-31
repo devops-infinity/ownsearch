@@ -194,6 +194,10 @@ impl Error {
         }
     }
 
+    pub fn retryable(&self) -> bool {
+        retryable_code(self.code())
+    }
+
     pub fn to_json(&self) -> Value {
         let message =
             crate::sanitize::cap(&crate::sanitize::sanitize(&self.public_message()), 500).0;
@@ -201,6 +205,7 @@ impl Error {
         body.insert("code".to_owned(), json!(self.code()));
         body.insert("message".to_owned(), json!(message));
         body.insert("remedy".to_owned(), json!(self.remedy()));
+        body.insert("retryable".to_owned(), json!(self.retryable()));
         Value::Object(body)
     }
 
@@ -316,6 +321,19 @@ fn redact_url_queries(text: &str) -> String {
     redacted_text
 }
 
+pub(crate) fn retryable_code(code: &str) -> bool {
+    matches!(
+        code,
+        "ownsearch.timeout"
+            | "ownsearch.rate_limited"
+            | "ownsearch.busy"
+            | "ownsearch.upstream_failed"
+            | "ownsearch.browser_failed"
+            | "ownsearch.cancelled"
+            | "ownsearch.no_fleet"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +359,24 @@ mod tests {
         );
         assert_eq!(error.causes(), vec!["connection reset".to_owned()]);
         assert_eq!(error.code(), "ownsearch.upstream_failed");
+    }
+
+    #[test]
+    fn a_transient_error_is_marked_retryable_and_a_refusal_is_not() {
+        assert!(Error::Timeout { deadline_ms: 100 }.to_json()["retryable"] == json!(true));
+        assert!(
+            Error::RateLimited {
+                message: "429".to_owned()
+            }
+            .to_json()["retryable"]
+                == json!(true)
+        );
+        assert!(
+            Error::InvalidArgs("q".to_owned()).to_json()["retryable"] == json!(false),
+            "a bad argument is not worth a retry"
+        );
+        assert!(Error::NoFleet.retryable());
+        assert!(!Error::WriteDisabled.retryable());
     }
 
     #[test]

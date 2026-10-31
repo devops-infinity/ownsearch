@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- The README carries a copy-and-send prompt for an AI assistant. It installs OwnSearch from the repository, runs the checks, scores the instance fleet, and prints the MCP setup for the client.
+- Every error body carries `retryable`, so a client can tell a timeout or a rate limit from a refusal it should not repeat.
+
 ### Changed
 
 - Every error message, remedy, notice, tool description, and failure reason now reads as a plain sentence, and the wording names the page case beside the search instance case. The stable `ownsearch.*` codes and the RFC 9457 problem details body are unchanged.

@@ -2,7 +2,7 @@
 
 Reference for the eight MCP tools, the arguments each accepts, how a search picks its instances, and how an instance earns its score.
 
-Every search and fetch answer carries `outcome`, one of `success`, `partial`, `empty`, or `failed`, and `messages`, a list of notices. A notice has `level` (`info`, `warning`, or `error`), a stable `code`, a plain `message`, and a `nextStep` that names the action available to the caller. A client reads `outcome` first, then the notices, so it can decide its next call without parsing prose. A hard failure still returns the error body with `code`, `message`, and `remedy`.
+Every search and fetch answer carries `outcome`, one of `success`, `partial`, `empty`, or `failed`, and `messages`, a list of notices. A notice has `level` (`info`, `warning`, or `error`), a stable `code`, a plain `message`, and a `nextStep` that names the action available to the caller. A client reads `outcome` first, then the notices, so it can decide its next call without parsing prose. A hard failure still returns the error body with `code`, `message`, `remedy`, and `retryable`, which is true when a second attempt can work and false when the request itself is the problem.
 
 A search that loses a source adds a `search.sources_failed` warning with the count and the retry step, and every entry in `sources.failed` names the `parser` that was serving that source when it failed.
 

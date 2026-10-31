@@ -92,6 +92,30 @@ ownsearch --version
 
 Keep one channel only. Two installs of the same binary on your `PATH` make it unclear which one your MCP client starts.
 
+### Install with an AI assistant
+
+Copy the block below into your AI assistant and send it. The assistant installs OwnSearch from the repository, checks the result, scores the instance fleet, and prints the MCP setup for your client. Edit the last line if you want it to do more.
+
+```text
+Install OwnSearch on this machine from https://github.com/devops-infinity/ownsearch, then get it ready to use.
+
+1. Check for cargo, git, curl, and a C compiler. If cargo is missing, install Rust from https://rustup.rs and tell me what you installed.
+2. Install OwnSearch with one channel, and only one:
+   - Homebrew: brew trust devops-infinity/tap, then brew install devops-infinity/tap/ownsearch
+   - Cargo: cargo install --locked ownsearch
+   - Shell installer: curl --proto '=https' --tlsv1.2 -sSf https://github.com/devops-infinity/ownsearch/releases/latest/download/ownsearch-installer.sh | sh
+   Use the channel that fits this machine and tell me which one you used.
+3. Run ownsearch --version and confirm the binary is on PATH. If two installs exist, remove one and tell me which you kept.
+4. Run ownsearch doctor and show me the state directory, the database schema, and every setting that differs from its default.
+5. Run ownsearch scan --limit 20 to score the public instance fleet, then ownsearch instances list and show me the active instances with their scores.
+6. Print the exact MCP configuration for my client that starts ownsearch serve, and tell me which file it goes in.
+7. Start the server and run one search with the query "rust async runtime". Show me the JSON answer, including outcome and any message.
+8. Stop the server and summarize what you installed, where it lives, the version, and the command I run to update it later.
+9. If any step fails, stop there, show me the exact error, and tell me the one command that fixes it.
+```
+
+The manual channels above stay available if the assistant cannot reach the machine.
+
 ### Update an install
 
 ```sh

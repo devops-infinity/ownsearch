@@ -511,6 +511,7 @@ fn problem(
         "instance": instance,
         "code": code,
         "remedy": remedy,
+        "retryable": crate::error::retryable_code(code),
     });
     let mut response = (status, Json(body)).into_response();
     response.headers_mut().insert(
