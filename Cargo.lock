@@ -2474,7 +2474,7 @@ dependencies = [
 
 [[package]]
 name = "ownsearch"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2497,7 +2497,7 @@ dependencies = [
 
 [[package]]
 name = "ownsearch-core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "axum",
  "chromey",

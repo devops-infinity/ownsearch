@@ -4,9 +4,12 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-01
+
 ### Added
 
 - `OWNSEARCH_PROXIES` takes a comma-separated proxy list and rotates every request through it, so a blocked egress address no longer takes the whole fleet down. An entry that fails three times in a row leaves the rotation for five minutes. `OWNSEARCH_PROXY` still works and is read when the list is unset. A proxy URL without a scheme gets `http://` in front of it, and one that still does not parse is refused with a clear error instead of being silently ignored.
+- A private or loopback target is fetched directly, so a local instance never travels through a proxy gateway.
 
 ## [0.10.0] - 2026-10-31
 
@@ -339,7 +342,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - PDF text is read with `lopdf`, so the tree no longer pulls the unmaintained `pdf-extract` dependency.
 - Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.
 
-[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/devops-infinity/ownsearch/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/devops-infinity/ownsearch/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/devops-infinity/ownsearch/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/devops-infinity/ownsearch/compare/v0.7.0...v0.8.0
