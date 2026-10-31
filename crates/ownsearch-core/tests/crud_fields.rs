@@ -8,7 +8,7 @@ mod common;
 
 use std::sync::Arc;
 
-use ownsearch_core::{InstanceStatus, ToolContext};
+use ownsearch_core::{InstanceStatus, ProbeKind, ToolContext};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -37,6 +37,18 @@ async fn crud(ctx: &Arc<ToolContext>, args: Value) -> Result<Value, Value> {
         return Err(serde_json::from_str(&body).unwrap_or(Value::Null));
     }
     Ok(result.structured_content.unwrap_or(Value::Null))
+}
+
+async fn query(ctx: &Arc<ToolContext>, args: Value) -> Value {
+    let map = args.as_object().cloned().unwrap_or_default();
+    let result = ownsearch_core::call_tool(
+        ctx,
+        "ownsearch_db_query",
+        Some(&map),
+        &CancellationToken::new(),
+    )
+    .await;
+    result.structured_content.unwrap_or(Value::Null)
 }
 
 async fn apply(ctx: &Arc<ToolContext>, operation: &str, fields: Value) -> Result<Value, Value> {
@@ -205,6 +217,9 @@ async fn deleting_an_instance_removes_its_rows() {
     let ctx = Arc::new(ToolContext::new(settings).expect("context"));
     let id = add_instance(&ctx, "https://gone.example/");
     assert_eq!(id, 1);
+    ctx.store
+        .record_metrics(id, ProbeKind::JsonSearch, 120, true, 10, 4096)
+        .expect("metrics");
     let preview = crud(
         &ctx,
         json!({
@@ -250,6 +265,12 @@ async fn deleting_an_instance_removes_its_rows() {
             .iter()
             .all(|event| event.get("instanceId").and_then(Value::as_i64) != Some(id)),
         "the deleted instance events must be gone"
+    );
+    let metrics = query(&ctx, json!({"entity": "metrics", "instance_id": id})).await;
+    assert_eq!(
+        metrics.get("count").and_then(Value::as_u64),
+        Some(0),
+        "the deleted instance metrics must be gone"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

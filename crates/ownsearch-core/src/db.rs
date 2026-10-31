@@ -1917,6 +1917,10 @@ impl Store {
             params![instance_id],
         )?;
         transaction.execute(
+            "DELETE FROM hourly_probe_metrics WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        transaction.execute(
             "DELETE FROM probes WHERE instance_id = ?1",
             params![instance_id],
         )?;
