@@ -4,6 +4,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-31
+
 ### Added
 
 - The README carries a copy-and-send prompt for an AI assistant. It installs OwnSearch from the repository, runs the checks, scores the instance fleet, and prints the MCP setup for the client.
@@ -327,7 +329,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - PDF text is read with `lopdf`, so the tree no longer pulls the unmaintained `pdf-extract` dependency.
 - Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.
 
-[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/devops-infinity/ownsearch/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/devops-infinity/ownsearch/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/devops-infinity/ownsearch/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/devops-infinity/ownsearch/compare/v0.5.0...v0.6.0
