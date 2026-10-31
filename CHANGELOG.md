@@ -4,6 +4,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-01
+
 ### Fixed
 
 - Deleting an instance through `ownsearch_db_crud` clears its hourly probe metrics first, so the delete no longer fails with `ownsearch.state_error` once that instance has been probed.
@@ -346,7 +348,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - PDF text is read with `lopdf`, so the tree no longer pulls the unmaintained `pdf-extract` dependency.
 - Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.
 
-[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/devops-infinity/ownsearch/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/devops-infinity/ownsearch/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/devops-infinity/ownsearch/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/devops-infinity/ownsearch/compare/v0.8.0...v0.9.0
