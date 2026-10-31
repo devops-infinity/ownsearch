@@ -14,6 +14,8 @@ use ownsearch_core::{
 };
 use serde_json::{Value, json};
 
+static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     listener.local_addr().expect("addr").port()
@@ -62,6 +64,7 @@ impl Drop for Server {
 
 async fn start(name: &str, extra: &[(&str, &str)]) -> Server {
     ownsearch_core::install_crypto_provider();
+    let _start_guard = START_LOCK.lock().await;
     let mut failure = String::new();
     for attempt in 0..3 {
         let dir = common::temp_dir(&format!("{name}-{attempt}"));
