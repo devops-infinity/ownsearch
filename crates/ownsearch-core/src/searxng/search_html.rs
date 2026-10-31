@@ -114,7 +114,10 @@ impl HtmlSearch {
             results.is_empty() && (captcha.is_some() || crate::searxng::is_challenge_page(markup));
         let has_results_root = markup.contains("id=\"results\"") || markup.contains("id=\"urls\"");
         Self {
-            drifted: results.is_empty() && !blocked && !has_results_root,
+            drifted: results.is_empty()
+                && !blocked
+                && (containers > 0 || !has_results_root)
+                && !crate::searxng::is_index_page(markup),
             results,
             containers,
             blocked,
@@ -176,12 +179,25 @@ pub async fn fetch(
     let markup = fetched.text();
     let parsed = HtmlSearch::parse(&markup, base);
     let blocked = parsed.blocked;
+    let served_index =
+        parsed.results.is_empty() && !blocked && crate::searxng::is_index_page(&markup);
     let outcome = if blocked {
         crate::types::ProbeOutcome::Blocked
+    } else if served_index {
+        crate::types::ProbeOutcome::Refused
     } else if parsed.drifted {
         crate::types::ProbeOutcome::ParserError
     } else {
         crate::types::ProbeOutcome::Success
+    };
+    let error_message = if blocked {
+        Some("the instance served a captcha page".to_owned())
+    } else if served_index {
+        Some("the instance answered its index page instead of results".to_owned())
+    } else if parsed.drifted {
+        Some("the instance answered a page with no results container".to_owned())
+    } else {
+        None
     };
     ProbeReport {
         value: Some(parsed),
@@ -192,7 +208,7 @@ pub async fn fetch(
         truncated: fetched.truncated,
         error_code: (outcome != crate::types::ProbeOutcome::Success)
             .then(|| outcome.as_str().to_owned()),
-        error_message: blocked.then(|| "the instance served a captcha page".to_owned()),
+        error_message,
         rate_limited: false,
         blocked,
         sample: (outcome == crate::types::ProbeOutcome::ParserError).then(|| fetched.body.clone()),
@@ -282,6 +298,26 @@ mod tests {
         let markup = r#"<html><body><div class="something-else"></div></body></html>"#;
         let parsed = HtmlSearch::parse(markup, &base());
         assert!(parsed.drifted);
+    }
+
+    #[test]
+    fn a_searxng_index_page_is_not_drift() {
+        let markup = r#"<html><head><meta name="endpoint" content="index"></head><body>
+            <main id="main_index"><form id="search" action="/searxng/search">
+            <input id="q" name="q" type="text" value=""></form></main></body></html>"#;
+        let parsed = HtmlSearch::parse(markup, &base());
+        assert!(!parsed.drifted);
+        assert!(parsed.results.is_empty());
+    }
+
+    #[test]
+    fn a_results_page_is_never_mistaken_for_an_index_page() {
+        let markup = r#"<html><head><meta name="endpoint" content="results"></head>
+            <body><div id="results"><article class="result">
+            <h3><a href="https://a.example/x">A title</a></h3></article></div></body></html>"#;
+        let parsed = HtmlSearch::parse(markup, &base());
+        assert!(!parsed.drifted);
+        assert_eq!(parsed.results.len(), 1);
     }
 
     #[test]

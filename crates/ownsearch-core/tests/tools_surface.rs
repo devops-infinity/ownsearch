@@ -519,6 +519,133 @@ async fn the_fetch_tool_extracts_a_page_as_markdown() {
 }
 
 #[tokio::test]
+async fn the_fetch_tool_returns_a_structured_json_document() {
+    let server = MockServer::start().await;
+    let markup = r#"<html lang="en"><head>
+        <title>Comet page</title>
+        <meta name="description" content="All about comets.">
+        <script type="application/ld+json">{"@type":"Article","headline":"Comets"}</script>
+        </head><body>
+        <main><h1>Comets</h1><p>Comets are icy bodies that release gas.</p>
+        <a href="https://a.example/orbit">Orbit</a></main>
+    </body></html>"#;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(markup.as_bytes().to_vec(), "text/html"),
+        )
+        .mount(&server)
+        .await;
+    let dir = common::temp_dir("tools-fetch-json");
+    let settings = common::settings(&dir);
+    let ctx = Arc::new(ToolContext::new(settings).expect("context"));
+    let result = call(
+        &ctx,
+        "ownsearch_fetch",
+        json!({"url": format!("{}/page", server.uri()), "format": "json"}),
+    )
+    .await;
+    assert_eq!(result.is_error, Some(false), "{:?}", error_body(&result));
+    let body = structured(&result);
+    assert_eq!(body.get("format").and_then(Value::as_str), Some("json"));
+    assert_eq!(body.get("parser").and_then(Value::as_str), Some("main"));
+    let document = body.get("document").expect("document");
+    assert_eq!(
+        document.get("title").and_then(Value::as_str),
+        Some("Comet page")
+    );
+    assert_eq!(
+        document.get("description").and_then(Value::as_str),
+        Some("All about comets.")
+    );
+    assert_eq!(document.get("language").and_then(Value::as_str), Some("en"));
+    assert_eq!(
+        document
+            .get("headings")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        document
+            .get("links")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        document
+            .get("jsonLd")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    let used = document
+        .get("attempts")
+        .and_then(Value::as_array)
+        .and_then(|attempts| {
+            attempts
+                .iter()
+                .find(|attempt| attempt.get("used").and_then(Value::as_bool) == Some(true))
+        })
+        .and_then(|attempt| attempt.get("parser"))
+        .and_then(Value::as_str);
+    assert_eq!(used, Some("main"));
+    let requests = server.received_requests().await.expect("requests");
+    let agent = requests
+        .first()
+        .and_then(|request| request.headers.get("user-agent"))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(agent.starts_with("Mozilla/5.0 ("), "{agent}");
+    assert!(!agent.contains("OwnSearch"), "{agent}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_page_with_no_text_reports_an_empty_outcome_and_a_next_step() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            b"<html><body><script>let a = 1;</script></body></html>".to_vec(),
+            "text/html",
+        ))
+        .mount(&server)
+        .await;
+    let dir = common::temp_dir("tools-fetch-empty");
+    let settings = common::settings(&dir);
+    let ctx = Arc::new(ToolContext::new(settings).expect("context"));
+    let result = call(
+        &ctx,
+        "ownsearch_fetch",
+        json!({
+            "url": format!("{}/page", server.uri()),
+            "format": "markdown",
+            "render": "never"
+        }),
+    )
+    .await;
+    assert_eq!(result.is_error, Some(false), "{:?}", error_body(&result));
+    let body = structured(&result);
+    assert_eq!(body.get("outcome").and_then(Value::as_str), Some("empty"));
+    let notices = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    let empty = notices
+        .iter()
+        .find(|notice| notice.get("code").and_then(Value::as_str) == Some("fetch.empty"))
+        .expect("an empty notice");
+    assert_eq!(empty.get("level").and_then(Value::as_str), Some("warning"));
+    assert!(
+        empty
+            .get("nextStep")
+            .and_then(Value::as_str)
+            .is_some_and(|step| !step.is_empty())
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn the_fetch_tool_follows_same_host_links() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

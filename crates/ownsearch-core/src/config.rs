@@ -17,8 +17,14 @@ pub(crate) const DEFAULT_RETENTION_SECS: u64 = 259_200;
 pub(crate) const MIN_RETENTION_SECS: u64 = 3_600;
 pub(crate) const MAX_RETENTION_SECS: u64 = 7_776_000;
 
-pub(crate) const DEFAULT_USER_AGENT: &str =
-    "OwnSearch (MCP fleet scanner; +https://github.com/devops-infinity/ownsearch)";
+pub(crate) const BROWSER_USER_AGENTS: [&str; 6] = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0",
+];
 
 pub(crate) const DEFAULT_ACCEPT: &str = "text/html,application/json;q=0.9,*/*;q=0.8";
 
@@ -1004,7 +1010,11 @@ impl Settings {
     }
 
     pub fn user_agent(&self) -> String {
-        format!("{DEFAULT_USER_AGENT} v{}", crate::VERSION)
+        BROWSER_USER_AGENTS
+            .first()
+            .copied()
+            .unwrap_or_default()
+            .to_owned()
     }
 
     pub fn describe(&self) -> Vec<(String, String)> {

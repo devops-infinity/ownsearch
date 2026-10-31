@@ -40,15 +40,11 @@ A scan is skipped in offline mode, and while the database is in read-only AI mod
 
 ## User agent and request headers
 
-Every instance request sends:
+Every instance request carries a desktop browser user agent chosen at random from a pool of six: Chrome 155 and Chrome 151 on Windows, Chrome 131 on Windows and on macOS, Safari 17.6 on macOS, and Edge 153 on Windows. The pool is fixed in the binary, and the choice is random per request, so two requests from one process rarely present the same agent.
 
-```
-OwnSearch (MCP fleet scanner; +https://github.com/devops-infinity/ownsearch) v<version>
-```
+The CapSolver client still sends `OwnSearch captcha client`, and the headless browser sends the user agent of the Chromium build it runs.
 
-The agent names the product and a URL where an operator can read what it is. It does not claim to be a browser. Two clients carry a different agent: the CapSolver client sends `OwnSearch captcha client`, and the headless browser sends the user agent of the Chromium build it runs.
-
-The HTTP client sends `Accept`, `Accept-Language`, and `Accept-Encoding` (`gzip`, then brotli). The `Accept` value comes from `OWNSEARCH_ACCEPT` and defaults to `text/html,application/json;q=0.9,*/*;q=0.8`. A SearXNG limiter rejects a request whose `Accept` lacks `text/html`, whose `Accept-Encoding` lacks gzip or deflate, whose `Accept-Language` is empty, or whose User-Agent is missing. It adds no referrer and no browser user agent.
+The HTTP client sends `Accept`, `Accept-Language`, and `Accept-Encoding` (`gzip`, then brotli). The `Accept` value comes from `OWNSEARCH_ACCEPT` and defaults to `text/html,application/json;q=0.9,*/*;q=0.8`. A SearXNG limiter rejects a request whose `Accept` lacks `text/html`, whose `Accept-Encoding` lacks gzip or deflate, whose `Accept-Language` is empty, or whose User-Agent is missing. It adds no referrer.
 
 ## Retry policy
 

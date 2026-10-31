@@ -70,6 +70,7 @@ pub enum FetchFormat {
     Markdown,
     Text,
     Html,
+    Json,
 }
 
 impl FetchFormat {
@@ -78,6 +79,7 @@ impl FetchFormat {
             Self::Markdown => "markdown",
             Self::Text => "text",
             Self::Html => "html",
+            Self::Json => "json",
         }
     }
 }

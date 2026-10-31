@@ -14,7 +14,7 @@ use ownsearch_core::{InstanceStatus, InstanceType, ProbeOutcome, SafeSearch, Sea
 use ownsearch_core::{SearchRequest, Settings, Store, ToolContext, search};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn discovered(url: &str) -> DiscoveredInstance {
@@ -358,6 +358,96 @@ async fn a_parser_error_is_named_in_the_failure_list() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+const INDEX_PAGE: &str = r#"<html><head><meta name="endpoint" content="index"></head><body>
+    <main id="main_index"><form id="search" action="/search">
+    <input id="q" name="q" type="text" value=""></form></main></body></html>"#;
+
+#[tokio::test]
+async fn an_index_page_is_reported_as_refused_not_as_a_parser_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(INDEX_PAGE.as_bytes(), "text/html"))
+        .mount(&server)
+        .await;
+    let dir = common::temp_dir("flow-index-html");
+    let settings = common::settings(&dir);
+    let ctx = context(&settings);
+    let id = insert(&ctx.store, &format!("{}/", server.uri()));
+    activate(&ctx.store, id, true, 90.0);
+    let outcome = search(&ctx, &request(), &CancellationToken::new())
+        .await
+        .expect("search");
+    let failure = outcome.output.sources.failed.first().expect("a failure");
+    assert_eq!(failure.code.as_str(), "ownsearch.policy_refused");
+    assert_eq!(
+        failure.reason.as_str(),
+        "the instance answered its index page instead of results"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_index_page_under_a_json_content_type_is_refused() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(INDEX_PAGE.as_bytes(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    let dir = common::temp_dir("flow-index-json");
+    let settings = common::settings(&dir);
+    let ctx = context(&settings);
+    let id = insert(&ctx.store, &format!("{}/", server.uri()));
+    activate(&ctx.store, id, true, 90.0);
+    let outcome = search(&ctx, &request(), &CancellationToken::new())
+        .await
+        .expect("search");
+    let failure = outcome.output.sources.failed.first().expect("a failure");
+    assert_eq!(failure.code.as_str(), "ownsearch.policy_refused");
+    assert_eq!(
+        failure.reason.as_str(),
+        "the instance answered its index page instead of results"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_rss_fallback_success_is_named_in_the_fallbacks_list() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .and(query_param("format", "json"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(b"not json".to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .and(query_param("format", "rss"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"<rss><channel><item><title>Rust guide</title><link>https://a.example/rust</link><description>one</description></item></channel></rss>"#,
+            "application/rss+xml",
+        ))
+        .mount(&server)
+        .await;
+    let dir = common::temp_dir("flow-rss-fallback");
+    let settings = common::settings(&dir);
+    let ctx = context(&settings);
+    let id = insert(&ctx.store, &format!("{}/", server.uri()));
+    activate(&ctx.store, id, true, 90.0);
+    let outcome = search(&ctx, &request(), &CancellationToken::new())
+        .await
+        .expect("search");
+    assert!(outcome.output.sources.failed.is_empty());
+    assert_eq!(outcome.output.sources.fallbacks, vec![id]);
+    assert_eq!(outcome.output.results.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_failure_codes_cover_every_probe_outcome() {
     let cases = [
@@ -591,9 +681,9 @@ async fn a_slow_discovery_document_does_not_hold_the_search_past_its_budget() {
     assert!(
         !outcome
             .output
-            .warnings
+            .messages
             .iter()
-            .any(|warning| warning.contains("discovery")),
+            .any(|notice| notice.message.contains("discovery")),
         "a background refresh must not surface as a search warning"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -638,7 +728,7 @@ async fn a_hostile_html_title_is_capped_before_the_budget() {
     assert!(
         !outcome.output.results.is_empty(),
         "a capped title must still leave a result: {:?}",
-        outcome.output.warnings
+        outcome.output.messages
     );
     let title = outcome
         .output
@@ -866,9 +956,9 @@ async fn a_slow_instance_returns_partial_results_at_the_deadline() {
     assert!(
         outcome
             .output
-            .warnings
+            .messages
             .iter()
-            .any(|warning| warning.contains("sources.failed"))
+            .any(|notice| notice.message.contains("sources.failed"))
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

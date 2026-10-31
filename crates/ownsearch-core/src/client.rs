@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, LOCATION};
+use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, LOCATION, USER_AGENT};
 use reqwest::redirect::Policy;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -101,11 +102,33 @@ impl Fetched {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct UserAgentRotation {
+    cursor: Arc<AtomicUsize>,
+}
+
+impl UserAgentRotation {
+    fn pick(&self) -> &'static str {
+        let pool = crate::config::BROWSER_USER_AGENTS;
+        let Some(fallback) = pool.first().copied() else {
+            return "";
+        };
+        let mut byte = [0u8; 1];
+        let index = if getrandom::fill(&mut byte).is_ok() {
+            usize::from(byte[0])
+        } else {
+            self.cursor.fetch_add(1, Ordering::Relaxed)
+        };
+        pool.get(index % pool.len()).copied().unwrap_or(fallback)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FleetClient {
     http: reqwest::Client,
     pinned: Arc<Mutex<HashMap<String, reqwest::Client>>>,
     user_agent: String,
+    user_agents: UserAgentRotation,
     accept: String,
     max_bytes: usize,
     timeout: Duration,
@@ -150,6 +173,7 @@ impl FleetClient {
             http,
             pinned: Arc::new(Mutex::new(HashMap::new())),
             user_agent,
+            user_agents: UserAgentRotation::default(),
             accept: settings.accept().to_owned(),
             max_bytes: settings.max_upstream_bytes(),
             timeout,
@@ -225,6 +249,7 @@ impl FleetClient {
             let mut request = client
                 .get(current.clone())
                 .timeout(self.timeout)
+                .header(USER_AGENT, self.user_agents.pick())
                 .header(ACCEPT, self.accept.clone())
                 .header(ACCEPT_LANGUAGE, "en-US,en;q=0.8");
             if let Some(auth) = auth
@@ -373,6 +398,26 @@ pub(crate) fn config_url(base: &Url) -> Result<Url> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_pooled_user_agent_reads_as_a_desktop_browser() {
+        let pool = crate::config::BROWSER_USER_AGENTS;
+        assert!(pool.len() >= 4);
+        for agent in pool {
+            assert!(agent.starts_with("Mozilla/5.0 ("), "{agent}");
+            assert!(agent.contains("AppleWebKit/537.36") || agent.contains("AppleWebKit/605.1.15"));
+            assert!(!agent.contains("OwnSearch"), "{agent}");
+        }
+    }
+
+    #[test]
+    fn a_pick_always_returns_a_pooled_user_agent() {
+        let rotation = UserAgentRotation::default();
+        let pool = crate::config::BROWSER_USER_AGENTS;
+        for _ in 0..64 {
+            assert!(pool.contains(&rotation.pick()));
+        }
+    }
 
     #[test]
     fn a_search_url_carries_every_parameter_once() {
