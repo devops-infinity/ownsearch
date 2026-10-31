@@ -4,6 +4,12 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-31
+
+### Fixed
+
+- A JSON rate limit is no longer hidden when the HTML fallback gets a landing page. The source reports `ownsearch.rate_limited` with the `json` parser and the wait hint, instead of `policy_refused`.
+
 ## [0.9.0] - 2026-10-31
 
 ### Added
@@ -17,7 +23,6 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Fixed
 
-- A JSON rate limit is no longer hidden when the HTML fallback gets a landing page. The source reports `ownsearch.rate_limited` with the `json` parser and the wait hint, instead of `policy_refused`.
 - A search that loses a source adds a `search.sources_failed` warning with the count and the retry step, so a client reading `outcome` and `messages` learns why the result is partial.
 - Every entry in `sources.failed` names the `parser` that was serving that source when it failed.
 - A browser failure reports `ownsearch.browser_failed` with a browser remedy, instead of `ownsearch.state_error` and an instruction to restore the database.
@@ -330,7 +335,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - PDF text is read with `lopdf`, so the tree no longer pulls the unmaintained `pdf-extract` dependency.
 - Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.
 
-[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/devops-infinity/ownsearch/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/devops-infinity/ownsearch/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/devops-infinity/ownsearch/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/devops-infinity/ownsearch/compare/v0.6.0...v0.7.0
