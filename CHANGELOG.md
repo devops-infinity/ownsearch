@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- `OWNSEARCH_PROXIES` takes a comma-separated proxy list and rotates every request through it, so a blocked egress address no longer takes the whole fleet down. An entry that fails three times in a row leaves the rotation for five minutes. `OWNSEARCH_PROXY` still works and is read when the list is unset. A proxy URL without a scheme gets `http://` in front of it, and one that still does not parse is refused with a clear error instead of being silently ignored.
+
 ## [0.10.0] - 2026-10-31
 
 ### Fixed

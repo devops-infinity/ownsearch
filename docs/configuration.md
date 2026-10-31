@@ -6,7 +6,7 @@ Settings resolve in this order: CLI flags, `OWNSEARCH_*` environment variables, 
 
 Most environment variables have a matching profile key: drop the `OWNSEARCH_` prefix and lowercase the rest. For example `OWNSEARCH_FLEET_MAX` is `fleet_max`, and `OWNSEARCH_STATE_DIR` is `state_dir`. Three keys do not follow the pattern: `OWNSEARCH_BROWSER_PATH` is `browser_executable`, and `OWNSEARCH_BEARER_TOKENS` and `OWNSEARCH_PROFILE` have no profile key. Two keys exist only in the profile: `cache_max_bytes` and `preset`.
 
-`OWNSEARCH_BEARER_TOKENS`, `OWNSEARCH_CAPSOLVER_KEY`, and `OWNSEARCH_PROXY` are secrets. They come from the environment only, a profile that names one is refused when it loads, and no command prints them.
+`OWNSEARCH_BEARER_TOKENS`, `OWNSEARCH_CAPSOLVER_KEY`, `OWNSEARCH_PROXY`, and `OWNSEARCH_PROXIES` are secrets. They come from the environment only, a profile that names one is refused when it loads, and no command prints them.
 
 ## Paths and transports
 
@@ -21,6 +21,7 @@ Most environment variables have a matching profile key: drop the `OWNSEARCH_` pr
 - `OWNSEARCH_LOG_FORMAT`: `text` or `json`. Default `text`. Logs go to stderr only.
 - `RUST_LOG`: the log filter, read by the tracing subscriber.
 - `OWNSEARCH_PROXY`: an outbound proxy URL for every HTTP request the client makes, for example `socks5h://127.0.0.1:1080`. Unset by default.
+- `OWNSEARCH_PROXIES`: a comma-separated proxy list that replaces `OWNSEARCH_PROXY` when it is set. One request goes through each entry in turn, and an entry that fails three times in a row leaves the rotation for five minutes before it is tried again. A proxy URL carries its own credentials, so a list is often a single rotating gateway rather than many hosts. A value without a scheme gets `http://` in front of it.
 - `OWNSEARCH_ALLOW_PRIVATE_INSTANCES`: accept loopback and private addresses for discovery records, probes, search, and fetch. Default false, and it exists for local testing only. Leave it off in any deployment that can reach the internet, because with it on a hostile discovery document can point the scanner at a local service.
 - `OWNSEARCH_ACCEPT`: the `Accept` header sent on every instance request. Default `text/html,application/json;q=0.9,*/*;q=0.8`. It must contain `text/html`, because a SearXNG limiter rejects a request without it.
 - `OWNSEARCH_ALLOW_PLAIN_HTTP_PRIVATE`: permit `http://` for a loopback, private, or local-only host, such as `http://192.168.110.26:8080/`. Default false. Both this setting and `OWNSEARCH_ALLOW_PRIVATE_INSTANCES` must be on; plain http to a public host is always refused. A refused url records `policy.plain_http_refused` and never enters the active fleet. TLS and certificate gates do not apply to an allowed http url.

@@ -122,7 +122,7 @@ pub struct Settings {
     search_presets: BTreeMap<String, PresetConfig>,
     capsolver_key: Option<SecretString>,
     capsolver_timeout_secs: u64,
-    proxy: Option<String>,
+    proxies: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -397,7 +397,7 @@ impl Settings {
             180,
             "capsolver_timeout_secs",
         )?;
-        let proxy = non_empty_env(&env, "OWNSEARCH_PROXY");
+        let proxies = parse_proxies(&env)?;
         let engine_weights = clean_weights(profile.engine_weights.unwrap_or_default())?;
         let exclude_engines = clean_names(profile.exclude_engines, "exclude_engines")?;
         let exclude_domains = clean_names(profile.exclude_domains, "exclude_domains")?;
@@ -685,7 +685,7 @@ impl Settings {
             search_presets,
             capsolver_key,
             capsolver_timeout_secs,
-            proxy,
+            proxies,
             maintenance_interval_secs: bounded_u64(
                 env_parse(&env, "OWNSEARCH_MAINTENANCE_INTERVAL_SECS")?
                     .or(profile.maintenance_interval_secs)
@@ -1002,7 +1002,11 @@ impl Settings {
     }
 
     pub fn proxy(&self) -> Option<&str> {
-        self.proxy.as_deref()
+        self.proxies.first().map(String::as_str)
+    }
+
+    pub fn proxies(&self) -> &[String] {
+        &self.proxies
     }
 
     pub fn maintenance_interval_secs(&self) -> u64 {
@@ -1248,10 +1252,10 @@ impl Settings {
             ),
             (
                 "proxy".to_owned(),
-                if self.proxy.is_some() {
-                    "configured".to_owned()
-                } else {
+                if self.proxies.is_empty() {
                     "disabled".to_owned()
+                } else {
+                    format!("configured ({} in rotation)", self.proxies.len())
                 },
             ),
             (
@@ -1441,6 +1445,36 @@ fn non_empty_env(env: &impl Fn(&str) -> Option<String>, name: &str) -> Option<St
     env(name)
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn parse_proxies(env: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
+    let raw: Vec<String> = match non_empty_env(env, "OWNSEARCH_PROXIES") {
+        Some(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        None => non_empty_env(env, "OWNSEARCH_PROXY")
+            .map(|single| vec![single])
+            .unwrap_or_default(),
+    };
+    Ok(raw
+        .into_iter()
+        .map(|entry| {
+            if has_proxy_scheme(&entry) {
+                entry
+            } else {
+                format!("http://{entry}")
+            }
+        })
+        .collect())
+}
+
+fn has_proxy_scheme(value: &str) -> bool {
+    ["http://", "https://", "socks5://", "socks5h://"]
+        .iter()
+        .any(|scheme| value.len() > scheme.len() && value.starts_with(scheme))
 }
 
 fn parse_list(raw: &str) -> Vec<String> {
@@ -1823,8 +1857,35 @@ mod tests {
         );
         assert!(settings.capsolver_key().is_none());
         assert_eq!(settings.capsolver_timeout_secs(), 45);
-        assert!(settings.proxy().is_none());
+        assert!(settings.proxies().is_empty());
         assert_eq!(settings.freshness_days(), 365);
+    }
+
+    #[test]
+    fn a_proxy_without_a_scheme_defaults_to_http() {
+        let settings = load_with(&[
+            ("HOME", "/home/tester"),
+            ("OWNSEARCH_PROXIES", "user:pass@gw.example.test:823"),
+        ])
+        .expect("settings");
+        assert_eq!(settings.proxies(), ["http://user:pass@gw.example.test:823"]);
+    }
+
+    #[test]
+    fn a_proxy_list_is_split_and_trimmed() {
+        let settings = load_with(&[
+            ("HOME", "/home/tester"),
+            (
+                "OWNSEARCH_PROXIES",
+                "http://a:1@h1:823, socks5h://b:2@h2:824 ,,",
+            ),
+        ])
+        .expect("settings");
+        assert_eq!(
+            settings.proxies(),
+            ["http://a:1@h1:823", "socks5h://b:2@h2:824"]
+        );
+        assert_eq!(settings.proxy(), Some("http://a:1@h1:823"));
     }
 
     #[test]
@@ -1834,17 +1895,14 @@ mod tests {
             ("OWNSEARCH_PROXY", "socks5h://user:secret@127.0.0.1:1080"),
         ])
         .expect("settings");
-        assert_eq!(
-            settings.proxy(),
-            Some("socks5h://user:secret@127.0.0.1:1080")
-        );
+        assert_eq!(settings.proxies(), ["socks5h://user:secret@127.0.0.1:1080"]);
         let rows = settings.describe();
         let shown = rows
             .iter()
             .find(|(name, _)| name == "proxy")
             .map(|(_, value)| value.clone())
             .unwrap_or_default();
-        assert_eq!(shown, "configured");
+        assert_eq!(shown, "configured (1 in rotation)");
         assert!(
             !rows.iter().any(|(_, value)| value.contains("secret@")),
             "the proxy credentials must never reach the settings display"

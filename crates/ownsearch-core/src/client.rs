@@ -123,6 +123,21 @@ impl UserAgentRotation {
     }
 }
 
+const PROXY_FAILURE_LIMIT: u32 = 3;
+const PROXY_COOLDOWN: Duration = Duration::from_secs(300);
+
+#[derive(Debug, Clone, Default)]
+struct ProxySlot {
+    failures: u32,
+    cooldown_until: Option<Instant>,
+}
+
+impl ProxySlot {
+    fn usable_at(&self, now: Instant) -> bool {
+        self.cooldown_until.is_none_or(|until| until <= now)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FleetClient {
     http: reqwest::Client,
@@ -133,7 +148,9 @@ pub struct FleetClient {
     max_bytes: usize,
     timeout: Duration,
     connect_timeout: Duration,
-    proxy: Option<reqwest::Proxy>,
+    proxy_clients: Arc<Vec<reqwest::Client>>,
+    proxy_state: Arc<Mutex<Vec<ProxySlot>>>,
+    proxy_cursor: Arc<AtomicUsize>,
     allow_private: bool,
     allow_plain_http: bool,
     tls: rustls::ClientConfig,
@@ -152,23 +169,30 @@ impl FleetClient {
         install_crypto_provider();
         let timeout = Duration::from_secs(timeout_secs);
         let connect_timeout = Duration::from_secs(settings.connect_timeout_secs());
-        let proxy = match settings.proxy() {
-            Some(proxy) => Some(reqwest::Proxy::all(proxy).map_err(|error| {
-                Error::Config(format!("OWNSEARCH_PROXY does not parse: {error}"))
-            })?),
-            None => None,
-        };
         let user_agent = settings.user_agent();
         let tls = tls_client_config()?;
-        let http = configure(
-            timeout,
-            connect_timeout,
-            &user_agent,
-            proxy.clone(),
-            tls.clone(),
-        )
-        .build()
-        .map_err(|error| Error::network("building the HTTP client", error))?;
+        let http = configure(timeout, connect_timeout, &user_agent, None, tls.clone())
+            .build()
+            .map_err(|error| Error::network("building the HTTP client", error))?;
+        let mut proxy_clients: Vec<reqwest::Client> = Vec::new();
+        for raw in settings.proxies() {
+            let proxy = reqwest::Proxy::all(raw.as_str()).map_err(|error| {
+                Error::Config(format!(
+                    "an OWNSEARCH_PROXIES entry does not parse: {error}"
+                ))
+            })?;
+            let client = configure(
+                timeout,
+                connect_timeout,
+                &user_agent,
+                Some(proxy),
+                tls.clone(),
+            )
+            .build()
+            .map_err(|error| Error::network("building a proxy client", error))?;
+            proxy_clients.push(client);
+        }
+        let proxy_slots = vec![ProxySlot::default(); proxy_clients.len()];
         Ok(Self {
             http,
             pinned: Arc::new(Mutex::new(HashMap::new())),
@@ -178,7 +202,9 @@ impl FleetClient {
             max_bytes: settings.max_upstream_bytes(),
             timeout,
             connect_timeout,
-            proxy,
+            proxy_clients: Arc::new(proxy_clients),
+            proxy_state: Arc::new(Mutex::new(proxy_slots)),
+            proxy_cursor: Arc::new(AtomicUsize::new(0)),
             allow_private: settings.allow_private_instances(),
             allow_plain_http: settings.allow_plain_http_private(),
             tls,
@@ -195,7 +221,7 @@ impl FleetClient {
             self.timeout,
             self.connect_timeout,
             &self.user_agent,
-            self.proxy.clone(),
+            None,
             self.tls.clone(),
         )
         .resolve(host, address)
@@ -214,6 +240,57 @@ impl FleetClient {
         &self.user_agent
     }
 
+    fn pick_proxy_client(&self) -> (reqwest::Client, Option<usize>) {
+        let total = self.proxy_clients.len();
+        let start = self.proxy_cursor.fetch_add(1, Ordering::Relaxed);
+        let now = Instant::now();
+        let mut fallback: Option<(reqwest::Client, usize)> = None;
+        for step in 0..total {
+            let index = (start.saturating_add(step)) % total;
+            let Some(client) = self.proxy_clients.get(index).cloned() else {
+                continue;
+            };
+            let usable = self
+                .proxy_state
+                .lock()
+                .ok()
+                .and_then(|state| state.get(index).map(|slot| slot.usable_at(now)))
+                .unwrap_or(true);
+            if usable {
+                return (client, Some(index));
+            }
+            if fallback.is_none() {
+                fallback = Some((client, index));
+            }
+        }
+        match fallback {
+            Some((client, index)) => (client, Some(index)),
+            None => (self.http.clone(), None),
+        }
+    }
+
+    fn note_proxy_result(&self, slot: Option<usize>, ok: bool) {
+        let Some(index) = slot else {
+            return;
+        };
+        let Ok(mut state) = self.proxy_state.lock() else {
+            return;
+        };
+        let Some(entry) = state.get_mut(index) else {
+            return;
+        };
+        if ok {
+            entry.failures = 0;
+            entry.cooldown_until = None;
+            return;
+        }
+        entry.failures = entry.failures.saturating_add(1);
+        if entry.failures >= PROXY_FAILURE_LIMIT {
+            entry.cooldown_until = Some(Instant::now() + PROXY_COOLDOWN);
+            entry.failures = 0;
+        }
+    }
+
     pub async fn get(
         &self,
         url: &Url,
@@ -225,19 +302,22 @@ impl FleetClient {
         let mut hops = 0u8;
         let mut redirects: Vec<String> = Vec::new();
         loop {
-            let client = if self.allow_private {
-                self.http.clone()
+            let resolved = crate::network_guard::resolved_public_address(&current).await;
+            if resolved.is_none() && !self.allow_private {
+                return Err(Error::PolicyRefused(
+                    "the url resolves to a non-public address".into(),
+                ));
+            }
+            let (client, proxy_slot) = if !self.proxy_clients.is_empty() && resolved.is_some() {
+                self.pick_proxy_client()
             } else {
-                let Some(address) = crate::network_guard::resolved_public_address(&current).await
-                else {
-                    return Err(Error::PolicyRefused(
-                        "the url resolves to a non-public address".into(),
-                    ));
-                };
-                match current.host() {
-                    Some(url::Host::Domain(host)) => self.pinned_client(host, address)?,
+                let client = match (resolved, current.host()) {
+                    (Some(address), Some(url::Host::Domain(host))) => {
+                        self.pinned_client(host, address)?
+                    }
                     _ => self.http.clone(),
-                }
+                };
+                (client, None)
             };
             if let Some(reason) = crate::transport::plain_http_refusal(
                 &current,
@@ -262,19 +342,27 @@ impl FleetClient {
                 () = cancellation.cancelled() => return Err(Error::Cancelled),
             };
             let response = match response {
-                Ok(response) => response,
+                Ok(response) => {
+                    self.note_proxy_result(proxy_slot, true);
+                    response
+                }
                 Err(error) if error.is_timeout() => {
+                    self.note_proxy_result(proxy_slot, false);
                     return Err(Error::Timeout {
                         deadline_ms: u64::try_from(self.timeout.as_millis()).unwrap_or(0),
                     });
                 }
                 Err(error) if error.is_connect() => {
+                    self.note_proxy_result(proxy_slot, false);
                     return Err(Error::network(
                         "opening a connection to the instance",
                         error,
                     ));
                 }
-                Err(error) => return Err(Error::network("reading an instance answer", error)),
+                Err(error) => {
+                    self.note_proxy_result(proxy_slot, false);
+                    return Err(Error::network("reading an instance answer", error));
+                }
             };
             if !self.allow_private
                 && let Some(address) = response.remote_addr()
@@ -408,6 +496,41 @@ mod tests {
             assert!(agent.contains("AppleWebKit/537.36") || agent.contains("AppleWebKit/605.1.15"));
             assert!(!agent.contains("OwnSearch"), "{agent}");
         }
+    }
+
+    #[test]
+    fn proxy_rotation_cycles_and_benches_a_failing_entry() {
+        let settings = crate::config::Settings::load_with(
+            crate::config::Overrides {
+                state_dir: Some(std::path::PathBuf::from("/tmp/ownsearch-proxy-test")),
+                ..crate::config::Overrides::default()
+            },
+            |name| match name {
+                "HOME" => Some("/home/tester".to_owned()),
+                "OWNSEARCH_PROXIES" => {
+                    Some("http://127.0.0.1:8001, http://127.0.0.1:8002 ,,".to_owned())
+                }
+                _ => None,
+            },
+        )
+        .expect("settings");
+        assert_eq!(settings.proxies().len(), 2, "empty entries are dropped");
+        let client = FleetClient::new(&settings).expect("client");
+        let first = client.pick_proxy_client().1.expect("a proxy slot");
+        let second = client.pick_proxy_client().1.expect("a proxy slot");
+        assert_ne!(first, second, "the rotation must move on");
+        for _ in 0..PROXY_FAILURE_LIMIT {
+            client.note_proxy_result(Some(first), false);
+        }
+        for _ in 0..4 {
+            assert_ne!(
+                client.pick_proxy_client().1,
+                Some(first),
+                "a benched proxy must leave the rotation"
+            );
+        }
+        client.note_proxy_result(Some(first), true);
+        assert!(client.proxy_state.lock().expect("state")[first].usable_at(Instant::now()));
     }
 
     #[test]
