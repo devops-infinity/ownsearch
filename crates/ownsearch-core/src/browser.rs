@@ -137,7 +137,7 @@ impl Renderer {
             .map_err(|_| Error::Timeout {
                 deadline_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
             })?
-            .map_err(|_| Error::State("the browser gate closed".into()))?;
+            .map_err(|_| Error::Browser("the browser gate closed".into()))?;
         let timeout = timeout.saturating_sub(queued_at.elapsed());
         let mut session = {
             let mut guard = inner.session.lock().await;
@@ -156,7 +156,7 @@ impl Renderer {
         let outcome = tokio::time::timeout(timeout, async {
             let current = session
                 .as_mut()
-                .ok_or_else(|| Error::State("the browser session vanished".into()))?;
+                .ok_or_else(|| Error::Browser("the browser session vanished".into()))?;
             let page = current
                 .browser
                 .new_page("about:blank")

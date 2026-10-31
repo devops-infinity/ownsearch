@@ -548,6 +548,10 @@ async fn the_fetch_tool_returns_a_structured_json_document() {
     let body = structured(&result);
     assert_eq!(body.get("format").and_then(Value::as_str), Some("json"));
     assert_eq!(body.get("parser").and_then(Value::as_str), Some("main"));
+    assert_eq!(
+        body.get("statusSource").and_then(Value::as_str),
+        Some("http")
+    );
     let document = body.get("document").expect("document");
     assert_eq!(
         document.get("title").and_then(Value::as_str),

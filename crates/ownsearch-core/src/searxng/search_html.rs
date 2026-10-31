@@ -173,7 +173,7 @@ pub async fn fetch(
     let outcome = classify_outcome(&fetched);
     if outcome != crate::types::ProbeOutcome::Success {
         let mut report = ProbeReport::from_fetch(&fetched, outcome);
-        report.error_message = Some(format!("the instance answered HTTP {}", fetched.status));
+        report.error_message = Some(format!("the instance returned HTTP {}", fetched.status));
         return report;
     }
     let markup = fetched.text();
@@ -191,11 +191,11 @@ pub async fn fetch(
         crate::types::ProbeOutcome::Success
     };
     let error_message = if blocked {
-        Some("the instance served a captcha page".to_owned())
+        Some("the instance asked for a captcha".to_owned())
     } else if served_index {
-        Some("the instance answered its index page instead of results".to_owned())
+        Some("the instance sent its landing page instead of results".to_owned())
     } else if parsed.drifted {
-        Some("the instance answered a page with no results container".to_owned())
+        Some("the page had no result list OwnSearch recognizes".to_owned())
     } else {
         None
     };

@@ -302,6 +302,13 @@ pub async fn search(
     let attempted = attempted_ids.len();
     let succeeded_count = succeeded.len();
     let partial = !failed.is_empty();
+    if !failed.is_empty() {
+        messages.push(Notice::warning(
+            "search.sources_failed",
+            format!("{} of {} instances did not answer", failed.len(), attempted),
+            "retry, or run a scan to refresh the fleet",
+        ));
+    }
     let mut fallbacks = fallbacks;
     fallbacks.sort_unstable();
     fallbacks.dedup();
@@ -829,7 +836,7 @@ async fn search_instance_with_retries(
                     return failure(
                         row,
                         "ownsearch.timeout",
-                        "the search deadline passed while one instance was answering".to_owned(),
+                        "the deadline passed while an instance was answering".to_owned(),
                     );
                 }
             };
@@ -883,8 +890,8 @@ async fn run_batch(
             Ok(Some(Ok(outcome))) => outcomes.push(outcome),
             Ok(Some(Err(error))) => messages.push(Notice::warning(
                 "search.task_failed",
-                format!("a search task failed: {error}"),
-                "the other instances still answered",
+                format!("one search task failed: {error}"),
+                "read the other sources, or retry if that one matters",
             )),
             Ok(None) => break,
             Err(_) => {
@@ -897,13 +904,13 @@ async fn run_batch(
                         outcomes.push(failure(
                             row,
                             "ownsearch.timeout",
-                            "the search deadline passed before this instance answered".to_owned(),
+                            "this instance did not answer before the deadline".to_owned(),
                         ));
                     }
                 }
                 messages.push(Notice::warning(
                     "search.deadline",
-                    "the search deadline passed; the instances that did not answer are listed in sources.failed",
+                    "the deadline passed before every instance answered; the missing ones are listed in sources.failed",
                     "raise the deadline, or use fast mode for fewer instances",
                 ));
                 break;
@@ -923,7 +930,11 @@ async fn search_instance(
     let base = match Url::parse(&row.url) {
         Ok(base) => base,
         Err(error) => {
-            return failure(row, "ownsearch.bad_request", format!("url: {error}"));
+            return failure(
+                row,
+                "ownsearch.bad_request",
+                format!("the instance url does not parse: {error}"),
+            );
         }
     };
     let auth = match instance_auth(ctx, row) {
@@ -939,7 +950,7 @@ async fn search_instance(
     let mut report = if throttled {
         ProbeReport::failed(
             ProbeOutcome::RateLimited,
-            "json is throttled by the instance limiter until its window passes".to_owned(),
+            "the instance is limiting JSON requests until its window ends".to_owned(),
         )
     } else {
         search_json::fetch(&ctx.client, &base, query, cancellation, auth).await
@@ -980,8 +991,7 @@ async fn search_instance(
             };
         }
         report.outcome = ProbeOutcome::ParserError;
-        report.error_message =
-            Some("the instance answered results that carried no usable title and url".to_owned());
+        report.error_message = Some("the results had no usable title or url".to_owned());
     }
     if report.outcome == ProbeOutcome::ParserError {
         for format in ["rss", "csv"] {
@@ -1053,6 +1063,7 @@ async fn search_instance(
         let retry_after = html.retry_after_secs.or(report.retry_after_secs);
         return failure_after(
             row,
+            Some("html"),
             code_for(html.outcome, html.http_status),
             error_text(&html.error_message, html.outcome),
             retry_after,
@@ -1060,6 +1071,7 @@ async fn search_instance(
     }
     failure_after(
         row,
+        Some("json"),
         code_for(report.outcome, report.http_status),
         error_text(&report.error_message, report.outcome),
         report.retry_after_secs,
@@ -1343,11 +1355,12 @@ fn instance_auth(
 }
 
 fn failure(row: &InstanceRow, code: &str, reason: String) -> SourceOutcome {
-    failure_after(row, code, reason, None)
+    failure_after(row, None, code, reason, None)
 }
 
 fn failure_after(
     row: &InstanceRow,
+    parser: Option<&str>,
     code: &str,
     reason: String,
     retry_after_secs: Option<u64>,
@@ -1359,6 +1372,7 @@ fn failure_after(
         failure: Some(SourceFailure {
             instance_id: row.instance_id,
             url: row.url.clone(),
+            parser: parser.map(str::to_owned),
             code: code.to_owned(),
             reason: cap(&sanitize(&reason), 200).0,
             retry_after_secs,
@@ -1393,7 +1407,7 @@ fn client_error_code(status: u16) -> Option<&'static str> {
 fn error_text(message: &Option<String>, outcome: ProbeOutcome) -> String {
     message
         .clone()
-        .unwrap_or_else(|| format!("the instance answered {}", outcome.as_str()))
+        .unwrap_or_else(|| format!("the instance failed with {}", outcome.as_str()))
 }
 
 fn search_outcome(

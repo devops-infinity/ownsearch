@@ -511,6 +511,7 @@ fn problem(
         "instance": instance,
         "code": code,
         "remedy": remedy,
+        "retryable": crate::error::retryable_code(code),
     });
     let mut response = (status, Json(body)).into_response();
     response.headers_mut().insert(
@@ -622,6 +623,7 @@ fn rest_error_status(code: Option<&str>) -> StatusCode {
         Some("ownsearch.rate_limited") => StatusCode::TOO_MANY_REQUESTS,
         Some("ownsearch.timeout") => StatusCode::GATEWAY_TIMEOUT,
         Some("ownsearch.no_fleet") => StatusCode::SERVICE_UNAVAILABLE,
+        Some("ownsearch.browser_failed") => StatusCode::SERVICE_UNAVAILABLE,
         Some("ownsearch.upstream_failed") => StatusCode::BAD_GATEWAY,
         Some("ownsearch.parser_failed") => StatusCode::BAD_GATEWAY,
         Some("ownsearch.not_found") => StatusCode::NOT_FOUND,

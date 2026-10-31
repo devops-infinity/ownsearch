@@ -177,7 +177,7 @@ pub async fn refresh_discovery(
     };
     if !fetched.is_success() || !fetched.is_json() {
         let message = format!(
-            "searx.space answered HTTP {} with {}",
+            "searx.space returned HTTP {} with {}",
             fetched.status,
             fetched.content_type.as_deref().unwrap_or("no content type")
         );
@@ -884,7 +884,7 @@ async fn discovery_preview(
     };
     if !fetched.is_success() || !fetched.is_json() {
         return Ok(DiscoveryOutcome {
-            error: Some(format!("searx.space answered HTTP {}", fetched.status)),
+            error: Some(format!("searx.space returned HTTP {}", fetched.status)),
             ..DiscoveryOutcome::default()
         });
     }

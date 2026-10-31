@@ -169,7 +169,7 @@ pub async fn fetch(
     let outcome = classify_outcome(&fetched);
     if outcome != crate::types::ProbeOutcome::Success {
         let mut report = ProbeReport::from_fetch(&fetched, outcome);
-        report.error_message = Some(format!("the instance answered HTTP {}", fetched.status));
+        report.error_message = Some(format!("the instance returned HTTP {}", fetched.status));
         return report;
     }
     match ConfigDocument::parse(&fetched.body) {

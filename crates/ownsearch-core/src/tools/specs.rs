@@ -31,7 +31,7 @@ pub const SPECS: &[ToolSpec] = &[
     ToolSpec {
         name: "ownsearch_instance_info",
         title: "Instance capability summary",
-        description: "Capability and lifecycle facts for one instance or the whole fleet: status, score, rank, version, JSON and HTML access, the enabled engines and categories, per-engine counts, and exact-Google evidence.",
+        description: "Facts about one instance or the whole fleet: status, score, rank, version, JSON and HTML access, the enabled engines and categories, per-engine counts, and exact-Google evidence.",
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -40,7 +40,7 @@ pub const SPECS: &[ToolSpec] = &[
     ToolSpec {
         name: "ownsearch_instance_health",
         title: "Instance health and quality",
-        description: "Quality gates, certificate state, probe counts, cooldowns, and recent lifecycle events for one instance or the top of the fleet.",
+        description: "Quality checks, certificate days left, probe counts, cooldowns, and recent events for one instance or the top of the fleet.",
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -49,7 +49,7 @@ pub const SPECS: &[ToolSpec] = &[
     ToolSpec {
         name: "ownsearch_scan",
         title: "Scan the instance fleet",
-        description: "Dry run by default, and a dry run writes nothing: it probes and reports the status changes and the fleet a real run would write. Only dry_run false writes lifecycle status, quality, and fleet ranks, and it requires a reason.",
+        description: "Dry run by default, and a dry run writes nothing: it probes and reports the status changes and the fleet a real run would write. Only dry_run false writes status, quality, and fleet ranks, and it requires a reason.",
         read_only: false,
         destructive: true,
         idempotent: false,
@@ -76,7 +76,7 @@ pub const SPECS: &[ToolSpec] = &[
     ToolSpec {
         name: "ownsearch_db_crud",
         title: "Typed database change",
-        description: "Prepare and apply one typed lifecycle or policy change. Needs write mode, a reason, and a one-use confirmation token from a dry_run preview. It can create an instance, update any field (url or domain, status, type, priority, scan and HTML policy, pin, trust, credentials), retire, restore, deny, or allow an instance, delete an instance with its history, or delete a policy override.",
+        description: "Prepare and apply one typed change to an instance or a policy override. Needs write mode, a reason, and a one-use confirmation token from a dry_run preview. It can create an instance, update any field (url or domain, status, type, priority, scan and HTML policy, pin, trust, credentials), retire, restore, deny, or allow an instance, delete an instance with its history, or delete a policy override.",
         read_only: false,
         destructive: true,
         idempotent: false,

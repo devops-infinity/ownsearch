@@ -96,7 +96,7 @@ pub async fn fetch(
         let mut messages = content_messages(&content, truncated);
         messages.push(Notice::info(
             "fetch.status_unobserved",
-            "the page was rendered in a browser, so the HTTP status and redirect chain were not observed",
+            "the page was rendered in a browser, so the HTTP status and redirects are unknown",
         ));
         let outcome = outcome_for(&body, &messages);
         let document = build_document(
@@ -105,6 +105,7 @@ pub async fn fetch(
                 url: &url,
                 final_url: &url,
                 status: 200,
+                status_source: "browser",
                 content_type: Some("text/html".to_owned()),
                 fetch_mode: "browser",
                 parser: &content.parser,
@@ -122,6 +123,7 @@ pub async fn fetch(
             final_url: url.to_string(),
             redirects: Vec::new(),
             status: 200,
+            status_source: "browser".to_owned(),
             content_type: Some("text/html".to_owned()),
             format: request.format.as_str().to_owned(),
             fetch_mode: "browser".to_owned(),
@@ -152,7 +154,7 @@ pub async fn fetch(
     if !fetched.is_success() {
         return Err(Error::Upstream {
             status: fetched.status,
-            message: format!("the page host answered HTTP {}", fetched.status),
+            message: format!("the page host returned HTTP {}", fetched.status),
         });
     }
     let is_pdf = fetched.is_pdf();
@@ -163,12 +165,12 @@ pub async fn fetch(
         let (content, truncated) = cap(&extract::from_pdf_text(&text), request.max_chars);
         let mut messages = vec![Notice::info(
             "fetch.parser",
-            "the text came from the pdf parser",
+            "the pdf pass produced the text",
         )];
         if truncated {
             messages.push(Notice::warning(
                 "fetch.truncated",
-                "the content was capped at max_chars",
+                "the text was cut at max_chars",
                 "raise max_chars to read the rest",
             ));
         }
@@ -179,6 +181,7 @@ pub async fn fetch(
                 url: &url,
                 final_url: &final_url,
                 status: fetched.status,
+                status_source: "http",
                 content_type: fetched.content_type.clone(),
                 fetch_mode: "http",
                 parser: "pdf",
@@ -196,6 +199,7 @@ pub async fn fetch(
             final_url: final_url.to_string(),
             redirects,
             status: fetched.status,
+            status_source: "http".to_owned(),
             content_type: fetched.content_type.clone(),
             format: request.format.as_str().to_owned(),
             fetch_mode: "http".to_owned(),
@@ -231,15 +235,15 @@ pub async fn fetch(
         messages.push(Notice::warning(
             "fetch.links_skipped",
             format!(
-                "{skipped} linked pages were skipped because they did not answer or did not parse"
+                "{skipped} linked pages did not answer or could not be read, so they were skipped"
             ),
-            "fetch the lost pages directly",
+            "fetch those pages on their own",
         ));
     }
     if limit_reached {
         messages.push(Notice::warning(
             "fetch.links_capped",
-            "the link walk stopped before it visited every link",
+            "the link walk stopped early",
             "raise max_pages to follow more links",
         ));
     }
@@ -263,7 +267,7 @@ pub async fn fetch(
             Err(error) => {
                 messages.push(Notice::warning(
                     "fetch.render_failed",
-                    format!("the browser render failed: {error}"),
+                    format!("the browser could not render the page: {error}"),
                     "retry with render always, or fetch the page again later",
                 ));
                 content
@@ -275,7 +279,7 @@ pub async fn fetch(
     if fetch_mode == "browser" {
         messages.push(Notice::info(
             "fetch.status_unobserved",
-            "the page was rendered in a browser, so the HTTP status and redirect chain were not observed",
+            "the page was rendered in a browser, so the HTTP status and redirects are unknown",
         ));
     }
     let (text, truncated) = cap(&content.body, request.max_chars);
@@ -288,6 +292,7 @@ pub async fn fetch(
             url: &url,
             final_url: &final_url,
             status: fetched.status,
+            status_source: "http",
             content_type: fetched.content_type.clone(),
             fetch_mode: &fetch_mode,
             parser: &parser,
@@ -306,6 +311,7 @@ pub async fn fetch(
         final_url: final_url.to_string(),
         redirects,
         status: fetched.status,
+        status_source: "http".to_owned(),
         content_type: fetched.content_type.clone(),
         format: request.format.as_str().to_owned(),
         fetch_mode,
@@ -431,19 +437,19 @@ fn content_format(format: FetchFormat) -> &'static str {
 fn content_messages(content: &Content, truncated: bool) -> Vec<Notice> {
     let mut messages = vec![Notice::info(
         "fetch.parser",
-        format!("the text came from the {} parser", content.parser),
+        format!("the {} pass produced the text", content.parser),
     )];
     if content.parser == "none" {
         messages.push(Notice::warning(
             "fetch.empty",
-            "the page answered but no text could be extracted",
+            "the page loaded but had no readable text",
             "retry with render always, another format, or another url",
         ));
     }
     if truncated {
         messages.push(Notice::warning(
             "fetch.truncated",
-            "the content was capped at max_chars",
+            "the text was cut at max_chars",
             "raise max_chars to read the rest",
         ));
     }
@@ -464,6 +470,7 @@ struct DocumentInput<'a> {
     url: &'a Url,
     final_url: &'a Url,
     status: u16,
+    status_source: &'a str,
     content_type: Option<String>,
     fetch_mode: &'a str,
     parser: &'a str,
@@ -513,6 +520,7 @@ fn build_document(format: FetchFormat, input: DocumentInput<'_>) -> Option<Fetch
         url: input.url.to_string(),
         final_url: input.final_url.to_string(),
         status: input.status,
+        status_source: input.status_source.to_owned(),
         content_type: input.content_type,
         fetch_mode: input.fetch_mode.to_owned(),
         parser: input.parser.to_owned(),
