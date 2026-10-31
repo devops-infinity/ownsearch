@@ -4,6 +4,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-31
+
 ### Added
 
 - `ownsearch_fetch` takes `format: "json"` and returns a `document` for AI clients: title, description, canonical URL, language, publication date, author, site name, content, headings, links, and JSON-LD blocks, plus the extraction attempts. Every fetch answer reports the `parser` that produced the text.
@@ -21,7 +23,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - A JSON answer whose entries carry no usable title or url falls through to RSS, CSV, the browser, and HTML instead of failing at once.
 - A search page whose result blocks were found but could not be parsed is reported as a parser failure instead of an empty success.
 - `sources.fallbacks` names an instance served by RSS, CSV, or the browser, not only HTML.
-- A linked page skipped during a crawl is counted in `warnings`, and a walk stopped by `max_pages` says so.
+- A linked page skipped during a crawl is reported as a `fetch.links_skipped` notice, and a walk stopped by `max_pages` is reported as `fetch.links_capped`.
 - The parser failure and timeout remedies name the action a caller can take, instead of search-only controls.
 - `ownsearch_fetch` is published as idempotent, because a repeat read is safe.
 
@@ -308,7 +310,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - PDF text is read with `lopdf`, so the tree no longer pulls the unmaintained `pdf-extract` dependency.
 - Browser rendering checks every request and the peer address Chromium connects to against the public-address guard, and refuses a render whose final URL is not public.
 
-[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/devops-infinity/ownsearch/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/devops-infinity/ownsearch/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/devops-infinity/ownsearch/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/devops-infinity/ownsearch/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/devops-infinity/ownsearch/compare/v0.4.0...v0.5.0
