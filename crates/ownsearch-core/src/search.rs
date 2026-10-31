@@ -1061,6 +1061,15 @@ async fn search_instance(
             };
         }
         let retry_after = html.retry_after_secs.or(report.retry_after_secs);
+        if report.outcome == ProbeOutcome::RateLimited {
+            return failure_after(
+                row,
+                Some("json"),
+                "ownsearch.rate_limited",
+                "the instance is limiting requests".to_owned(),
+                retry_after,
+            );
+        }
         return failure_after(
             row,
             Some("html"),

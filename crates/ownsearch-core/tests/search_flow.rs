@@ -478,6 +478,38 @@ async fn an_rss_fallback_success_is_named_in_the_fallbacks_list() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test]
+async fn a_json_rate_limit_is_not_hidden_by_a_landing_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .and(query_param("format", "json"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("slow down"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(INDEX_PAGE.as_bytes(), "text/html"))
+        .mount(&server)
+        .await;
+    let dir = common::temp_dir("flow-429-html");
+    let settings = common::settings(&dir);
+    let ctx = context(&settings);
+    let id = insert(&ctx.store, &format!("{}/", server.uri()));
+    activate(&ctx.store, id, true, 90.0);
+    let outcome = search(&ctx, &request(), &CancellationToken::new())
+        .await
+        .expect("search");
+    let failure = outcome.output.sources.failed.first().expect("a failure");
+    assert_eq!(
+        failure.code.as_str(),
+        "ownsearch.rate_limited",
+        "the rate limit must survive the landing page the html attempt got"
+    );
+    assert_eq!(failure.parser.as_deref(), Some("json"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_failure_codes_cover_every_probe_outcome() {
     let cases = [

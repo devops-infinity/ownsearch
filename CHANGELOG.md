@@ -17,6 +17,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Fixed
 
+- A JSON rate limit is no longer hidden when the HTML fallback gets a landing page. The source reports `ownsearch.rate_limited` with the `json` parser and the wait hint, instead of `policy_refused`.
 - A search that loses a source adds a `search.sources_failed` warning with the count and the retry step, so a client reading `outcome` and `messages` learns why the result is partial.
 - Every entry in `sources.failed` names the `parser` that was serving that source when it failed.
 - A browser failure reports `ownsearch.browser_failed` with a browser remedy, instead of `ownsearch.state_error` and an instruction to restore the database.
