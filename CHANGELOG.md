@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Fixed
+
+- Deleting an instance through `ownsearch_db_crud` clears its hourly probe metrics first, so the delete no longer fails with `ownsearch.state_error` once that instance has been probed.
+
 ## [0.11.0] - 2026-11-01
 
 ### Added
