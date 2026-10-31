@@ -59,6 +59,8 @@ pub struct SearchResultItem {
 pub struct SourceFailure {
     pub instance_id: i64,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parser: Option<String>,
     pub code: String,
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -345,6 +347,7 @@ pub struct FetchOutput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redirects: Vec<String>,
     pub status: u16,
+    pub status_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     pub format: String,
@@ -374,6 +377,7 @@ pub struct FetchDocument {
     pub url: String,
     pub final_url: String,
     pub status: u16,
+    pub status_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     pub fetch_mode: String,

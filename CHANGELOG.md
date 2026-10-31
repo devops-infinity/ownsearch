@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Fixed
+
+- A search that loses a source adds a `search.sources_failed` warning with the count and the retry step, so a client reading `outcome` and `messages` learns why the result is partial.
+- Every entry in `sources.failed` names the `parser` that was serving that source when it failed.
+- A browser failure reports `ownsearch.browser_failed` with a browser remedy, instead of `ownsearch.state_error` and an instruction to restore the database.
+- Error remedies name the instance case and the page case, and the timeout message says "the request deadline" instead of "the search deadline".
+- A fetch answer carries `statusSource`. It is `browser` when the page was rendered and no HTTP status was observed, so a synthesized `200` can no longer pass as the host's answer.
+
 ## [0.8.0] - 2026-10-31
 
 ### Added

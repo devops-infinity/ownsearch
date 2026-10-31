@@ -380,9 +380,24 @@ async fn an_index_page_is_reported_as_refused_not_as_a_parser_error() {
         .expect("search");
     let failure = outcome.output.sources.failed.first().expect("a failure");
     assert_eq!(failure.code.as_str(), "ownsearch.policy_refused");
+    assert_eq!(failure.parser.as_deref(), Some("html"));
     assert_eq!(
         failure.reason.as_str(),
         "the instance answered its index page instead of results"
+    );
+    assert_eq!(outcome.output.outcome, "failed");
+    let notice = outcome
+        .output
+        .messages
+        .iter()
+        .find(|notice| notice.code == "search.sources_failed")
+        .expect("a failure notice");
+    assert_eq!(notice.level, "warning");
+    assert!(
+        notice
+            .next_step
+            .as_deref()
+            .is_some_and(|step| !step.is_empty())
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -407,9 +422,24 @@ async fn an_index_page_under_a_json_content_type_is_refused() {
         .expect("search");
     let failure = outcome.output.sources.failed.first().expect("a failure");
     assert_eq!(failure.code.as_str(), "ownsearch.policy_refused");
+    assert_eq!(failure.parser.as_deref(), Some("html"));
     assert_eq!(
         failure.reason.as_str(),
         "the instance answered its index page instead of results"
+    );
+    assert_eq!(outcome.output.outcome, "failed");
+    let notice = outcome
+        .output
+        .messages
+        .iter()
+        .find(|notice| notice.code == "search.sources_failed")
+        .expect("a failure notice");
+    assert_eq!(notice.level, "warning");
+    assert!(
+        notice
+            .next_step
+            .as_deref()
+            .is_some_and(|step| !step.is_empty())
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

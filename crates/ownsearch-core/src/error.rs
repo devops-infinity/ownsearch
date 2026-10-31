@@ -65,8 +65,10 @@ pub enum Error {
     ConfirmationExpired,
     #[error("request cancelled by the client")]
     Cancelled,
-    #[error("the search deadline of {deadline_ms} ms passed")]
+    #[error("the request deadline of {deadline_ms} ms passed")]
     Timeout { deadline_ms: u64 },
+    #[error("browser failure: {0}")]
+    Browser(String),
     #[error("the search found no usable instance")]
     NoFleet,
     #[error("update: {0}")]
@@ -113,6 +115,7 @@ impl Error {
             Self::ConfirmationExpired => "ownsearch.confirmation_expired",
             Self::Cancelled => "ownsearch.cancelled",
             Self::Timeout { .. } => "ownsearch.timeout",
+            Self::Browser(_) => "ownsearch.browser_failed",
             Self::NoFleet => "ownsearch.no_fleet",
             Self::Update(_) => "ownsearch.update_failed",
         }
@@ -130,20 +133,18 @@ impl Error {
                 "Honor the operator policy named in the message; OwnSearch will not bypass it."
             }
             Self::Upstream { status, .. } => match status {
-                400 | 422 => "Fix the request the instance named, then try again.",
+                400 | 422 => "Fix the request named in the message, then try again.",
                 401 | 403 => {
-                    "The instance refused this format or this request. Enable HTML fallback only if the operator policy allows it."
+                    "The host refused this request. For a search instance, enable HTML fallback only if the operator policy allows it; for a page, try another url or a browser render."
                 }
-                404 => "The instance does not serve this path; the scan will mark it and move on.",
-                429 => {
-                    "Stop for this instance. Wait for the operator's rate window before scanning again."
+                404 => {
+                    "The host does not serve this path. For a search instance the scan marks it and moves on; for a page, check the url."
                 }
-                _ => {
-                    "Retry later; if every instance fails, run `ownsearch scan` to refresh the fleet."
-                }
+                429 => "Wait for the rate window the host reports before retrying.",
+                _ => "Retry later; for a search, run `ownsearch scan` to refresh the fleet.",
             },
             Self::RateLimited { .. } => {
-                "Wait for the instance rate window to pass; OwnSearch never retries a 429 in the same run."
+                "Wait for the rate window the host reports; OwnSearch never retries a 429 in the same run."
             }
             Self::Busy { .. } => {
                 "Retry shortly; the local state database or the search queue is saturated."
@@ -178,6 +179,9 @@ impl Error {
             Self::Cancelled => "Call the tool again if the work is still needed.",
             Self::Timeout { .. } => {
                 "Retry with a longer deadline where the tool accepts one, or narrow the request: fewer instances for a search, a smaller page or fewer links for a fetch."
+            }
+            Self::Browser(_) => {
+                "Retry; if it repeats, check that the headless browser can launch, or set OWNSEARCH_BROWSER=false and stay on the HTTP path."
             }
             Self::NoFleet => {
                 "Call the ownsearch_scan tool, or run `ownsearch scan`, to refresh the fleet. If every instance is cooling down, `ownsearch instances list` shows the status and an operator can clear it with `ownsearch scan --force --instance <id>`."

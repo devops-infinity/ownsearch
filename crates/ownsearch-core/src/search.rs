@@ -302,6 +302,17 @@ pub async fn search(
     let attempted = attempted_ids.len();
     let succeeded_count = succeeded.len();
     let partial = !failed.is_empty();
+    if !failed.is_empty() {
+        messages.push(Notice::warning(
+            "search.sources_failed",
+            format!(
+                "{} of {} selected instances did not answer",
+                failed.len(),
+                attempted
+            ),
+            "retry, or run a scan to refresh the fleet",
+        ));
+    }
     let mut fallbacks = fallbacks;
     fallbacks.sort_unstable();
     fallbacks.dedup();
@@ -1053,6 +1064,7 @@ async fn search_instance(
         let retry_after = html.retry_after_secs.or(report.retry_after_secs);
         return failure_after(
             row,
+            Some("html"),
             code_for(html.outcome, html.http_status),
             error_text(&html.error_message, html.outcome),
             retry_after,
@@ -1060,6 +1072,7 @@ async fn search_instance(
     }
     failure_after(
         row,
+        Some("json"),
         code_for(report.outcome, report.http_status),
         error_text(&report.error_message, report.outcome),
         report.retry_after_secs,
@@ -1343,11 +1356,12 @@ fn instance_auth(
 }
 
 fn failure(row: &InstanceRow, code: &str, reason: String) -> SourceOutcome {
-    failure_after(row, code, reason, None)
+    failure_after(row, None, code, reason, None)
 }
 
 fn failure_after(
     row: &InstanceRow,
+    parser: Option<&str>,
     code: &str,
     reason: String,
     retry_after_secs: Option<u64>,
@@ -1359,6 +1373,7 @@ fn failure_after(
         failure: Some(SourceFailure {
             instance_id: row.instance_id,
             url: row.url.clone(),
+            parser: parser.map(str::to_owned),
             code: code.to_owned(),
             reason: cap(&sanitize(&reason), 200).0,
             retry_after_secs,
