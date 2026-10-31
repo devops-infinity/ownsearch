@@ -180,7 +180,8 @@ mod tests {
                 age_secs: None,
             },
             truncated: false,
-            warnings: Vec::new(),
+            outcome: "success".to_owned(),
+            messages: Vec::new(),
             errors: Vec::new(),
             timing: SearchTiming {
                 elapsed_ms: 120,

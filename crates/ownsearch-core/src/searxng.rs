@@ -110,7 +110,7 @@ impl<T> ProbeReport<T> {
     }
 }
 
-const CHALLENGE_MARKERS: [&str; 14] = [
+const CHALLENGE_MARKERS: [&str; 16] = [
     "anubis_challenge",
     "making sure you're not a bot",
     "verifying your browser",
@@ -125,6 +125,8 @@ const CHALLENGE_MARKERS: [&str; 14] = [
     "cf-chl",
     "just a moment...",
     "ddos-guard",
+    "cap-widget",
+    "security verification",
 ];
 
 pub(crate) fn is_rate_limit_body(text: &str) -> bool {
@@ -142,6 +144,18 @@ pub(crate) fn is_challenge_page(text: &str) -> bool {
     CHALLENGE_MARKERS
         .iter()
         .any(|marker| lowered.contains(marker))
+}
+
+const INDEX_PAGE_MARKERS: [&str; 3] = [
+    "class=\"index_endpoint\"",
+    "id=\"main_index\"",
+    "name=\"endpoint\" content=\"index\"",
+];
+
+pub(crate) fn is_index_page(text: &str) -> bool {
+    INDEX_PAGE_MARKERS
+        .iter()
+        .any(|marker| text.contains(marker))
 }
 
 pub(crate) fn classify(fetched: &Fetched) -> Option<ProbeOutcome> {
@@ -196,6 +210,26 @@ mod tests {
         assert!(is_challenge_page(
             "<h1>Checking your browser before accessing</h1>"
         ));
+        assert!(is_challenge_page(
+            r#"<cap-widget data-cap-api-endpoint="/__cap/"></cap-widget>"#
+        ));
+        assert!(is_challenge_page("<title>Security Verification</title>"));
         assert!(!is_challenge_page("normal results page"));
+    }
+
+    #[test]
+    fn an_instance_index_page_is_recognized() {
+        assert!(is_index_page(
+            r#"<body class="index_endpoint"><main id="main_index"></main></body>"#
+        ));
+        assert!(is_index_page(
+            r#"<meta name="endpoint" content="index"><div class="index"></div>"#
+        ));
+        assert!(!is_index_page(
+            r#"<meta name="endpoint" content="results"><div id="results"></div>"#
+        ));
+        assert!(!is_index_page(
+            "<html><body>normal results page</body></html>"
+        ));
     }
 }

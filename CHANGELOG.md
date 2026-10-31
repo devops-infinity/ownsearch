@@ -4,6 +4,27 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- `ownsearch_fetch` takes `format: "json"` and returns a `document` for AI clients: title, description, canonical URL, language, publication date, author, site name, content, headings, links, and JSON-LD blocks, plus the extraction attempts. Every fetch answer reports the `parser` that produced the text.
+- Extraction runs a chain and stops at the first pass that yields at least 200 characters: the densest content root, then the whole body with boilerplate pruned, then the raw document. A page with an unusual layout no longer returns empty text. `render: "auto"` renders when extraction found no text, not only when the page looks like a JavaScript shell.
+- Every search and fetch answer carries `outcome` (`success`, `partial`, `empty`, or `failed`) and `messages`, a list of notices with `level`, `code`, `message`, and `nextStep`, so an AI client picks its next call without reading prose.
+
+### Changed
+
+- Every instance request carries a desktop browser user agent chosen at random from a pool of six current Chrome, Safari, and Edge strings, instead of the `OwnSearch` product agent.
+- **Breaking:** `warnings` is removed from the search and fetch answers. Read `messages` instead, which carries the same text with a level, a code, and a next step.
+
+### Fixed
+
+- A search answered with the instance's own index page is reported as `ownsearch.policy_refused` with the reason "the instance answered its index page instead of results", on the HTML path and when the page arrives under a JSON content type. A Cap widget gate and a "Security Verification" page are now recognized as bot checks. All three were reported as `ownsearch.parser_failed`, and each occurrence wrote a parser sample. A real selector drift now carries the reason "the instance answered a page with no results container" instead of "the instance answered parser_error".
+- A JSON answer whose entries carry no usable title or url falls through to RSS, CSV, the browser, and HTML instead of failing at once.
+- A search page whose result blocks were found but could not be parsed is reported as a parser failure instead of an empty success.
+- `sources.fallbacks` names an instance served by RSS, CSV, or the browser, not only HTML.
+- A linked page skipped during a crawl is counted in `warnings`, and a walk stopped by `max_pages` says so.
+- The parser failure and timeout remedies name the action a caller can take, instead of search-only controls.
+- `ownsearch_fetch` is published as idempotent, because a repeat read is safe.
+
 ## [0.7.0] - 2026-10-30
 
 ### Added

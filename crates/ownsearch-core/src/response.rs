@@ -123,6 +123,41 @@ pub struct SearchTiming {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
+pub struct Notice {
+    pub level: String,
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<String>,
+}
+
+impl Notice {
+    pub(crate) fn info(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            level: "info".to_owned(),
+            code: code.to_owned(),
+            message: message.into(),
+            next_step: None,
+        }
+    }
+
+    pub(crate) fn warning(
+        code: &str,
+        message: impl Into<String>,
+        next_step: impl Into<String>,
+    ) -> Self {
+        Self {
+            level: "warning".to_owned(),
+            code: code.to_owned(),
+            message: message.into(),
+            next_step: Some(next_step.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct SearchOutput {
     pub results: Vec<SearchResultItem>,
     pub sources: SourcesInfo,
@@ -130,8 +165,9 @@ pub struct SearchOutput {
     pub cache: CacheInfo,
     #[serde(default)]
     pub truncated: bool,
+    pub outcome: String,
     #[serde(default)]
-    pub warnings: Vec<String>,
+    pub messages: Vec<Notice>,
     #[serde(default)]
     pub errors: Vec<SourceFailure>,
     pub timing: SearchTiming,
@@ -313,18 +349,88 @@ pub struct FetchOutput {
     pub content_type: Option<String>,
     pub format: String,
     pub fetch_mode: String,
+    pub parser: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub content: String,
     pub truncated: bool,
+    pub outcome: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<FetchPage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
+    pub messages: Vec<Notice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<FetchDocument>,
     pub cache_hit: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_age_secs: Option<u64>,
     pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct FetchDocument {
+    pub url: String,
+    pub final_url: String,
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    pub fetch_mode: String,
+    pub parser: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_name: Option<String>,
+    pub content: String,
+    pub content_format: String,
+    pub characters: usize,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<FetchAttempt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headings: Vec<FetchHeading>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<FetchLink>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub json_ld: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<Notice>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct FetchAttempt {
+    pub parser: String,
+    pub characters: usize,
+    pub used: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct FetchHeading {
+    pub level: u8,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct FetchLink {
+    pub url: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

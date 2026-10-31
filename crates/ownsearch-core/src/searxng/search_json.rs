@@ -160,20 +160,29 @@ pub async fn fetch(
             sample: None,
             retry_after_secs: Some(fetched.retry_after_secs).flatten(),
         },
-        Err(error) => ProbeReport {
-            value: None,
-            outcome: crate::types::ProbeOutcome::ParserError,
-            http_status: Some(fetched.status),
-            elapsed_ms: i64::try_from(fetched.elapsed_ms).unwrap_or(i64::MAX),
-            bytes: fetched.body.len(),
-            truncated: fetched.truncated,
-            error_code: Some(error.code().to_owned()),
-            error_message: Some(error.to_string()),
-            rate_limited: false,
-            blocked: false,
-            sample: Some(fetched.body.clone()),
-            retry_after_secs: fetched.retry_after_secs,
-        },
+        Err(error) => {
+            if crate::searxng::is_index_page(&String::from_utf8_lossy(&fetched.body)) {
+                let mut report =
+                    ProbeReport::from_fetch(&fetched, crate::types::ProbeOutcome::Refused);
+                report.error_message =
+                    Some("the instance answered its index page instead of results".to_owned());
+                return report;
+            }
+            ProbeReport {
+                value: None,
+                outcome: crate::types::ProbeOutcome::ParserError,
+                http_status: Some(fetched.status),
+                elapsed_ms: i64::try_from(fetched.elapsed_ms).unwrap_or(i64::MAX),
+                bytes: fetched.body.len(),
+                truncated: fetched.truncated,
+                error_code: Some(error.code().to_owned()),
+                error_message: Some(error.to_string()),
+                rate_limited: false,
+                blocked: false,
+                sample: Some(fetched.body.clone()),
+                retry_after_secs: fetched.retry_after_secs,
+            }
+        }
     }
 }
 

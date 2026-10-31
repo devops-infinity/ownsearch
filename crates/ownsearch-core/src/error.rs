@@ -149,7 +149,7 @@ impl Error {
                 "Retry shortly; the local state database or the search queue is saturated."
             }
             Self::ParserFailed { .. } => {
-                "The answer was read but not understood. Scan again to refresh capability state, and report the instance."
+                "The content was read but not understood. Try another format or another URL, and report the source if it repeats."
             }
             Self::Network { .. } => "Check network reachability, then retry.",
             Self::State(_) | Self::Database { .. } => {
@@ -177,7 +177,7 @@ impl Error {
             }
             Self::Cancelled => "Call the tool again if the work is still needed.",
             Self::Timeout { .. } => {
-                "Raise the deadline with timeout_secs (up to the transport limit), or use mode=fast to query fewer instances."
+                "Retry with a longer deadline where the tool accepts one, or narrow the request: fewer instances for a search, a smaller page or fewer links for a fetch."
             }
             Self::NoFleet => {
                 "Call the ownsearch_scan tool, or run `ownsearch scan`, to refresh the fleet. If every instance is cooling down, `ownsearch instances list` shows the status and an operator can clear it with `ownsearch scan --force --instance <id>`."

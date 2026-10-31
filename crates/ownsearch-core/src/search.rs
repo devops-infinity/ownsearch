@@ -12,7 +12,7 @@ use crate::db::InstanceRow;
 use crate::error::{Error, Result};
 use crate::merge::{MergeOptions, Observation, merge};
 use crate::response::{
-    CacheInfo, Coverage, SearchOutput, SearchResultItem, SearchTiming, SourceFailure,
+    CacheInfo, Coverage, Notice, SearchOutput, SearchResultItem, SearchTiming, SourceFailure,
     SourceObservation, SourcesInfo, UnresponsiveEngine,
 };
 use crate::sanitize::{cap, sanitize};
@@ -134,8 +134,8 @@ pub async fn search(
     let _search_slot = ctx.acquire_search().await?;
     let queue_ms = elapsed_ms(queue_started);
     let selection_started = Instant::now();
-    let mut warnings: Vec<String> = Vec::new();
-    let rows = prepare_fleet(ctx, &mut warnings).await?;
+    let mut messages: Vec<Notice> = Vec::new();
+    let rows = prepare_fleet(ctx, &mut messages).await?;
     let ordered = if request.instance_ids.is_empty() {
         let rotation = ctx.settings.round_robin().then(|| {
             ctx.next_rotation(rotation_span(
@@ -194,7 +194,7 @@ pub async fn search(
             cancellation,
             hard_deadline,
             attempts,
-            &mut warnings,
+            &mut messages,
         )
         .await,
     );
@@ -255,6 +255,7 @@ pub async fn search(
         observations,
         failed,
         succeeded,
+        fallbacks,
         parser,
         http_class,
         engines,
@@ -301,15 +302,10 @@ pub async fn search(
     let attempted = attempted_ids.len();
     let succeeded_count = succeeded.len();
     let partial = !failed.is_empty();
-    let mut fallbacks: Vec<i64> = results
-        .iter()
-        .filter_map(|result| result.sources.as_ref())
-        .flatten()
-        .filter(|source| source.parser == "html")
-        .map(|source| source.instance_id)
-        .collect();
+    let mut fallbacks = fallbacks;
     fallbacks.sort_unstable();
     fallbacks.dedup();
+    let outcome = search_outcome(&results, succeeded_count, &failed, &messages);
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let output = SearchOutput {
         results,
@@ -333,7 +329,8 @@ pub async fn search(
             age_secs: None,
         },
         truncated: merged.truncated,
-        warnings,
+        outcome,
+        messages,
         errors: failed,
         timing: SearchTiming {
             elapsed_ms,
@@ -391,7 +388,7 @@ fn cached_search(ctx: &Arc<ToolContext>, cache_key: &str) -> Result<Option<Searc
 
 async fn prepare_fleet(
     ctx: &Arc<ToolContext>,
-    warnings: &mut Vec<String>,
+    messages: &mut Vec<Notice>,
 ) -> Result<Vec<InstanceRow>> {
     {
         let ctx = Arc::clone(ctx);
@@ -405,7 +402,11 @@ async fn prepare_fleet(
         blocking_store(move || resolve_fleet(&ctx)).await?
     };
     if let Some(warning) = fleet_warning {
-        warnings.push(warning);
+        messages.push(Notice::warning(
+            "search.fleet_fallback",
+            warning,
+            "run a scan to score the fleet",
+        ));
     }
     if rows.is_empty()
         && let Some(handle) = refresh
@@ -417,7 +418,11 @@ async fn prepare_fleet(
             blocking_store(move || resolve_fleet(&ctx)).await?
         };
         if let Some(warning) = fleet_warning {
-            warnings.push(warning);
+            messages.push(Notice::warning(
+                "search.fleet_fallback",
+                warning,
+                "run a scan to score the fleet",
+            ));
         }
         return Ok(rows);
     }
@@ -428,6 +433,7 @@ struct OutcomeSummary {
     observations: Vec<Observation>,
     failed: Vec<SourceFailure>,
     succeeded: Vec<i64>,
+    fallbacks: Vec<i64>,
     parser: Option<String>,
     http_class: Option<String>,
     engines: std::collections::BTreeMap<i64, Vec<String>>,
@@ -439,6 +445,7 @@ fn summarise_outcomes(outcomes: Vec<SourceOutcome>) -> OutcomeSummary {
         observations: Vec::new(),
         failed: Vec::new(),
         succeeded: Vec::new(),
+        fallbacks: Vec::new(),
         parser: None,
         http_class: None,
         engines: std::collections::BTreeMap::new(),
@@ -465,6 +472,11 @@ fn summarise_outcomes(outcomes: Vec<SourceOutcome>) -> OutcomeSummary {
             continue;
         }
         summary.succeeded.push(instance_id);
+        if let Some(name) = &parser
+            && name != "json"
+        {
+            summary.fallbacks.push(instance_id);
+        }
         if summary.parser.is_none() {
             summary.parser.clone_from(&parser);
         }
@@ -851,7 +863,7 @@ async fn run_batch(
     cancellation: &CancellationToken,
     hard_deadline: tokio::time::Instant,
     attempts: u32,
-    warnings: &mut Vec<String>,
+    messages: &mut Vec<Notice>,
 ) -> Vec<SourceOutcome> {
     let mut set: JoinSet<SourceOutcome> = JoinSet::new();
     for row in rows {
@@ -869,7 +881,11 @@ async fn run_batch(
         let next = tokio::time::timeout_at(hard_deadline, set.join_next()).await;
         match next {
             Ok(Some(Ok(outcome))) => outcomes.push(outcome),
-            Ok(Some(Err(error))) => warnings.push(format!("a search task failed: {error}")),
+            Ok(Some(Err(error))) => messages.push(Notice::warning(
+                "search.task_failed",
+                format!("a search task failed: {error}"),
+                "the other instances still answered",
+            )),
             Ok(None) => break,
             Err(_) => {
                 set.abort_all();
@@ -885,10 +901,11 @@ async fn run_batch(
                         ));
                     }
                 }
-                warnings.push(
-                    "the search deadline passed; the instances that did not answer are listed in sources.failed"
-                        .to_owned(),
-                );
+                messages.push(Notice::warning(
+                    "search.deadline",
+                    "the search deadline passed; the instances that did not answer are listed in sources.failed",
+                    "raise the deadline, or use fast mode for fewer instances",
+                ));
                 break;
             }
         }
@@ -919,7 +936,7 @@ async fn search_instance(
         .json_throttled_until
         .as_deref()
         .is_some_and(|until| until > now.as_str());
-    let report = if throttled {
+    let mut report = if throttled {
         ProbeReport::failed(
             ProbeOutcome::RateLimited,
             "json is throttled by the instance limiter until its window passes".to_owned(),
@@ -943,30 +960,28 @@ async fn search_instance(
         .map(unresponsive_entries)
         .unwrap_or_default();
     if report.outcome.is_success() {
-        if row.json_throttled_until.is_some() {
-            clear_json_throttled(ctx, row.instance_id).await;
-        }
         let observations = observations_from_json(row, &report);
-        if observations.is_empty()
+        let unusable = observations.is_empty()
             && report
                 .value
                 .as_ref()
-                .is_some_and(|answer| !answer.results.is_empty())
-        {
-            return failure(
-                row,
-                "ownsearch.parser_failed",
-                "the instance answered results that carried no usable title and url".to_owned(),
-            );
+                .is_some_and(|answer| !answer.results.is_empty());
+        if !unusable {
+            if row.json_throttled_until.is_some() {
+                clear_json_throttled(ctx, row.instance_id).await;
+            }
+            return SourceOutcome {
+                instance_id: row.instance_id,
+                parser: Some("json".to_owned()),
+                observations,
+                failure: None,
+                http_class: report.http_status.map(http_class),
+                unresponsive,
+            };
         }
-        return SourceOutcome {
-            instance_id: row.instance_id,
-            parser: Some("json".to_owned()),
-            observations,
-            failure: None,
-            http_class: report.http_status.map(http_class),
-            unresponsive,
-        };
+        report.outcome = ProbeOutcome::ParserError;
+        report.error_message =
+            Some("the instance answered results that carried no usable title and url".to_owned());
     }
     if report.outcome == ProbeOutcome::ParserError {
         for format in ["rss", "csv"] {
@@ -1379,6 +1394,26 @@ fn error_text(message: &Option<String>, outcome: ProbeOutcome) -> String {
     message
         .clone()
         .unwrap_or_else(|| format!("the instance answered {}", outcome.as_str()))
+}
+
+fn search_outcome(
+    results: &[SearchResultItem],
+    succeeded: usize,
+    failed: &[SourceFailure],
+    messages: &[Notice],
+) -> String {
+    if results.is_empty() {
+        return if succeeded == 0 && !failed.is_empty() {
+            "failed".to_owned()
+        } else {
+            "empty".to_owned()
+        };
+    }
+    if !failed.is_empty() || !messages.is_empty() {
+        "partial".to_owned()
+    } else {
+        "success".to_owned()
+    }
 }
 
 fn http_class(status: u16) -> String {

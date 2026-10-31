@@ -7,12 +7,32 @@ use url::Url;
 use crate::context::ToolContext;
 use crate::error::{Error, Result};
 use crate::extract;
-use crate::response::{FetchOutput, FetchPage};
+use crate::response::{
+    FetchAttempt, FetchDocument, FetchHeading, FetchLink, FetchOutput, FetchPage, Notice,
+};
 use crate::sanitize::cap;
 use crate::types::{FetchFormat, RenderMode};
 
 const MAX_CRAWLED_PAGES: usize = 7;
 const PDF_TEXT_LIMIT: usize = 8 * 1024 * 1024;
+
+struct Content {
+    title: Option<String>,
+    body: String,
+    parser: String,
+    attempts: Vec<FetchAttempt>,
+}
+
+impl Content {
+    fn plain(body: String) -> Self {
+        Self {
+            title: None,
+            body,
+            parser: "raw".to_owned(),
+            attempts: Vec::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct FetchRequest {
@@ -71,8 +91,32 @@ pub async fn fetch(
     if request.render == RenderMode::Always {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let (rendered_html, rendered_markdown) = ctx.browser.page(&url, remaining).await?;
-        let (title, content) = rendered_content(request, &rendered_html, rendered_markdown, &url);
-        let (content, truncated) = cap(&content, request.max_chars);
+        let content = rendered_content(request, &rendered_html, rendered_markdown, &url);
+        let (body, truncated) = cap(&content.body, request.max_chars);
+        let mut messages = content_messages(&content, truncated);
+        messages.push(Notice::info(
+            "fetch.status_unobserved",
+            "the page was rendered in a browser, so the HTTP status and redirect chain were not observed",
+        ));
+        let outcome = outcome_for(&body, &messages);
+        let document = build_document(
+            request.format,
+            DocumentInput {
+                url: &url,
+                final_url: &url,
+                status: 200,
+                content_type: Some("text/html".to_owned()),
+                fetch_mode: "browser",
+                parser: &content.parser,
+                title: content.title.as_ref(),
+                attempts: &content.attempts,
+                html: Some(&rendered_html),
+                content: &body,
+                content_format: content_format(request.format),
+                truncated,
+                messages: &messages,
+            },
+        );
         let output = FetchOutput {
             url: url.to_string(),
             final_url: url.to_string(),
@@ -81,11 +125,14 @@ pub async fn fetch(
             content_type: Some("text/html".to_owned()),
             format: request.format.as_str().to_owned(),
             fetch_mode: "browser".to_owned(),
-            title,
-            content,
+            parser: content.parser.clone(),
+            title: content.title.clone(),
+            content: body,
             truncated,
+            outcome,
             pages: Vec::new(),
-            warnings: Vec::new(),
+            messages,
+            document,
             cache_hit: false,
             cached_age_secs: None,
             elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -114,6 +161,36 @@ pub async fn fetch(
     if is_pdf {
         let text = pdf_text(fetched.body, deadline).await?;
         let (content, truncated) = cap(&extract::from_pdf_text(&text), request.max_chars);
+        let mut messages = vec![Notice::info(
+            "fetch.parser",
+            "the text came from the pdf parser",
+        )];
+        if truncated {
+            messages.push(Notice::warning(
+                "fetch.truncated",
+                "the content was capped at max_chars",
+                "raise max_chars to read the rest",
+            ));
+        }
+        let outcome = outcome_for(&content, &messages);
+        let document = build_document(
+            request.format,
+            DocumentInput {
+                url: &url,
+                final_url: &final_url,
+                status: fetched.status,
+                content_type: fetched.content_type.clone(),
+                fetch_mode: "http",
+                parser: "pdf",
+                title: None,
+                attempts: &[],
+                html: None,
+                content: &content,
+                content_format: "text",
+                truncated,
+                messages: &messages,
+            },
+        );
         let output = FetchOutput {
             url: url.to_string(),
             final_url: final_url.to_string(),
@@ -122,11 +199,14 @@ pub async fn fetch(
             content_type: fetched.content_type.clone(),
             format: request.format.as_str().to_owned(),
             fetch_mode: "http".to_owned(),
+            parser: "pdf".to_owned(),
             title: None,
             content,
             truncated,
+            outcome,
             pages: Vec::new(),
-            warnings: Vec::new(),
+            messages,
+            document,
             cache_hit: false,
             cached_age_secs: None,
             elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -135,36 +215,91 @@ pub async fn fetch(
     }
     let body = fetched.text();
     let is_html = fetched.is_html() || looks_like_html(&body);
-    let pages = if request.max_pages > 1 && is_html {
+    let CrawlResult {
+        pages,
+        skipped,
+        limit_reached,
+    } = if request.max_pages > 1 && is_html {
         crawl(ctx, &final_url, &body, request, cancellation, deadline).await
     } else {
-        Vec::new()
+        CrawlResult::default()
     };
-    let (title, content) = extract_content(request, &body, is_html, &url);
+    let content = extract_content(request, &body, is_html, &url);
     let mut fetch_mode = "http".to_owned();
-    let mut warnings: Vec<String> = Vec::new();
+    let mut messages: Vec<Notice> = Vec::new();
+    if skipped > 0 {
+        messages.push(Notice::warning(
+            "fetch.links_skipped",
+            format!(
+                "{skipped} linked pages were skipped because they did not answer or did not parse"
+            ),
+            "fetch the lost pages directly",
+        ));
+    }
+    if limit_reached {
+        messages.push(Notice::warning(
+            "fetch.links_capped",
+            "the link walk stopped before it visited every link",
+            "raise max_pages to follow more links",
+        ));
+    }
+    let thin = content.body.trim().is_empty();
     let needs_render = match request.render {
         RenderMode::Always => true,
         RenderMode::Never => false,
-        RenderMode::Auto => is_html && looks_like_javascript_shell(&body, &content),
+        RenderMode::Auto => is_html && (thin || looks_like_javascript_shell(&body, &content.body)),
     };
-    let (title, content) = if needs_render {
+    let mut rendered_html: Option<String> = None;
+    let content = if needs_render {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         match ctx.browser.page(&url, remaining).await {
-            Ok((rendered_html, rendered_markdown)) => {
+            Ok((html, markdown)) => {
                 fetch_mode = "browser".to_owned();
-                rendered_content(request, &rendered_html, rendered_markdown, &url)
+                let rendered = rendered_content(request, &html, markdown, &url);
+                rendered_html = Some(html);
+                rendered
             }
             Err(error) if request.render == RenderMode::Always => return Err(error),
             Err(error) => {
-                warnings.push(format!("the browser render failed: {error}"));
-                (title, content)
+                messages.push(Notice::warning(
+                    "fetch.render_failed",
+                    format!("the browser render failed: {error}"),
+                    "retry with render always, or fetch the page again later",
+                ));
+                content
             }
         }
     } else {
-        (title, content)
+        content
     };
-    let (content, truncated) = cap(&content, request.max_chars);
+    if fetch_mode == "browser" {
+        messages.push(Notice::info(
+            "fetch.status_unobserved",
+            "the page was rendered in a browser, so the HTTP status and redirect chain were not observed",
+        ));
+    }
+    let (text, truncated) = cap(&content.body, request.max_chars);
+    messages.extend(content_messages(&content, truncated));
+    let outcome = outcome_for(&text, &messages);
+    let parser = content.parser.clone();
+    let document = build_document(
+        request.format,
+        DocumentInput {
+            url: &url,
+            final_url: &final_url,
+            status: fetched.status,
+            content_type: fetched.content_type.clone(),
+            fetch_mode: &fetch_mode,
+            parser: &parser,
+            title: content.title.as_ref(),
+            attempts: &content.attempts,
+            html: Some(rendered_html.as_deref().unwrap_or(body.as_str())),
+            content: &text,
+            content_format: content_format(request.format),
+            truncated,
+            messages: &messages,
+        },
+    );
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let output = FetchOutput {
         url: url.to_string(),
@@ -174,11 +309,14 @@ pub async fn fetch(
         content_type: fetched.content_type.clone(),
         format: request.format.as_str().to_owned(),
         fetch_mode,
-        title,
-        content,
+        parser,
+        title: content.title,
+        content: text,
         truncated,
+        outcome,
         pages,
-        warnings,
+        messages,
+        document,
         cache_hit: false,
         cached_age_secs: None,
         elapsed_ms,
@@ -220,28 +358,37 @@ fn cached_outcome(ctx: &Arc<ToolContext>, cache_key: String, output: FetchOutput
     }
 }
 
-fn extract_content(
-    request: &FetchRequest,
-    body: &str,
-    is_html: bool,
-    url: &Url,
-) -> (Option<String>, String) {
+fn extract_content(request: &FetchRequest, body: &str, is_html: bool, url: &Url) -> Content {
     match (request.format, is_html) {
-        (FetchFormat::Html, true) => (
-            extract::title_from_html(body),
-            extract::clean_html(body, url),
-        ),
-        (FetchFormat::Html, false) => (None, body.to_owned()),
-        (FetchFormat::Markdown, true) => {
-            let extracted = extract::to_markdown(body, url);
-            (extracted.title, extracted.body)
+        (FetchFormat::Html, true) => Content {
+            title: extract::title_from_html(body),
+            body: extract::clean_html(body, url),
+            parser: "html".to_owned(),
+            attempts: Vec::new(),
+        },
+        (FetchFormat::Markdown, true) | (FetchFormat::Json, true) => {
+            chained_content(body, url, true)
         }
-        (FetchFormat::Markdown, false) => (None, body.to_owned()),
-        (FetchFormat::Text, true) => {
-            let extracted = extract::to_text(body, url);
-            (extracted.title, extracted.body)
-        }
-        (FetchFormat::Text, false) => (None, body.to_owned()),
+        (FetchFormat::Text, true) => chained_content(body, url, false),
+        (_, false) => Content::plain(body.to_owned()),
+    }
+}
+
+fn chained_content(html: &str, url: &Url, markdown: bool) -> Content {
+    let chained = extract::chained(html, url, markdown);
+    Content {
+        title: chained.title,
+        body: chained.body,
+        parser: chained.parser.to_owned(),
+        attempts: chained
+            .attempts
+            .iter()
+            .map(|attempt| FetchAttempt {
+                parser: attempt.parser.to_owned(),
+                characters: attempt.characters,
+                used: attempt.used,
+            })
+            .collect(),
     }
 }
 
@@ -250,24 +397,149 @@ fn rendered_content(
     html: &str,
     markdown: Option<String>,
     url: &Url,
-) -> (Option<String>, String) {
+) -> Content {
     match request.format {
-        FetchFormat::Html => (
-            extract::title_from_html(html),
-            extract::clean_html(html, url),
-        ),
-        FetchFormat::Markdown => match markdown.filter(|markdown| !markdown.trim().is_empty()) {
-            Some(markdown) => (extract::title_from_html(html), markdown),
-            None => {
-                let extracted = extract::to_markdown(html, url);
-                (extracted.title, extracted.body)
-            }
+        FetchFormat::Html => Content {
+            title: extract::title_from_html(html),
+            body: extract::clean_html(html, url),
+            parser: "html".to_owned(),
+            attempts: Vec::new(),
         },
-        FetchFormat::Text => {
-            let extracted = extract::to_text(html, url);
-            (extracted.title, extracted.body)
+        FetchFormat::Markdown | FetchFormat::Json => {
+            match markdown.filter(|markdown| !markdown.trim().is_empty()) {
+                Some(markdown) => Content {
+                    title: extract::title_from_html(html),
+                    body: markdown,
+                    parser: "browser".to_owned(),
+                    attempts: Vec::new(),
+                },
+                None => chained_content(html, url, true),
+            }
         }
+        FetchFormat::Text => chained_content(html, url, false),
     }
+}
+
+fn content_format(format: FetchFormat) -> &'static str {
+    match format {
+        FetchFormat::Html => "html",
+        FetchFormat::Markdown | FetchFormat::Json => "markdown",
+        FetchFormat::Text => "text",
+    }
+}
+
+fn content_messages(content: &Content, truncated: bool) -> Vec<Notice> {
+    let mut messages = vec![Notice::info(
+        "fetch.parser",
+        format!("the text came from the {} parser", content.parser),
+    )];
+    if content.parser == "none" {
+        messages.push(Notice::warning(
+            "fetch.empty",
+            "the page answered but no text could be extracted",
+            "retry with render always, another format, or another url",
+        ));
+    }
+    if truncated {
+        messages.push(Notice::warning(
+            "fetch.truncated",
+            "the content was capped at max_chars",
+            "raise max_chars to read the rest",
+        ));
+    }
+    messages
+}
+
+fn outcome_for(content: &str, messages: &[Notice]) -> String {
+    if content.trim().is_empty() {
+        return "empty".to_owned();
+    }
+    if messages.iter().any(|notice| notice.level == "warning") {
+        return "partial".to_owned();
+    }
+    "success".to_owned()
+}
+
+struct DocumentInput<'a> {
+    url: &'a Url,
+    final_url: &'a Url,
+    status: u16,
+    content_type: Option<String>,
+    fetch_mode: &'a str,
+    parser: &'a str,
+    title: Option<&'a String>,
+    attempts: &'a [FetchAttempt],
+    html: Option<&'a str>,
+    content: &'a str,
+    content_format: &'a str,
+    truncated: bool,
+    messages: &'a [Notice],
+}
+
+fn build_document(format: FetchFormat, input: DocumentInput<'_>) -> Option<FetchDocument> {
+    if format != FetchFormat::Json {
+        return None;
+    }
+    let metadata = input
+        .html
+        .map(|html| extract::metadata(html, input.url))
+        .unwrap_or_default();
+    let headings = input
+        .html
+        .map(|html| {
+            extract::headings(html)
+                .into_iter()
+                .map(|heading| FetchHeading {
+                    level: heading.level,
+                    text: heading.text,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let links = input
+        .html
+        .map(|html| {
+            extract::doc_links(html, input.url)
+                .into_iter()
+                .map(|link| FetchLink {
+                    url: link.url,
+                    text: link.text,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let json_ld = input.html.map(extract::json_ld).unwrap_or_default();
+    Some(FetchDocument {
+        url: input.url.to_string(),
+        final_url: input.final_url.to_string(),
+        status: input.status,
+        content_type: input.content_type,
+        fetch_mode: input.fetch_mode.to_owned(),
+        parser: input.parser.to_owned(),
+        title: input.title.cloned(),
+        description: metadata.description,
+        canonical_url: metadata.canonical,
+        language: metadata.language,
+        published_at: metadata.published_at,
+        author: metadata.author,
+        site_name: metadata.site_name,
+        content: input.content.to_owned(),
+        content_format: input.content_format.to_owned(),
+        characters: input.content.chars().count(),
+        truncated: input.truncated,
+        attempts: input.attempts.to_vec(),
+        headings,
+        links,
+        json_ld,
+        messages: input.messages.to_vec(),
+    })
+}
+
+#[derive(Debug, Default)]
+struct CrawlResult {
+    pages: Vec<FetchPage>,
+    skipped: usize,
+    limit_reached: bool,
 }
 
 async fn crawl(
@@ -277,40 +549,41 @@ async fn crawl(
     request: &FetchRequest,
     cancellation: &CancellationToken,
     deadline: tokio::time::Instant,
-) -> Vec<FetchPage> {
+) -> CrawlResult {
     let limit = request.max_pages.saturating_sub(1).min(MAX_CRAWLED_PAGES);
     if limit == 0 {
-        return Vec::new();
+        return CrawlResult::default();
     }
+    let links = extract::links(body, entry);
+    let mut result = CrawlResult::default();
     let mut pages: Vec<FetchPage> = Vec::new();
-    for link in extract::links(body, entry) {
-        if pages.len() >= limit {
+    for (index, link) in links.iter().enumerate() {
+        if pages.len() >= limit || tokio::time::Instant::now() >= deadline {
+            result.limit_reached = index < links.len();
             break;
         }
-        if link == *entry {
+        if link == entry {
             continue;
         }
         if request.same_host_only && link.host_str() != entry.host_str() {
             continue;
         }
         if !ctx.settings.allow_private_instances()
-            && !crate::network_guard::url_is_public(&link).await
+            && !crate::network_guard::url_is_public(link).await
         {
             continue;
         }
-        if tokio::time::Instant::now() >= deadline {
-            break;
-        }
-        let fetched = match tokio::time::timeout_at(
-            deadline,
-            ctx.client.get(&link, cancellation, None),
-        )
-        .await
-        {
-            Ok(Ok(fetched)) => fetched,
-            _ => continue,
-        };
+        let fetched =
+            match tokio::time::timeout_at(deadline, ctx.client.get(link, cancellation, None)).await
+            {
+                Ok(Ok(fetched)) => fetched,
+                _ => {
+                    result.skipped = result.skipped.saturating_add(1);
+                    continue;
+                }
+            };
         if !fetched.is_success() {
+            result.skipped = result.skipped.saturating_add(1);
             continue;
         }
         let page_content_is_html = fetched.is_html();
@@ -318,7 +591,10 @@ async fn crawl(
             let body = fetched.body;
             match pdf_text(body, deadline).await {
                 Ok(text) => text,
-                Err(_) => continue,
+                Err(_) => {
+                    result.skipped = result.skipped.saturating_add(1);
+                    continue;
+                }
             }
         } else {
             fetched.text()
@@ -327,16 +603,16 @@ async fn crawl(
         let (title, content) = match (request.format, page_is_html) {
             (FetchFormat::Html, true) => (
                 extract::title_from_html(&page_body),
-                extract::clean_html(&page_body, &link),
+                extract::clean_html(&page_body, link),
             ),
             (FetchFormat::Html, false) => (None, page_body),
-            (FetchFormat::Markdown, true) => {
-                let extracted = extract::to_markdown(&page_body, &link);
+            (FetchFormat::Markdown, true) | (FetchFormat::Json, true) => {
+                let extracted = extract::to_markdown(&page_body, link);
                 (extracted.title, extracted.body)
             }
-            (FetchFormat::Markdown, false) => (None, page_body),
+            (FetchFormat::Markdown, false) | (FetchFormat::Json, false) => (None, page_body),
             (FetchFormat::Text, true) => {
-                let extracted = extract::to_text(&page_body, &link);
+                let extracted = extract::to_text(&page_body, link);
                 (extracted.title, extracted.body)
             }
             (FetchFormat::Text, false) => (None, page_body),
@@ -349,7 +625,8 @@ async fn crawl(
             truncated,
         });
     }
-    pages
+    result.pages = pages;
+    result
 }
 
 async fn pdf_text(bytes: Vec<u8>, deadline: tokio::time::Instant) -> Result<String> {
@@ -426,8 +703,9 @@ pub(crate) fn summary(output: &FetchOutput) -> String {
         count => format!("; {count} more pages"),
     };
     format!(
-        "{} via {} from {}; {} chars{}{}; {} ms",
+        "{} by the {} parser via {} from {}; {} chars{}{}; {} ms",
         output.format,
+        output.parser,
         output.fetch_mode,
         title,
         output.content.chars().count(),

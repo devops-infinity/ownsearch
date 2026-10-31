@@ -563,6 +563,265 @@ fn block(out: &mut String) {
     }
 }
 
+pub(crate) const MIN_USEFUL_CHARS: usize = 200;
+const MAX_HEADINGS: usize = 200;
+const MAX_DOC_LINKS: usize = 200;
+const MAX_JSON_LD_BLOCKS: usize = 16;
+const MAX_JSON_LD_BYTES: usize = 65_536;
+const MAX_META_CHARS: usize = 512;
+const MAX_HEADING_CHARS: usize = 200;
+const MAX_LINK_TEXT_CHARS: usize = 120;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtractionAttempt {
+    pub parser: &'static str,
+    pub characters: usize,
+    pub used: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Chained {
+    pub title: Option<String>,
+    pub body: String,
+    pub parser: &'static str,
+    pub attempts: Vec<ExtractionAttempt>,
+}
+
+pub(crate) fn chained(html: &str, base: &url::Url, markdown: bool) -> Chained {
+    let mut attempts: Vec<ExtractionAttempt> = Vec::with_capacity(3);
+    let mut parsed = Html::parse_document(html);
+    prune_boilerplate(&mut parsed);
+    let title = title_of(&parsed);
+    let mut best: Option<(&'static str, String, usize)> = None;
+    for (name, root) in [
+        ("main", content_root(&parsed)),
+        ("body", parsed.tree.root()),
+    ] {
+        let body = render(root, markdown, base);
+        let characters = body.chars().count();
+        attempts.push(ExtractionAttempt {
+            parser: name,
+            characters,
+            used: false,
+        });
+        if characters >= MIN_USEFUL_CHARS {
+            if let Some(last) = attempts.last_mut() {
+                last.used = true;
+            }
+            return Chained {
+                title,
+                body,
+                parser: name,
+                attempts,
+            };
+        }
+        if best
+            .as_ref()
+            .is_none_or(|(_, _, current)| characters > *current)
+        {
+            best = Some((name, body, characters));
+        }
+    }
+    let raw = Html::parse_document(html);
+    let body = render(raw.tree.root(), markdown, base);
+    let characters = body.chars().count();
+    attempts.push(ExtractionAttempt {
+        parser: "raw",
+        characters,
+        used: false,
+    });
+    if characters >= MIN_USEFUL_CHARS
+        || best
+            .as_ref()
+            .is_none_or(|(_, _, current)| characters > *current)
+    {
+        if let Some(last) = attempts.last_mut() {
+            last.used = true;
+        }
+        return Chained {
+            title,
+            body,
+            parser: "raw",
+            attempts,
+        };
+    }
+    let (parser, body) = match best {
+        Some((name, body, characters)) if characters > 0 => (name, body),
+        _ => ("none", String::new()),
+    };
+    if let Some(attempt) = attempts.iter_mut().find(|attempt| attempt.parser == parser) {
+        attempt.used = true;
+    }
+    Chained {
+        title,
+        body,
+        parser,
+        attempts,
+    }
+}
+
+fn render(root: NodeRef<'_, Node>, markdown: bool, base: &url::Url) -> String {
+    let mut out = String::new();
+    walk(root, &mut out, markdown, base, 0);
+    tidy(&out)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Metadata {
+    pub description: Option<String>,
+    pub canonical: Option<String>,
+    pub language: Option<String>,
+    pub published_at: Option<String>,
+    pub author: Option<String>,
+    pub site_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Heading {
+    pub level: u8,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DocLink {
+    pub url: String,
+    pub text: String,
+}
+
+pub(crate) fn metadata(html: &str, base: &url::Url) -> Metadata {
+    let document = Html::parse_document(html);
+    Metadata {
+        description: meta_content(&document, "name", "description")
+            .or_else(|| meta_content(&document, "property", "og:description")),
+        canonical: attr_of(&document, "link[rel=canonical]", "href")
+            .and_then(|href| base.join(href.trim()).ok())
+            .filter(|target| matches!(target.scheme(), "http" | "https"))
+            .map(|target| target.to_string()),
+        language: attr_of(&document, "html", "lang"),
+        published_at: meta_content(&document, "property", "article:published_time")
+            .or_else(|| meta_content(&document, "name", "date")),
+        author: meta_content(&document, "name", "author")
+            .or_else(|| meta_content(&document, "property", "article:author")),
+        site_name: meta_content(&document, "property", "og:site_name"),
+    }
+}
+
+fn meta_content(document: &Html, attribute: &str, value: &str) -> Option<String> {
+    let selector = Selector::parse(&format!("meta[{attribute}=\"{value}\"]")).ok()?;
+    document
+        .select(&selector)
+        .next()
+        .and_then(|element| element.value().attr("content"))
+        .map(|content| short_text(&sanitize(content), MAX_META_CHARS))
+        .filter(|content| !content.is_empty())
+}
+
+fn attr_of(document: &Html, selector: &str, attribute: &str) -> Option<String> {
+    let selector = Selector::parse(selector).ok()?;
+    document
+        .select(&selector)
+        .next()
+        .and_then(|element| element.value().attr(attribute))
+        .map(|value| short_text(&sanitize(value), MAX_META_CHARS))
+        .filter(|value| !value.is_empty())
+}
+
+fn short_text(value: &str, limit: usize) -> String {
+    let (capped, _) = crate::sanitize::cap(value, limit);
+    capped.trim().to_owned()
+}
+
+pub(crate) fn headings(html: &str) -> Vec<Heading> {
+    let document = Html::parse_document(html);
+    let Ok(selector) = Selector::parse("h1, h2, h3, h4, h5, h6") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for element in document.select(&selector) {
+        if out.len() >= MAX_HEADINGS {
+            break;
+        }
+        let text = short_text(
+            &sanitize(&element.text().collect::<String>()),
+            MAX_HEADING_CHARS,
+        );
+        if text.is_empty() {
+            continue;
+        }
+        let level = match element.value().name() {
+            "h1" => 1,
+            "h2" => 2,
+            "h3" => 3,
+            "h4" => 4,
+            "h5" => 5,
+            _ => 6,
+        };
+        out.push(Heading { level, text });
+    }
+    out
+}
+
+pub(crate) fn doc_links(html: &str, base: &url::Url) -> Vec<DocLink> {
+    let document = Html::parse_document(html);
+    let Some(selector) = LINK_SELECTOR.as_ref() else {
+        return Vec::new();
+    };
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for element in document.select(selector) {
+        if out.len() >= MAX_DOC_LINKS {
+            break;
+        }
+        let Some(href) = element.value().attr("href") else {
+            continue;
+        };
+        let Ok(target) = base.join(href.trim()) else {
+            continue;
+        };
+        if !matches!(target.scheme(), "http" | "https") {
+            continue;
+        }
+        let url = target.to_string();
+        if !seen.insert(url.clone()) {
+            continue;
+        }
+        let text = short_text(
+            &sanitize(&element.text().collect::<String>()),
+            MAX_LINK_TEXT_CHARS,
+        );
+        out.push(DocLink { url, text });
+    }
+    out
+}
+
+pub(crate) fn json_ld(html: &str) -> Vec<serde_json::Value> {
+    let document = Html::parse_document(html);
+    let Ok(selector) = Selector::parse("script[type=\"application/ld+json\"]") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut total = 0usize;
+    for element in document.select(&selector) {
+        if out.len() >= MAX_JSON_LD_BLOCKS {
+            break;
+        }
+        let text = element.text().collect::<String>();
+        total = total.saturating_add(text.len());
+        if total > MAX_JSON_LD_BYTES {
+            break;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim())
+            && matches!(
+                value,
+                serde_json::Value::Object(_) | serde_json::Value::Array(_)
+            )
+        {
+            out.push(value);
+        }
+    }
+    out
+}
+
 fn tidy(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut blank = 0usize;
@@ -621,6 +880,84 @@ mod tests {
         html.push_str("<div><p>last block</p></div></body></html>");
         let extracted = to_markdown(&html, &base());
         assert!(extracted.body.contains("paragraph"));
+    }
+
+    #[test]
+    fn the_chain_falls_back_to_the_body_when_the_main_root_is_empty() {
+        let filler = "word ".repeat(80);
+        let html = format!(
+            r#"<html><body><main></main><div class="content"><p>{filler}</p></div></body></html>"#
+        );
+        let chained = chained(&html, &base(), true);
+        assert_eq!(chained.parser, "body");
+        assert!(chained.body.contains("word"));
+        let attempts: Vec<(&str, bool)> = chained
+            .attempts
+            .iter()
+            .map(|attempt| (attempt.parser, attempt.used))
+            .collect();
+        assert_eq!(attempts, vec![("main", false), ("body", true)]);
+    }
+
+    #[test]
+    fn the_chain_reports_none_when_a_page_holds_no_text() {
+        let html = "<html><body><script>let a = 1;</script></body></html>";
+        let chained = chained(html, &base(), true);
+        assert_eq!(chained.parser, "none");
+        assert!(chained.body.is_empty());
+        assert!(
+            chained
+                .attempts
+                .iter()
+                .any(|attempt| attempt.parser == "raw")
+        );
+    }
+
+    #[test]
+    fn a_short_article_still_uses_the_main_root() {
+        let html = "<html><body><main><p>tiny page</p></main></body></html>";
+        let chained = chained(html, &base(), true);
+        assert_eq!(chained.parser, "main");
+        assert!(chained.body.contains("tiny page"));
+    }
+
+    #[test]
+    fn metadata_headings_links_and_json_ld_are_extracted() {
+        let html = r#"<html lang="en"><head>
+            <title>Doc title</title>
+            <meta name="description" content="A page about comets.">
+            <meta property="article:published_time" content="2026-10-01T10:00:00Z">
+            <meta name="author" content="A. Writer">
+            <link rel="canonical" href="/canonical">
+            <script type="application/ld+json">{"@type":"Article","headline":"Comets"}</script>
+            </head><body>
+            <h1>Comets</h1><h2>Orbits</h2>
+            <p>See <a href="https://a.example/x">the orbit page</a>.</p>
+            <a href="javascript:alert(1)">bad</a>
+            </body></html>"#;
+        let meta = metadata(html, &base());
+        assert_eq!(meta.description.as_deref(), Some("A page about comets."));
+        assert_eq!(
+            meta.canonical.as_deref(),
+            Some("https://searx.example/canonical")
+        );
+        assert_eq!(meta.language.as_deref(), Some("en"));
+        assert_eq!(meta.author.as_deref(), Some("A. Writer"));
+        assert_eq!(meta.published_at.as_deref(), Some("2026-10-01T10:00:00Z"));
+        let heads = headings(html);
+        assert_eq!(
+            heads
+                .iter()
+                .map(|heading| (heading.level, heading.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, "Comets"), (2, "Orbits")]
+        );
+        let anchors = doc_links(html, &base());
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].url, "https://a.example/x");
+        assert_eq!(anchors[0].text, "the orbit page");
+        let blocks = json_ld(html);
+        assert_eq!(blocks.len(), 1);
     }
 
     #[test]
